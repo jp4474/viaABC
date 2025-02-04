@@ -3,9 +3,10 @@ import torch
 from models import TiMAE
 
 class CustomLightning(L.LightningModule):
-    def __init__(self, model):
+    def __init__(self, model, lr=1e-3):
         super().__init__()
         self.model = model
+        self.lr = lr
 
     def forward(self, inputs):
         loss, reconstruction = self.model(inputs)
@@ -24,24 +25,24 @@ class CustomLightning(L.LightningModule):
         return loss
     
     def configure_optimizers(self):
-        optimizer = torch.optim.AdamW(params=self.parameters(),lr=1e-3)
-        scheduler=torch.optim.lr_scheduler.OneCycleLR(
-            optimizer, 
-            max_lr=1e-3, 
-            epochs=300, 
-            steps_per_epoch=10,
-            three_phase=True)
-        lr_scheduler = {'scheduler': scheduler, 'interval': 'step'}
-        return {'optimizer': optimizer, 'lr_scheduler': lr_scheduler}
+        optimizer = torch.optim.AdamW(params=self.parameters(), lr=self.lr)
+
+        return optimizer
     
-    def get_latent(self, batch):
-        parameters, simulations = batch
-        return self.model.get_latent(simulations)
+        # scheduler = get_linear_schedule_with_warmup(
+        #         optimizer,
+        #         num_warmup_steps=self.n_warmup_steps,
+        #         num_training_steps=self.n_training_steps,
+        #     )
+        
+        # return dict(optimizer=optimizer, lr_scheduler=dict(scheduler=scheduler, interval="step"))
+    def get_latent(self, x, mask_ratio=0):
+        return self.model.get_latent(x, mask_ratio)
     
-class LotkaVolterraLightning(CustomLightning):
-    def __init__(self):
-        model = TiMAE(seq_len=8, in_chans=2, 
-                      embed_dim=64, num_heads=8, depth=6, 
-                      decoder_embed_dim=64, decoder_num_heads=8, decoder_depth=4, 
-                      z_type="vae", lambda_ = 0.00025, mask_ratio=0.75, bag_size=1024, dropout = 0.0)
-        super().__init__(model=model)
+# class LotkaVolterraLightning(CustomLightning):
+#     def __init__(self, lr=1e-3):
+#         model = TiMAE(seq_len=8, in_chans=2, 
+#                       embed_dim=8, num_heads=8, depth=2, 
+#                       decoder_embed_dim=8, decoder_num_heads=8, decoder_depth=1, 
+#                       z_type="vae", lambda_ = 0.00025, mask_ratio=0.25, bag_size=1024, dropout = 0.0)
+#         super().__init__(model=model, lr=lr)

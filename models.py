@@ -85,50 +85,6 @@ class LayerScale(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return x.mul_(self.gamma) if self.inplace else x * self.gamma
-
-class Block(nn.Module):
-    def __init__(
-            self,
-            dim: int,
-            num_heads: int,
-            mlp_ratio: float = 4.,
-            qkv_bias: bool = False,
-            qk_norm: bool = False,
-            proj_bias: bool = True,
-            proj_drop: float = 0.,
-            attn_drop: float = 0.,
-            init_values: Optional[float] = None,
-            drop_path: float = 0.,
-            act_layer: Type[nn.Module] = nn.GELU,
-            norm_layer: Type[nn.Module] = nn.LayerNorm,
-            mlp_layer: Type[nn.Module] = Mlp,
-            differential_attention: bool = False,
-    ) -> None:
-        super().__init__()
-        self.norm1 = norm_layer(dim)
-
-        self.attn = DifferentialAttention(
-            dim, num_heads, layer_num = 4
-        )
-
-        self.ls1 = LayerScale(dim, init_values=init_values) if init_values else nn.Identity()
-        self.drop_path1 = DropPath(drop_path) if drop_path > 0. else nn.Identity()
-
-        self.norm2 = norm_layer(dim)
-        self.mlp = mlp_layer(
-            in_features=dim,
-            hidden_features=int(dim * mlp_ratio),
-            act_layer=act_layer,
-            bias=proj_bias,
-            drop=proj_drop,
-        )
-        self.ls2 = LayerScale(dim, init_values=init_values) if init_values else nn.Identity()
-        self.drop_path2 = DropPath(drop_path) if drop_path > 0. else nn.Identity()
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = x + self.drop_path1(self.ls1(self.attn(self.norm1(x))))
-        x = x + self.drop_path2(self.ls2(self.mlp(self.norm2(x))))
-        return x
     
 class PositionalEncoding(nn.Module):
     def __init__(self, d_model, max_len=5000):
@@ -144,12 +100,7 @@ class PositionalEncoding(nn.Module):
         # Compute i values for each dimension
         i = torch.arange(0, d_model, dtype=torch.float) // 2  # Shape (d_model,)
         
-        # Compute denominators using 10000^(2i/d_model)
-        denominator = 10000 ** (2 * i / d_model)  # Shape (d_model,)
-        
-        # Compute angles for all positions and dimensions
-        angles = pos / denominator  # Broadcasting to (max_len + 1, d_model)
-        
+        angles = torch.exp(torch.log(pos) - 2 * torch.log(torch.tensor(10000)) * i / d_model)
         # Apply sine to even indices and cosine to odd indices
         pe[:, 0::2] = torch.sin(angles[:, 0::2])
         pe[:, 1::2] = torch.cos(angles[:, 1::2])
@@ -463,7 +414,7 @@ class TiMAE(nn.Module):
         # self.pos_embed = PositionalEncoding(embed_dim, max_len=seq_len)
 
         self.blocks = nn.ModuleList([
-            Block(embed_dim, num_heads, mlp_ratio, qkv_bias=True, norm_layer=norm_layer, differential_attention=differential_attention)
+            Block(embed_dim, num_heads, mlp_ratio, qkv_bias=True, norm_layer=norm_layer)
             for i in range(depth)])
         self.norm = norm_layer(embed_dim)
         # --------------------------------------------------------------------------
@@ -485,7 +436,7 @@ class TiMAE(nn.Module):
         # self.decoder_pos_embed = PositionalEncoding(decoder_embed_dim, max_len=seq_len)
 
         self.decoder_blocks = nn.ModuleList([
-            Block(decoder_embed_dim, decoder_num_heads, mlp_ratio, qkv_bias=True, norm_layer=norm_layer, differential_attention=differential_attention)
+            Block(decoder_embed_dim, decoder_num_heads, mlp_ratio, qkv_bias=True, norm_layer=norm_layer)
             for i in range(decoder_depth)])
 
         self.decoder_norm = norm_layer(decoder_embed_dim)
@@ -667,7 +618,6 @@ class TiMAE(nn.Module):
 
 
     def forward(self, x, mask_ratio = 0.75):
-
         if mask_ratio is None:
             mask_ratio = self.mask_ratio
         
@@ -686,3 +636,7 @@ class TiMAE(nn.Module):
         
         total_loss = loss[0] + loss[1] + self.lambda_ * space_loss
         return total_loss, pred
+    
+    def get_latent(self, x, mask_ratio = 0):
+        latent, mask, ids_restore = self.forward_encoder(x, mask_ratio)
+        return latent[:, 1:, :]

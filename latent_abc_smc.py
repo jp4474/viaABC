@@ -72,12 +72,12 @@ class LatentABCSMC:
             self.logger.warning("You must also define custom `simulate`, and `sample_priors` methods.")
 
         if t0 is None:
-            self.t0 = time_space[0]
+            raise ValueError("t0 must be provided")
         else:
             self.t0 = t0
 
         if tmax is None:
-            self.tmax = time_space[-1] + 1
+            raise ValueError("tmax must be provided")
         else:
             self.tmax = tmax
 
@@ -130,6 +130,9 @@ class LatentABCSMC:
         self.logger.info(f"upper_bounds: {upper_bounds}")
         self.logger.info(f"tolerance_levels: {tolerance_levels}")
         self.logger.info(f"perturbation_kernels: {perturbation_kernels}")
+        self.logger.info(f"t0: {t0}")
+        self.logger.info(f"tmax: {tmax}")
+        self.logger.info(f"time_space: {time_space}")
 
     def update_model(self, model: torch.nn.Module):
         self.model = model
@@ -208,7 +211,7 @@ class LatentABCSMC:
     
     @torch.inference_mode()
     def encode_observational_data(self):
-        self.encoded_observational_data = self.model(torch.tensor(self.raw_observational_data, dtype=torch.float32).unsqueeze(0))[1].cpu().numpy()
+        self.encoded_observational_data = self.model.get_latent(torch.tensor(self.raw_observational_data, dtype=torch.float32).unsqueeze(0).to(self.model.device)).cpu().numpy()
 
     @torch.inference_mode()
     def run(self):
@@ -220,7 +223,7 @@ class LatentABCSMC:
         self.encode_observational_data()
         # numpy array of size num_particles x num_parameters
         particles = np.ones((self.num_generations, self.num_particles, self.num_parameters))
-        weights = np.ones((self.num_generations, self.num_particles, self.num_parameters))
+        weights = np.ones((self.num_generations, self.num_particles))
 
         for t in range(self.num_generations):
             self.logger.info(f"Generation {t + 1} started")
@@ -239,7 +242,7 @@ class LatentABCSMC:
                 else:
                     # Step 6: Sample from the previous generation's particles with weights
                     previous_particles = np.array(particles[t-1,:,:])
-                    previous_weights = np.array(weights[t-1,:,:])
+                    previous_weights = np.array(weights[t-1,:])
 
                     # params = np.ones((self.num_parameters,)) * 0
                     # for j in range(self.num_parameters):
@@ -256,15 +259,13 @@ class LatentABCSMC:
                     if prior_probability <= 0:
                         continue # Go back to sampling if prior probability is 0
 
-                    thetaLogWeight = np.log(prior_probability) - gaussian_kde(previous_particles, weights=previous_weights).log_pdf(perturbed_params)
+                    thetaLogWeight = np.log(prior_probability) - gaussian_kde(previous_particles.T, weights=previous_weights).logpdf(perturbed_params)
                     new_weight = np.exp(thetaLogWeight)
-
-                assert new_weight >= 0, "Weight must be non-negative" # TODO: unnecessary since exp(x) >= 0 for all x?
 
                 # Step 9: Simulate the ODE system and encode the data
                 y = self.simulate(perturbed_params)
-                y_tensor = torch.tensor(y, dtype=torch.float32).unsqueeze(0)
-                y_latent_np = self.model(y_tensor)[1].cpu().numpy()
+                y_tensor = torch.tensor(y, dtype=torch.float32).unsqueeze(0).to(self.model.device)
+                y_latent_np = self.model.get_latent(y_tensor).cpu().numpy()
 
                 # Step 10: Compute the distance and check if it's within the tolerance
                 dist = self.calculate_distance(y_latent_np)
@@ -280,11 +281,12 @@ class LatentABCSMC:
             # Step 12: Normalize weights for the current generation
             generation_weights /= np.sum(generation_weights, axis=0)
             particles[t] = np.array(generation_particles)
-            weights[t] = np.array(generation_weights)
+            weights[t] = np.array(generation_weights).flatten()
             end_time_generation = time.time()
             duration_generation = end_time_generation - start_time_generation
             duration = end_time_generation - start_time_generation
-            self.logger.info(f"Generation {t + 1} Completed. Accepted {self.num_particles} particles in {duration_generation:.2f} seconds")
+            mean_est = np.average(particles[t], weights=weights[t], axis=0)
+            self.logger.info(f"Generation {t + 1} Completed. Accepted {self.num_particles} particles in {duration_generation:.2f} seconds. Mean estimate: {mean_est}")
 
         self.particles = particles
         self.weights = weights
@@ -325,9 +327,24 @@ class LatentABCSMC:
         # TODO: visualize the particles (parameter space) for the given generation
         pass
 
-    def visualize_latent_space(self):
-        # TODO: implement umap to visualize latent space of the latent space of the training data and the observed data
-        pass
+    def __visualize_latent_space_with_mini_batch(self, mini_batch):
+        mini_batch = torch.tensor(mini_batch, dtype=torch.float32).to(self.model.device)
+        latent = self.model.get_latent(mini_batch).cpu().numpy()
+        # TODO
+
+    def visualize_latent_space(self, batch):
+        latent_representations = []
+        # split batch into mini-batches
+        mini_batch_size = 1000
+        mini_batches = [batch[i:i + mini_batch_size] for i in range(0, len(batch), mini_batch_size)]
+
+        for mini_batch in mini_batches:
+            latent = self.__visualize_latent_space_with_mini_batch(mini_batch)
+            latent_representations.append(latent)
+
+        latent_representations = np.concatenate(latent_representations, axis=0)
+        pass # TODO
+
 
     def visualize_latent_space_generation(self, generation: int = -1):
         # TODO: impelemt umap to take in the particles at the given generation, simulate the ODE system, and visualize the latent space
@@ -352,14 +369,9 @@ class LatentABCSMC:
         params = np.ones((num_simulations, self.num_parameters))
         parameters = self.__sample_priors(n=num_simulations)
 
-        with ThreadPoolExecutor(max_workers=num_threads) as executor:
-            results = list(executor.map(self.simulate, parameters))
-        
-        results = [r if r is not None else np.zeros_like(self.raw_observational_data) for r in results]
-
-        for i, (simulation, parameter) in enumerate(zip(results, parameters)):
-            simulations[i] = simulation
-            params[i] = parameter
+        for i in range(num_simulations):
+            params[i] = parameters[i]
+            simulations[i] = self.simulate(parameters[i])
 
         if not os.path.exists("data"):
             os.makedirs("data")
@@ -367,20 +379,23 @@ class LatentABCSMC:
         np.save(f"data/{prefix}_params.npy", params)
         np.save(f"data/{prefix}_simulations.npy", simulations)
 
-    def generate_training_data(self, num_simulations: list = [50000, 10000, 10000], seed: int = 1234, workers: int = 1):
+    def generate_training_data(self, num_simulations: list = [50000, 10000, 10000], seed: int = 1234):
         np.random.seed(seed)
         self.logger.info(f"Generating training data for training with seed {seed}")
 
-        num_threads = workers * 2
-        self.logger.info(f"Number of available threads: {num_threads}")
-
         prefix = ["train", "val", "test"]
-
+        total_time = 0  # Initialize the total time counter
+        
         for i, num_simulation in enumerate(num_simulations):
             self.logger.info(f"Generating {num_simulation} simulations for training data")
-            self.__batch_simulations(num_simulation, prefix=prefix[i], num_threads=num_threads)
+            start = time.time()
+            self.__batch_simulations(num_simulation, prefix=prefix[i])
+            end = time.time()
+            elapsed = end - start
+            total_time += elapsed
+            self.logger.info(f"Generated {num_simulation} simulations for training data in {elapsed:.2f} seconds")
 
-        self.logger.info("Training data generation completed and saved.")
+        self.logger.info(f"Training data generation completed and saved. Total time taken: {total_time:.2f} seconds")
 
 class LotkaVolterra(LatentABCSMC):
     def __init__(self,
@@ -390,12 +405,12 @@ class LotkaVolterra(LatentABCSMC):
         lower_bounds = np.array([1e-4, 1e-4]), 
         upper_bounds = np.array([10, 10]), 
         perturbation_kernels = np.array([0.1, 0.1]), 
-        tolerance_levels = np.array([30, 20, 10, 5, 1]), 
+        tolerance_levels = np.array([0.4, 0.3, 0.2, 0.1, 0.05]), 
         model = None, 
         observational_data = np.array([[1.87, 0.65, 0.22, 0.31, 1.64, 1.15, 0.24, 2.91],
                                         [0.49, 2.62, 1.54, 0.02, 1.14, 1.68, 1.07, 0.88]]).T, 
         state0 = np.array([1, 0.5]),
-        t0 = None,
+        t0 = 0,
         tmax = 15, 
         time_space = np.array([1.1, 2.4, 3.9, 5.6, 7.5, 9.6, 11.9, 14.4])):
         #time_space = np.array([0.5, 1.1, 2.4, 3.1, 3.9, 5.1, 5.6, 7.1, 7.5, 9.0, 9.6, 11.0, 11.9, 13.0, 14.4, 14.7])),
@@ -411,17 +426,19 @@ class LotkaVolterra(LatentABCSMC):
         return [dprey, dpredator]
     
     def calculate_distance(self, y: np.ndarray, norm: int = 2):
-        return np.linalg.norm(y - self.encoded_observational_data, ord=norm)
+        # calcuclate cosine similarity
+        cosine_similarity = np.dot(self.encoded_observational_data.flatten(), y.flatten()) / (np.linalg.norm(self.encoded_observational_data.flatten()) * np.linalg.norm(y.flatten()))
+        return 1 - cosine_similarity
 
     def sample_priors(self):
         # Sample from the prior distribution
         priors = np.random.uniform(self.lower_bounds, self.upper_bounds, self.num_parameters)
         return priors
     
-    def prior_prob(self, parameters):
+    def calculate_prior_prob(self, parameters):
         # Calculate the prior probability
         mask = (parameters > self.lower_bounds) & (parameters < self.upper_bounds)
-        assert mask.all(), "Parameters must be within bounds"
+        # assert mask.all(), "Parameters must be within bounds"
         probabilities = (parameters - self.lower_bounds) / (self.upper_bounds - self.lower_bounds)
         return np.prod(probabilities)
     
