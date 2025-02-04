@@ -14,6 +14,8 @@ from typing import Union
 import pandas as pd
 import time
 import os
+from scipy.stats import qmc
+from concurrent.futures import ThreadPoolExecutor
 
 class LatentABCSMC:
     @torch.inference_mode()
@@ -149,9 +151,9 @@ class LatentABCSMC:
         # else:
         if self.state0 is not None:
             solution = solve_ivp(self.ode_system, [self.t0, self.tmax], y0=self.state0, t_eval=self.time_space, args=(parameters,))
-        return solution.y.T
+            return solution.y.T
 
-    def sample_priors(self):
+    def sample_priors(self) -> np.ndarray:
         """
         Sample from the prior distributions.
 
@@ -164,7 +166,7 @@ class LatentABCSMC:
         """
         raise NotImplementedError
 
-    def calculate_prior_prob(self, parameters: np.ndarray):
+    def calculate_prior_prob(self, parameters: np.ndarray) -> float:
         """
         Calculate the prior probability of the given parameters.
 
@@ -176,7 +178,7 @@ class LatentABCSMC:
         """
         raise NotImplementedError
 
-    def perturb_parameters(self, parameters: np.ndarray):
+    def perturb_parameters(self, parameters: np.ndarray) -> np.ndarray:
         """
         Perturb the given parameters.
 
@@ -192,7 +194,7 @@ class LatentABCSMC:
         """
         raise NotImplementedError
 
-    def calculate_distance(self, y: np.ndarray):
+    def calculate_distance(self, y: np.ndarray) -> float:
         """
         Calculate the distance between the simulated data and the observed data.
 
@@ -332,14 +334,30 @@ class LatentABCSMC:
         # call visualize_latent_space method to reduce redundancy
         pass
 
-    def __batch_simulations(self, num_simulations: int, prefix: str = "train"):
+    def __sample_priors(self, n: int = 1):
+        """Sample from prior distribution using Latin Hypercube Sampling"""
+        # Create LHS sampler
+        sampler = qmc.LatinHypercube(d=self.num_parameters)
+        
+        # Generate samples in [0,1] range
+        samples = sampler.random(n=n)
+        
+        # Scale samples to parameter bounds
+        scaled_samples = qmc.scale(samples, self.lower_bounds, self.upper_bounds)
+        return scaled_samples
+
+    def __batch_simulations(self, num_simulations: int, prefix: str = "train", num_threads: int = 2):
         """ This method should never be called directly; it is only used by the generate_training_data method. """
         simulations = np.ones((num_simulations, self.raw_observational_data.shape[0], self.raw_observational_data.shape[1]))
         params = np.ones((num_simulations, self.num_parameters))
+        parameters = self.__sample_priors(n=num_simulations)
 
-        for i in range(num_simulations):
-            parameter = self.sample_priors()
-            simulation = self.simulate(parameter)
+        with ThreadPoolExecutor(max_workers=num_threads) as executor:
+            results = list(executor.map(self.simulate, parameters))
+        
+        results = [r if r is not None else np.zeros_like(self.raw_observational_data) for r in results]
+
+        for i, (simulation, parameter) in enumerate(zip(results, parameters)):
             simulations[i] = simulation
             params[i] = parameter
 
@@ -349,12 +367,19 @@ class LatentABCSMC:
         np.save(f"data/{prefix}_params.npy", params)
         np.save(f"data/{prefix}_simulations.npy", simulations)
 
-    def generate_training_data(self, num_simulations: list = [50000, 10000, 10000], seed: int = 1234):
+    def generate_training_data(self, num_simulations: list = [50000, 10000, 10000], seed: int = 1234, workers: int = 1):
         np.random.seed(seed)
         self.logger.info(f"Generating training data for training with seed {seed}")
-        self.__batch_simulations(num_simulations=num_simulations[0], prefix="train")
-        self.__batch_simulations(num_simulations=num_simulations[1], prefix="val")
-        self.__batch_simulations(num_simulations=num_simulations[2], prefix="test")
+
+        num_threads = workers * 2
+        self.logger.info(f"Number of available threads: {num_threads}")
+
+        prefix = ["train", "val", "test"]
+
+        for i, num_simulation in enumerate(num_simulations):
+            self.logger.info(f"Generating {num_simulation} simulations for training data")
+            self.__batch_simulations(num_simulation, prefix=prefix[i], num_threads=num_threads)
+
         self.logger.info("Training data generation completed and saved.")
 
 class LotkaVolterra(LatentABCSMC):
@@ -371,7 +396,9 @@ class LotkaVolterra(LatentABCSMC):
                                         [0.49, 2.62, 1.54, 0.02, 1.14, 1.68, 1.07, 0.88]]).T, 
         state0 = np.array([1, 0.5]),
         t0 = None,
-        tmax = 15, time_space = np.array([1.1, 2.4, 3.9, 5.6, 7.5, 9.6, 11.9, 14.4])):
+        tmax = 15, 
+        time_space = np.array([1.1, 2.4, 3.9, 5.6, 7.5, 9.6, 11.9, 14.4])):
+        #time_space = np.array([0.5, 1.1, 2.4, 3.1, 3.9, 5.1, 5.6, 7.1, 7.5, 9.0, 9.6, 11.0, 11.9, 13.0, 14.4, 14.7])),
         super().__init__(num_particles, num_generations, num_parameters, lower_bounds, upper_bounds, perturbation_kernels, observational_data, tolerance_levels, model, state0, t0, tmax, time_space)
 
     def ode_system(self, t, state, parameters):
@@ -409,8 +436,8 @@ class MZB(LatentABCSMC):
         num_particles = 1000, 
         num_generations = 5, 
         num_parameters = 6, 
-        lower_bounds = np.array([0.5, 14, 0.1, -5, 3.5, -4]), 
-        upper_bounds = np.array([0.25, 2, 0.15, 1.2, 0.8, 1.2]), 
+        lower_bounds = np.array([0.5, 14, 0.1, -5, 3.5, -4]), # mean
+        upper_bounds = np.array([0.25, 2, 0.15, 1.2, 0.8, 1.2]),  # std
         perturbation_kernels = np.array([0.1, 0.1, 0.1, 0.1, 0.1, 0.1]), 
         tolerance_levels = np.array([30, 20, 10, 5, 1]), 
         model = None, 

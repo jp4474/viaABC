@@ -1,1 +1,4 @@
 *.ipynb
+*.env
+.env
+*.npy
