@@ -620,6 +620,11 @@ class TiMAE(nn.Module):
     def forward(self, x, mask_ratio = 0.75):
         if mask_ratio is None:
             mask_ratio = self.mask_ratio
+
+        # TODO: sample noise from normal (0, 0.5) and experiment with adding noise
+        # if self.training:
+        #     noise = torch.randn_like(x) * 0.5
+        #     x = x + noise
         
         latent, mask, ids_restore = self.forward_encoder(x, mask_ratio)
         pred = self.forward_decoder(latent, ids_restore)  # [N, L, p*p*3]
@@ -637,6 +642,8 @@ class TiMAE(nn.Module):
         total_loss = loss[0] + loss[1] + self.lambda_ * space_loss
         return total_loss, pred
     
+    @torch.inference_mode()
     def get_latent(self, x, mask_ratio = 0):
+        self.eval()
         latent, mask, ids_restore = self.forward_encoder(x, mask_ratio)
         return latent[:, 1:, :]

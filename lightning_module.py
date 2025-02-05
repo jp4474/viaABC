@@ -29,20 +29,45 @@ class CustomLightning(L.LightningModule):
 
         return optimizer
     
-        # scheduler = get_linear_schedule_with_warmup(
-        #         optimizer,
-        #         num_warmup_steps=self.n_warmup_steps,
-        #         num_training_steps=self.n_training_steps,
-        #     )
-        
-        # return dict(optimizer=optimizer, lr_scheduler=dict(scheduler=scheduler, interval="step"))
     def get_latent(self, x, mask_ratio=0):
         return self.model.get_latent(x, mask_ratio)
     
-# class LotkaVolterraLightning(CustomLightning):
-#     def __init__(self, lr=1e-3):
-#         model = TiMAE(seq_len=8, in_chans=2, 
-#                       embed_dim=8, num_heads=8, depth=2, 
-#                       decoder_embed_dim=8, decoder_num_heads=8, decoder_depth=1, 
-#                       z_type="vae", lambda_ = 0.00025, mask_ratio=0.25, bag_size=1024, dropout = 0.0)
-#         super().__init__(model=model, lr=lr)
+class FineTuningLightning(CustomLightning):
+    def __init__(self, model, latent_dim = 64, lr=1e-4):
+        super().__init__(model, lr)
+        self.model = model
+        self.lr = lr
+        self.linear_layer = torch.nn.Sequential(
+            torch.nn.Linear(latent_dim, latent_dim),
+            torch.nn.ReLU(),
+            torch.nn.Linear(latent_dim, 2)
+        )
+        
+        self.criterion = torch.nn.MSELoss()
+    
+    def training_step(self, batch):
+        self.model.train()
+        parameters, simulations = batch
+        logits = self.model.get_latent(simulations, mask_ratio=0)
+        parameter_estimates = self.linear_layer(logits)
+        loss = self.criterion(parameter_estimates, parameters)
+        self.log("train_loss", loss, prog_bar=True)
+        return loss
+    
+    def validation_step(self, batch):
+        parameters, simulations = batch
+        logits = self.model.get_latent(simulations, mask_ratio=0)
+        parameter_estimates = self.linear_layer(logits)
+        loss = self.criterion(parameter_estimates, parameters)
+        self.log("val_loss", loss, prog_bar=True)
+        return loss
+    
+    def configure_optimizers(self):
+        optimizer = torch.optim.AdamW(params=self.parameters(), lr=self.lr)
+        return optimizer
+
+    def forward(self, inputs):
+        logits = self.model.get_latent(inputs, mask_ratio=0)
+        parameter_estimates = self.linear_layer(logits)
+        return parameter_estimates
+
