@@ -219,6 +219,7 @@ class LatentABCSMC:
             raise ValueError("Model must be provided to encode the data and run the algorithm.")
         
         self.logger.info("Starting ABC SMC run")
+        total_num_simulations = 0
         start_time = time.time()
         self.encode_observational_data()
         # numpy array of size num_particles x num_parameters
@@ -231,6 +232,7 @@ class LatentABCSMC:
             generation_particles = []
             generation_weights = []
             accepted = 0
+            running_num_simulations = 0
             epsilon = self.tolerance_levels[t]
         
             while accepted < self.num_particles:
@@ -264,6 +266,8 @@ class LatentABCSMC:
 
                 # Step 9: Simulate the ODE system and encode the data
                 y = self.simulate(perturbed_params)
+                total_num_simulations += 1
+                running_num_simulations += 1
                 y_tensor = torch.tensor(y, dtype=torch.float32).unsqueeze(0).to(self.model.device)
                 y_latent_np = self.model.get_latent(y_tensor).cpu().numpy()
 
@@ -286,24 +290,34 @@ class LatentABCSMC:
             duration_generation = end_time_generation - start_time_generation
             duration = end_time_generation - start_time_generation
             mean_est = np.average(particles[t], weights=weights[t], axis=0)
-            self.logger.info(f"Generation {t + 1} Completed. Accepted {self.num_particles} particles in {duration_generation:.2f} seconds. Mean estimate: {mean_est}")
+            self.logger.info(f"Generation {t + 1} Completed. Accepted {self.num_particles} particles in {duration_generation:.2f} seconds with {running_num_simulations} total simulations.")
+            self.logger.info(f"Mean estimate: {mean_est}")
 
         self.particles = particles
         self.weights = weights
 
         end_time = time.time()
         duration = end_time - start_time
-        self.logger.info(f"ABC SMC run completed in {duration:.2f} seconds")
+        self.logger.info(f"ABC SMC run completed in {duration:.2f} seconds with {total_num_simulations} total simulations.")
 
         return particles, weights
 
-    def compute_statistics(self, return_as_dataframe: bool = False):
+    def compute_statistics(self, generation: int = 0, return_as_dataframe: bool = False):
+        """ Compute statistics of the particles at the given generation.
+        Args:
+            generation (int): Generation to compute statistics for. Defaults to the last generation.
+            return_as_dataframe (bool): Whether to return the statistics as a pandas DataFrame. Defaults to False.
+        """
+
         if self.particles is None or self.weights is None:
             raise ValueError("Particles and weights must be computed before calculating statistics.")
         
-        # compute statistics of the last generation
-        particles = self.particles[-1]
-        weights = self.weights[-1]
+        if generation > self.num_generations:
+            raise ValueError("Generation must be less than or equal to the number of generations.")
+        
+        # compute statistics of the given generation
+        particles = self.particles[generation-1]
+        weights = self.weights[generation-1]
         mean = np.average(particles, weights=weights, axis=0)
         std = np.sqrt(np.average((particles - mean) ** 2, weights=weights, axis=0))
         median = np.median(particles, axis=0)
@@ -405,7 +419,7 @@ class LotkaVolterra(LatentABCSMC):
         lower_bounds = np.array([1e-4, 1e-4]), 
         upper_bounds = np.array([10, 10]), 
         perturbation_kernels = np.array([0.1, 0.1]), 
-        tolerance_levels = np.array([0.4, 0.3, 0.2, 0.1, 0.05]), 
+        tolerance_levels = np.array([0.2, 0.1, 0.05, 0.01, 0.005]), 
         model = None, 
         observational_data = np.array([[1.87, 0.65, 0.22, 0.31, 1.64, 1.15, 0.24, 2.91],
                                         [0.49, 2.62, 1.54, 0.02, 1.14, 1.68, 1.07, 0.88]]).T, 
@@ -427,7 +441,8 @@ class LotkaVolterra(LatentABCSMC):
     
     def calculate_distance(self, y: np.ndarray, norm: int = 2):
         # calcuclate cosine similarity
-        cosine_similarity = np.dot(self.encoded_observational_data.flatten(), y.flatten()) / (np.linalg.norm(self.encoded_observational_data.flatten()) * np.linalg.norm(y.flatten()))
+        y = y.mean(1)
+        cosine_similarity = np.dot(self.encoded_observational_data.mean(1).flatten(), y.flatten()) / (np.linalg.norm(self.encoded_observational_data.mean(1).flatten()) * np.linalg.norm(y.flatten()))
         return 1 - cosine_similarity
 
     def sample_priors(self):

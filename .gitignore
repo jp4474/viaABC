@@ -5,3 +5,9 @@
 *.pkl
 *.log
 *.out
+*.pyc
+checkpoints
+.neptune
+data
+lightning_logs
+penv
