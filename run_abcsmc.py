@@ -34,7 +34,7 @@ CONFIG = {
         'dropout': 0.0
     },
     'abc': {
-        'num_particles': 20000
+        'num_particles': 1000
     },
     'paths': {
         'checkpoint': Path('/home/jp4474/latent-abc-smc/checkpoints/lotka-volterra-epoch=295-val_loss=0.41.ckpt'),

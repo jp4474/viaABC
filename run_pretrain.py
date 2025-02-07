@@ -18,7 +18,7 @@ from lightning.pytorch.loggers import NeptuneLogger
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description='Train Lotka-Volterra model')
     parser.add_argument('--batch_size', type=int, default=768, help='Batch size for training and validation.')
-    parser.add_argument('--max_epochs', type=int, default=500, help='Maximum number of epochs to train.')
+    parser.add_argument('--max_epochs', type=int, default=200, help='Maximum number of epochs to train.')
     parser.add_argument('--seed', type=int, default=42, help='Random seed for reproducibility.')
     parser.add_argument('--learning_rate', type=float, default=1e-4, help='Learning rate for the optimizer.')
     parser.add_argument('--data_dir', type=str, default='data', help='Directory containing the dataset.')
@@ -94,7 +94,7 @@ def main():
         train_dataloader, val_dataloader = create_dataloaders(args.data_dir, args.batch_size)
 
         # Get data shape from the dataset
-        sample_data = train_dataloader.dataset[0]  # Assumes dataset returns (seq_len, in_chans)
+        sample_data = train_dataloader.dataset[0][1]  # Assumes dataset returns (seq_len, in_chans)
         seq_len, in_chans = sample_data.shape
 
         model = TiMAE(
@@ -151,7 +151,7 @@ def main():
             callbacks=[checkpoint_callback, lr_monitor, early_stop_callback],
             logger=logger,
             log_every_n_steps=10,
-            accumulate_grad_batches=1,
+            # accumulate_grad_batches=1,
             enable_progress_bar=False,
             precision="64-true",
             fast_dev_run=args.debug
