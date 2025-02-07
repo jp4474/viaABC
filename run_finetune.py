@@ -79,13 +79,13 @@ def main():
         checkpoint_callback = ModelCheckpoint(
             dirpath=args.dirpath,
             filename='fine_tune-{epoch:02d}-{val_loss:.2f}',
-            save_top_k=3,
+            save_top_k=1,
             monitor='val_loss',
             mode='min'
         )
 
         lr_monitor = LearningRateMonitor(logging_interval='epoch')
-        early_stop_callback = EarlyStopping(monitor="val_loss", patience=100, mode="min")
+        early_stop_callback = EarlyStopping(monitor="val_loss", patience=30, mode="min")
 
         api_token = os.getenv("NEPTUNE_API_TOKEN")
         if not api_token:

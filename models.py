@@ -622,4 +622,4 @@ class TiMAE(nn.Module):
         #self.eval()
         x, mask, ids_restore = self.forward_encoder(x, mask_ratio)
         latent = self.decoder_embed(x)
-        return latent[:, 1:, :] #.mean(dim=1)
+        return latent[:, 1:, :]

@@ -17,7 +17,7 @@ from lightning.pytorch.loggers import NeptuneLogger
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description='Train Lotka-Volterra model')
-    parser.add_argument('--batch_size', type=int, default=768, help='Batch size for training and validation.')
+    parser.add_argument('--batch_size', type=int, default=256, help='Batch size for training and validation.')
     parser.add_argument('--max_epochs', type=int, default=200, help='Maximum number of epochs to train.')
     parser.add_argument('--seed', type=int, default=42, help='Random seed for reproducibility.')
     parser.add_argument('--learning_rate', type=float, default=1e-4, help='Learning rate for the optimizer.')
@@ -120,13 +120,13 @@ def main():
         checkpoint_callback = ModelCheckpoint(
             dirpath=args.dirpath,
             filename='lotka-volterra-{epoch:02d}-{val_loss:.2f}',
-            save_top_k=3,
+            save_top_k=1,
             monitor='val_loss',
             mode='min'
         )
 
         lr_monitor = LearningRateMonitor(logging_interval='epoch')
-        early_stop_callback = EarlyStopping(monitor="val_loss", patience=100, mode="min")
+        early_stop_callback = EarlyStopping(monitor="val_loss", patience=30, mode="min")
 
         api_token = os.getenv("NEPTUNE_API_TOKEN")
         if not api_token:
