@@ -36,8 +36,9 @@ class FineTuneLightning(L.LightningModule):
     def __init__(self, model: nn.Module, latent_dim: int = 64, lr: float = 1e-4, num_parameters: int = 2):
         super().__init__()
         # self.save_hyperparameters()
-        
         self.model = model
+        self.finetuning = True
+        self.model.decoder_embed[1].finetuning = True
         self.lr = lr
         self.linear_layer = nn.Linear(latent_dim, num_parameters)
         self.criterion = nn.MSELoss()
@@ -66,3 +67,6 @@ class FineTuneLightning(L.LightningModule):
     def forward(self, inputs):
         logits = self.model.get_latent(inputs, mask_ratio=0).mean(dim=1)
         return self.linear_layer(logits)
+    
+    def get_latent(self, x, mask_ratio=0):
+        return self.model.get_latent(x, mask_ratio)

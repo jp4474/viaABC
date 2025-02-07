@@ -138,7 +138,7 @@ class Lambda(nn.Module):
         self.latent_mean = self.hidden_to_mean(cell_output)
         self.latent_logvar = self.hidden_to_logvar(cell_output)
 
-        if self.training:
+        if self.training and not hasattr(self, 'finetuning'):
             std = torch.exp(0.5 * self.latent_logvar)
             eps = torch.randn_like(std)
             return eps.mul(std).add_(self.latent_mean)
@@ -424,7 +424,7 @@ class TiMAE(nn.Module):
         if z_type == 'vanilla':
             self.decoder_embed = nn.Linear(embed_dim, decoder_embed_dim, bias=True)
         elif z_type == 'vae':
-            self.decoder_embed = nn.Sequential(torch.nn.Linear(embed_dim,decoder_embed_dim),
+            self.decoder_embed = nn.Sequential(torch.nn.Linear(embed_dim, decoder_embed_dim),
                                                Lambda(decoder_embed_dim, decoder_embed_dim))
         elif z_type == 'vq-vae':
             self.decoder_embed = nn.Sequential(torch.nn.Linear(embed_dim, decoder_embed_dim),
@@ -620,5 +620,6 @@ class TiMAE(nn.Module):
     #@torch.inference_mode()
     def get_latent(self, x, mask_ratio = 0):
         #self.eval()
-        latent, mask, ids_restore = self.forward_encoder(x, mask_ratio)
+        x, mask, ids_restore = self.forward_encoder(x, mask_ratio)
+        latent = self.decoder_embed(x)
         return latent[:, 1:, :] #.mean(dim=1)

@@ -117,7 +117,7 @@ def main():
         )
 
         trainer.fit(pl_model, train_dataloader, val_dataloader)
-        trainer.test(ckpt_path="best", test_dataloaders=test_dataloader)
+        # trainer.test(ckpt_path="best", test_dataloaders=test_dataloader)
 
     except Exception as e:
         print(f"Training failed: {str(e)}")
