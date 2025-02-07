@@ -442,28 +442,10 @@ class TiMAE(nn.Module):
         self.decoder_norm = norm_layer(decoder_embed_dim)
         self.decoder_pred = nn.Linear(decoder_embed_dim, in_chans, bias=True) # decoder to patch
 
+        self.norm_pix_loss = norm_pix_loss
+
         self.initialize_weights()
 
-    # def initialize_weights(self):
-    #     # initialization
-    #     # initialize (and freeze) pos_embed by sin-cos embedding
-    #     pos_embed = get_2d_sincos_pos_embed(self.pos_embed.shape[-1], int(self.patch_embed.num_patches**.5), cls_token=True)
-    #     self.pos_embed.data.copy_(torch.from_numpy(pos_embed).float().unsqueeze(0))
-
-    #     decoder_pos_embed = get_2d_sincos_pos_embed(self.decoder_pos_embed.shape[-1], int(self.patch_embed.num_patches**.5), cls_token=True)
-    #     self.decoder_pos_embed.data.copy_(torch.from_numpy(decoder_pos_embed).float().unsqueeze(0))
-
-    #     # initialize patch_embed like nn.Linear (instead of nn.Conv2d)
-    #     w = self.patch_embed.proj.weight.data
-    #     torch.nn.init.xavier_uniform_(w.view([w.shape[0], -1]))
-
-    #     # timm's trunc_normal_(std=.02) is effectively normal_(std=0.02) as cutoff is too big (2.)
-    #     if self.cls_embed
-    #         torch.nn.init.normal_(self.cls_token, std=.02)
-    #     torch.nn.init.normal_(self.mask_token, std=.02)
-
-    #     # initialize nn.Linear and nn.LayerNorm
-    #     self.apply(self._init_weights)
     def initialize_weights(self):
         pos_embed = PositionalEncoding(self.embed_dim, max_len=self.seq_len)
         self.pos_embed.data.copy_(pos_embed.pe.float())
@@ -569,32 +551,15 @@ class TiMAE(nn.Module):
         x = x[:, 1:, :]
 
         return x
-        
-    # def masking(self, x, mask_ids):
-    #     N, L, D = x.shape  # batch, length, dim
-    #     len_keep = L
 
-    #     ids_keep = 
-    #     ids_restore = 
-        
-    #     x_masked = torch.gather(x, dim=1, index=ids_keep.unsqueeze(-1).repeat(1, 1, D))
-
-    #     # generate the binary mask: 0 is keep, 1 is remove
-    #     mask = torch.ones([N, L], device=x.device)
-    #     mask[:, :len_keep] = 0
-    #     # unshuffle to get the binary mask
-    #     mask = torch.gather(mask, dim=1, index=ids_restore)
-
-    #     return x_masked, mask, ids_restore, ids_keep
-
-    def forward_loss(self, x, pred, mask, latent):
+    def forward_loss(self, x, pred, mask):
         """
         x: [N, W, L]
         pred: [N, L, W]
         mask: [N, W], 0 is keep, 1 is remove,
         """
         
-        # print(x.shape, pred.shape)
+        # # print(x.shape, pred.shape)
         if self.training:
             loss = torch.abs(pred - x)
             loss = torch.nan_to_num(loss, nan=10, posinf=10, neginf=10)
@@ -616,8 +581,18 @@ class TiMAE(nn.Module):
         
         return loss_removed , loss_seen #, forecast_loss, backcast_loss
 
+        # if self.norm_pix_loss:
+        #     mean = x.mean(dim=-1, keepdim=True)
+        #     var = x.var(dim=-1, keepdim=True)
+        #     x = (x - mean) / (var + 1e-6)**.5
 
-    def forward(self, x, mask_ratio = 0.75):
+        # loss = (pred - x) ** 2
+        # loss = loss.mean(dim=-1)  # [N, L], mean loss per timestamp
+
+        # loss = (loss * mask).sum() / mask.sum()  # mean loss on removed patches
+        # return loss
+
+    def forward(self, x, mask_ratio = 0.15):
         if mask_ratio is None:
             mask_ratio = self.mask_ratio
 
@@ -628,7 +603,7 @@ class TiMAE(nn.Module):
         
         latent, mask, ids_restore = self.forward_encoder(x, mask_ratio)
         pred = self.forward_decoder(latent, ids_restore)  # [N, L, p*p*3]
-        loss = self.forward_loss(x, pred, mask, latent)
+        loss = self.forward_loss(x, pred, mask)
 
         if self.z_type == 'vae':
             space_loss = torch.mean(-0.5 * torch.sum(1 + self.decoder_embed[1].latent_logvar \
@@ -642,8 +617,8 @@ class TiMAE(nn.Module):
         total_loss = loss[0] + loss[1] + self.lambda_ * space_loss
         return total_loss, pred
     
-    @torch.inference_mode()
+    #@torch.inference_mode()
     def get_latent(self, x, mask_ratio = 0):
-        self.eval()
+        #self.eval()
         latent, mask, ids_restore = self.forward_encoder(x, mask_ratio)
-        return latent[:, 1:, :]
+        return latent[:, 1:, :] #.mean(dim=1)

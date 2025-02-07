@@ -11,3 +11,6 @@ checkpoints
 data
 lightning_logs
 penv
+*.checkpoints
+*.ckpt
+*.yaml

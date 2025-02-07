@@ -7,7 +7,7 @@ import torch
 
 from models import TiMAE
 from lightning_module import CustomLightning
-from latent_abc_smc import LotkaVolterra
+from systems import *
 
 # Configure logging
 logging.basicConfig(

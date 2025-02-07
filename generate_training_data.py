@@ -1,6 +1,6 @@
 import argparse
 from typing import List
-from latent_abc_smc import LotkaVolterra
+from systems import *
 from lightning.pytorch import seed_everything
 
 def parse_arguments() -> argparse.Namespace:
