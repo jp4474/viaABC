@@ -1,6 +1,6 @@
 from latent_abc_smc import LatentABCSMC
 from scipy.integrate import solve_ivp
-from scipy.stats import gaussian_kde
+from scipy.stats import gaussian_kde, norm
 import numpy as np
 import torch
 import logging
@@ -9,8 +9,11 @@ import pandas as pd
 import time
 import math
 import os
+import warnings
+from tempfile import TemporaryFile
+
 from scipy.stats import qmc
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 class LotkaVolterra(LatentABCSMC):
     def __init__(self,
@@ -40,11 +43,26 @@ class LotkaVolterra(LatentABCSMC):
         dpredator = predator * (-gamma + delta * prey)
         return [dprey, dpredator]
     
-    def calculate_distance(self, y: np.ndarray, norm: int = 2):
-        # calcuclate cosine similarity
-        y = y.mean(1)
-        cosine_similarity = np.dot(self.encoded_observational_data.mean(1).flatten(), y.flatten()) / (np.linalg.norm(self.encoded_observational_data.mean(1).flatten()) * np.linalg.norm(y.flatten()))
-        return 1 - cosine_similarity
+    def calculate_distance(self, y: np.ndarray, norm: int = 2) -> float:
+        """
+        Calculate distance between encoded observational data and input vector y.
+        
+        Args:
+            y: Input vector to compare against
+            norm: Type of norm to use (1=Manhattan, 2=Euclidean, inf=Chebyshev)
+        
+        Returns:
+            float: Distance measure between 0 and 2
+        """
+        x = self.encoded_observational_data.flatten()
+        y = y.flatten()
+        
+        norm_x = np.linalg.norm(x)
+        norm_y = np.linalg.norm(y)
+            
+        cosine_similarity = np.dot(x, y) / (norm_x * norm_y)
+        # Clip to handle numerical errors
+        return 1-cosine_similarity
 
     def sample_priors(self):
         # Sample from the prior distribution
@@ -64,61 +82,6 @@ class LotkaVolterra(LatentABCSMC):
         parameters += perturbations
         return parameters
 
-class BCell(LatentABCSMC):
-    def __init__(self,
-        num_particles = 1000, 
-        num_generations = 5, 
-        num_parameters = 7, 
-        lower_bounds = np.array([0.01, 0.01, 0.01, 0.8, 0.1, 0.8, 8]), 
-        upper_bounds = np.array([0.5, 0.5, 0.5, 0.3, 0.3, 0.3, 1.5]), 
-        perturbation_kernels = np.array([0.005, 0.005, 0.005, 0.1, 0.05, 0.1, 0.5]),
-        tolerance_levels = None,
-        model = None, 
-        observational_data = None,
-        state0 = None,
-        t0 = 4,
-        tmax = 34, 
-        time_space = None):
-        super().__init__(num_particles, num_generations, num_parameters, lower_bounds, upper_bounds, perturbation_kernels, observational_data, tolerance_levels, model, state0, t0, tmax, time_space)
-
-    def ode_system(self, t, state, parameters):
-        def CAR_negative_MZB(time):
-            M0 = math.exp(14.06)
-            nu = 0.0033
-            b0 = 20.58
-            return M0 * (1 + math.exp(-nu * (time - b0) ** 2))
-
-        def Total_FoB(time):
-            M0 = math.exp(16.7)
-            nu = 0.004
-            b0 = 20
-            return M0 * (1 + math.exp(-nu * (time - b0) ** 2))
-
-        alpha, beta, mu, delta, lambda_WT, lambda_N2KO = parameters
-
-        dydt = [
-            alpha * Total_FoB(t) - delta * state[0],  # CAR+ GCB (WT)
-            mu * Total_FoB(t) + beta * CAR_negative_MZB(t) - lambda_WT * state[1],  # CAR+ MZB (WT)
-            beta * CAR_negative_MZB(t) - lambda_N2KO * state[2]  # CAR+ MZB (N2KO)
-        ]
-
-        return dydt
-    
-    def __sample_priors(self, n = 1):
-        # Sample from the prior distribution
-        priors = np.random.uniform(self.lower_bounds, self.upper_bounds, (n, self.num_parameters))
-        return priors
-
-    def sample_priors(self):
-        # Sample from the prior distribution
-        priors = np.random.normal(self.lower_bounds, self.upper_bounds, self.num_parameters)
-        return priors
-    
-    def calculate_prior_prob(self, parameters):
-        # calculate pdf of normal distribution
-        pass
-
-
 class MZB(LatentABCSMC):
     def __init__(self,
         num_particles = 1000, 
@@ -131,8 +94,8 @@ class MZB(LatentABCSMC):
         model = None, 
         observational_data = None,
         state0 = None,
-        t0 = None,
-        tmax = None,
+        t0 = 40,
+        tmax = 732,
         time_space = np.array([59, 69, 76, 88, 95, 102, 108, 109, 113, 119, 122, 123, 124, 141, 156, 158, 183, 212, 217, 219, 235, 261, 270, 289, 291, 306, 442, 524, 563, 566, 731])):
         super().__init__(num_particles, num_generations, num_parameters, lower_bounds, upper_bounds, perturbation_kernels, observational_data, tolerance_levels, model, state0, t0, tmax, time_space)
 
@@ -141,11 +104,13 @@ class MZB(LatentABCSMC):
         priors = np.random.normal(self.lower_bounds, self.upper_bounds, self.num_parameters)
         return priors
     
-    def perturb_parameters(self, parameters):
-        # Perturb the parameters
-        perturbations = np.random.uniform(-self.perturbation_kernels, self.perturbation_kernels)
-        parameters += perturbations
-        return parameters
+    def perturb_parameters(self, parameters, previous_particles):
+        loc = parameters
+        scale = np.sqrt(2 * np.var(previous_particles, axis=0))
+        assert loc.shape == scale.shape, "loc and scale must have the same shape"
+
+        perturbed_parameters = np.random.normal(loc, scale)
+        return perturbed_parameters
     
     # Define the ODE system
     def ode_system(self, t, state, parameters):
@@ -178,32 +143,221 @@ class MZB(LatentABCSMC):
         rho = np.exp(rho_Log)
         delta = np.exp(delta_Log)
         kappa_0_value = kappa_0  # Assuming kappa_0 is also a frozen distribution
+
         y0 = [0.0, 0.0, y0 * kappa_0_value, y0 * (1 - kappa_0_value)]
         parameters = [phi, rho, delta, beta]
 
-        solution = solve_ivp(self.ode_system, [self.t0, self.tmax], y0=y0, t_eval=self.time_space, args=(parameters,))
+        with warnings.catch_warnings():
+            warnings.filterwarnings('error')
+
+            try:
+                solution = solve_ivp(self.ode_system, [self.t0, self.tmax], y0=y0, t_eval=self.time_space, args=(parameters,))
+                status = solution.status
+
+                if status != 0:
+                    return np.zeros((self.time_space.shape[0], 4)), status
+                
+                k_hat = solution.y.T
+                numsolve = len(k_hat)
+                MZ_counts_mean = np.zeros(numsolve)
+                donor_fractions_mean = np.zeros(numsolve)
+                donor_ki_mean = np.zeros(numsolve)
+                host_ki_mean = np.zeros(numsolve)
+                Nfd_mean = np.zeros(numsolve)
+
+                # Vectorized computation for efficiency
+                MZ_counts_mean = k_hat[:, 0] + k_hat[:, 1] + k_hat[:, 2] + k_hat[:, 3]
+                donor_fractions_mean = (k_hat[:, 0] + k_hat[:, 1]) / MZ_counts_mean
+                donor_ki_mean = np.divide(k_hat[:, 0], (k_hat[:, 0] + k_hat[:, 1]), out=np.zeros_like(k_hat[:, 0]), where=(k_hat[:, 0] != 0))
+                host_ki_mean = np.divide(k_hat[:, 2], (k_hat[:, 2] + k_hat[:, 3]), out=np.zeros_like(k_hat[:, 2]), where=(k_hat[:, 2] != 0))
+                Nfd_mean = donor_fractions_mean / 0.78
+
+                data = np.array([MZ_counts_mean, donor_ki_mean, host_ki_mean, Nfd_mean]).T
+                # scale = np.mean(np.abs(data), axis=0)
+                return data, status
+            except RuntimeWarning:
+                return np.zeros((self.time_space.shape[0], 4)), -1
+    
+    def __sample_priors(self, n: int = 1):
+        priors = np.random.normal(self.lower_bounds, self.upper_bounds, (n, self.num_parameters))
+        return priors
+
+    def __batch_simulations(self, num_simulations: int, prefix: str = "train", num_threads: int = 2):
+        """ This method should never be called directly; it is only used by the generate_training_data method. """
+        parameters = self.__sample_priors(n=num_simulations)
+        valid_params = []
+        valid_simulations = []
+
+        os.makedirs("data", exist_ok=True)  # Create directory if it doesn't exist
+
+        def run_simulation(i, param):
+            try:
+                simulation, status = self.simulate(param)
+                if status == 0:
+                    return i, simulation, param
+                else:
+                    self.logger.error(f"Simulation {i} failed with status: {status}")
+            except Exception as e:
+                self.logger.error(f"Simulation {i} failed with error: {e}")
+            return None
+
+        with ThreadPoolExecutor(max_workers=num_threads) as executor:
+            futures = [executor.submit(run_simulation, i, param) for i, param in enumerate(parameters)]
+            
+            for future in as_completed(futures):
+                result = future.result()
+                if result is not None:
+                    i, simulation, param = result
+                    valid_simulations.append(simulation)
+                    valid_params.append(param)
+
+        if valid_simulations:
+            valid_simulations = np.array(valid_simulations)
+            valid_params = np.array(valid_params)
+
+            self.logger.info(f"Saving {len(valid_simulations)} simulations to data.")
+            np.savez(f"data/{prefix}_data.npz", params=valid_params, simulations=valid_simulations)
+        else:
+            self.logger.warning("No valid simulations to save.")
+
+    def generate_training_data(self, num_simulations: list = [50000, 10000, 10000], seed: int = 1234):
+        np.random.seed(seed)
+        self.logger.info(f"Generating training data for training with seed {seed}")
+
+        prefix = ["train", "val", "test"]
+        total_time = 0  # Initialize the total time counter
         
-        k_hat = solution.y.T
-        numsolve = len(k_hat)
-        MZ_counts_mean = np.zeros(numsolve)
-        donor_fractions_mean = np.zeros(numsolve)
-        donor_ki_mean = np.zeros(numsolve)
-        host_ki_mean = np.zeros(numsolve)
-        Nfd_mean = np.zeros(numsolve)
+        for i, num_simulation in enumerate(num_simulations):
+            self.logger.info(f"Generating {num_simulation} simulations for training data")
+            start = time.time()
+            self.__batch_simulations(num_simulation, prefix=prefix[i])
+            end = time.time()
+            elapsed = end - start
+            total_time += elapsed
+            self.logger.info(f"Generated {num_simulation} simulations for training data in {elapsed:.2f} seconds")
 
-        for i in range(numsolve):
-            # total counts
-            MZ_counts_mean[i] = k_hat[i, 0] + k_hat[i, 1] + k_hat[i, 2] + k_hat[i, 3]
+        self.logger.info(f"Training data generation completed and saved. Total time taken: {total_time:.2f} seconds")
 
-            # donor fractions normalised with chimerism in the source
-            donor_fractions_mean[i] = (k_hat[i, 0] + k_hat[i, 1]) / MZ_counts_mean[i]
+    def calculate_distance(self, y: np.ndarray, norm: int = 2) -> float:
+        """
+        Calculate distance between encoded observational data and input vector y.
+        
+        Args:
+            y: Input vector to compare against
+            norm: Type of norm to use (1=Manhattan, 2=Euclidean, inf=Chebyshev)
+        
+        Returns:
+            float: Distance measure between 0 and 2
+        """
+        x = self.encoded_observational_data.flatten()
+        y = y.flatten()
+        
+        norm_x = np.linalg.norm(x)
+        norm_y = np.linalg.norm(y)
+            
+        cosine_similarity = np.dot(x, y) / (norm_x * norm_y)
+        # Clip to handle numerical errors
+        return 1-cosine_similarity
+    
+    def calculate_prior_prob(self, parameters):
+        # Calculate the prior probability using log-sum-exp trick for numerical stability
+        # Calculate log probabilities
+        log_probs = norm.logpdf(parameters, loc=self.lower_bounds, scale=self.upper_bounds)
+        
+        # Sum the log probabilities (equivalent to multiplying in normal space)  
+        log_sum = np.sum(log_probs)
+        
+        # Convert back to probability space
+        return np.exp(log_sum)
 
-            # fractions of ki67 positive cells in the donor compartment
-            donor_ki_mean[i] = 0 if k_hat[i, 0] == 0 else k_hat[i, 0] / (k_hat[i, 0] + k_hat[i, 1])
 
-            # fractions of ki67 positive cells in the host compartment
-            host_ki_mean[i] = 0 if k_hat[i, 2] == 0 else k_hat[i, 2] / (k_hat[i, 2] + k_hat[i, 3])
+    @torch.inference_mode()
+    def run(self):
+        if self.model is None:
+            raise ValueError("Model must be provided to encode the data and run the algorithm.")
+        
+        self.logger.info("Starting ABC SMC run")
+        total_num_simulations = 0
+        start_time = time.time()
+        self.encode_observational_data()
+        # numpy array of size num_particles x num_parameters
+        particles = np.ones((self.num_generations, self.num_particles, self.num_parameters))
+        weights = np.ones((self.num_generations, self.num_particles))
 
-            Nfd_mean[i] = donor_fractions_mean[i] / 0.78
+        for t in range(self.num_generations):
+            self.logger.info(f"Generation {t + 1} started")
+            start_time_generation = time.time()
+            generation_particles = []
+            generation_weights = []
+            accepted = 0
+            running_num_simulations = 0
+            epsilon = self.tolerance_levels[t]
+        
+            while accepted < self.num_particles:
+                if t == 0:
+                    # Step 4: Sample from prior in the first generation
+                    perturbed_params = self.sample_priors()
+                    new_weight = 1
+                    prior_probability = 1
+                else:
+                    # Step 6: Sample from the previous generation's particles with weights
+                    previous_particles = np.array(particles[t-1,:,:])
+                    previous_weights = np.array(weights[t-1,:])
 
-        return np.array([MZ_counts_mean, donor_ki_mean, host_ki_mean, Nfd_mean]).T
+                    idx = np.random.choice(len(previous_particles), p=previous_weights)
+
+                    # Step 7: Perturb parameters and calculate the prior probability
+                    perturbed_params = self.perturb_parameters(previous_particles[idx], previous_particles)
+
+                    # Step 8: If prior probability of the perturbed parameters is 0, resample
+                    prior_probability = self.calculate_prior_prob(perturbed_params)
+                    if prior_probability <= 0:
+                        continue # Go back to sampling if prior probability is 0
+
+                    # Convert to np.float128 for better numerical precision
+                    thetaLogWeight = np.longdouble(np.log(prior_probability)) - np.longdouble(gaussian_kde(previous_particles.T, weights=previous_weights).logpdf(perturbed_params))
+                    new_weight = np.exp(thetaLogWeight, dtype=np.longdouble)
+
+                # Step 9: Simulate the ODE system and encode the data
+                y, status = self.simulate(perturbed_params)
+                scale = np.mean(np.abs(y), axis=0)
+                y_scaled = y / scale
+
+                if status != 0:
+                    continue # Go back to sampling if simulation failed
+
+                total_num_simulations += 1
+                running_num_simulations += 1
+                y_tensor = torch.tensor(y_scaled, dtype=torch.float32).unsqueeze(0).to(self.model.device)
+                y_latent_np = self.model.get_latent(y_tensor).cpu().numpy()
+
+                # Step 10: Compute the distance and check if it's within the tolerance
+                dist = self.calculate_distance(y_latent_np)
+
+                if dist >= epsilon:
+                    continue  # Go back to sampling if distance is not small enough
+                
+                # Step 11: Accept the particle and store it
+                accepted += 1
+                generation_particles.append(perturbed_params)
+                generation_weights.append(new_weight)
+
+            # Step 12: Normalize weights for the current generation
+            generation_weights /= np.sum(generation_weights, axis=0)
+            particles[t] = np.array(generation_particles)
+            weights[t] = np.array(generation_weights).flatten()
+            end_time_generation = time.time()
+            duration_generation = end_time_generation - start_time_generation
+            duration = end_time_generation - start_time_generation
+            mean_est = np.average(particles[t], weights=weights[t], axis=0)
+            self.logger.info(f"Generation {t + 1} Completed. Accepted {self.num_particles} particles in {duration_generation:.2f} seconds with {running_num_simulations} total simulations.")
+            self.logger.info(f"Mean estimate: {mean_est}")
+
+        self.particles = particles
+        self.weights = weights
+
+        end_time = time.time()
+        duration = end_time - start_time
+        self.logger.info(f"ABC SMC run completed in {duration:.2f} seconds with {total_num_simulations} total simulations.")
+
+        return particles, weights

@@ -12,8 +12,11 @@ class NumpyDataset(Dataset):
         # Load data
         self.simulations = [np.load(os.path.join(data_dir, f)) 
                            for f in self.files if f.startswith(prefix + '_' + 'simulations')][0]
+        
         self.params = [np.load(os.path.join(data_dir, f)) 
                       for f in self.files if f.startswith(prefix + '_' + 'params')][0]
+        
+        self.scales = np.abs(self.simulations).mean(axis=1)
 
     def __len__(self):
         return len(self.simulations)
@@ -21,9 +24,12 @@ class NumpyDataset(Dataset):
     def __getitem__(self, idx):
         x = self.params[idx]
         y = self.simulations[idx]
+        scale = self.scales[idx]
         
         # Convert to torch tensors
         x = torch.from_numpy(x).to(torch.float64)
         y = torch.from_numpy(y).to(torch.float64)
 
-        return x, y
+        y_scaled = y / scale
+
+        return x, y_scaled

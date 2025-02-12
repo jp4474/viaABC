@@ -18,9 +18,9 @@ from lightning.pytorch.loggers import NeptuneLogger
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description='Train Lotka-Volterra model')
     parser.add_argument('--batch_size', type=int, default=32, help='Batch size for training and validation.')
-    parser.add_argument('--max_epochs', type=int, default=10, help='Maximum number of epochs to train.')
+    parser.add_argument('--max_epochs', type=int, default=5, help='Maximum number of epochs to train.')
     parser.add_argument('--seed', type=int, default=42, help='Random seed for reproducibility.')
-    parser.add_argument('--learning_rate', type=float, default=1e-4, help='Learning rate for the optimizer.')
+    parser.add_argument('--learning_rate', type=float, default=2e-5, help='Learning rate for the optimizer.')
     parser.add_argument('--data_dir', type=str, default='data', help='Directory containing the dataset.')
     parser.add_argument('--dirpath', type=str, default='checkpoints', help='Directory to save checkpoints.')
     parser.add_argument('--debug', action='store_true', help='Debug mode in Trainer.')
@@ -78,7 +78,7 @@ def main():
 
         checkpoint_callback = ModelCheckpoint(
             dirpath=args.dirpath,
-            filename='fine_tune-{epoch:02d}-{val_loss:.2f}',
+            filename='kan_fine_tune-{epoch:02d}-{val_loss:.2f}',
             save_top_k=1,
             monitor='val_loss',
             mode='min'

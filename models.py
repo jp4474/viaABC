@@ -138,198 +138,12 @@ class Lambda(nn.Module):
         self.latent_mean = self.hidden_to_mean(cell_output)
         self.latent_logvar = self.hidden_to_logvar(cell_output)
 
-        if self.training and not hasattr(self, 'finetuning'):
+        if self.training: #and not hasattr(self, 'finetuning'):
             std = torch.exp(0.5 * self.latent_logvar)
             eps = torch.randn_like(std)
             return eps.mul(std).add_(self.latent_mean)
         else:
             return self.latent_mean
-
-# TODO:
-# class VectorQuantizer(base.Module):
-#   """Sonnet module representing the VQ-VAE layer.
-
-#   Implements the algorithm presented in
-#   'Neural Discrete Representation Learning' by van den Oord et al.
-#   https://arxiv.org/abs/1711.00937
-
-#   Input any tensor to be quantized. Last dimension will be used as space in
-#   which to quantize. All other dimensions will be flattened and will be seen
-#   as different examples to quantize.
-
-#   The output tensor will have the same shape as the input.
-
-#   For example a tensor with shape [16, 32, 32, 64] will be reshaped into
-#   [16384, 64] and all 16384 vectors (each of 64 dimensions)  will be quantized
-#   independently.
-
-#   Attributes:
-#     embedding_dim: integer representing the dimensionality of the tensors in the
-#       quantized space. Inputs to the modules must be in this format as well.
-#     num_embeddings: integer, the number of vectors in the quantized space.
-#     commitment_cost: scalar which controls the weighting of the loss terms (see
-#       equation 4 in the paper - this variable is Beta).
-#   """
-
-#   def __init__(self,
-#                embedding_dim: int,
-#                num_embeddings: int,
-#                commitment_cost: float,
-#                dtype: torch.dtype = torch.float32,
-#                name: str = 'vector_quantizer'):
-#     """Initializes a VQ-VAE module.
-
-#     Args:
-#       embedding_dim: dimensionality of the tensors in the quantized space.
-#         Inputs to the modules must be in this format as well.
-#       num_embeddings: number of vectors in the quantized space.
-#       commitment_cost: scalar which controls the weighting of the loss terms
-#         (see equation 4 in the paper - this variable is Beta).
-#       dtype: dtype for the embeddings variable, defaults to tf.float32.
-#       name: name of the module.
-#     """
-#     super().__init__(name=name)
-#     self.embedding_dim = embedding_dim
-#     self.num_embeddings = num_embeddings
-#     self.commitment_cost = commitment_cost
-
-#     self.embeddings = nn.Embedding(num_embeddings, embedding_dim)
-#     nn.init.kaiming_uniform_(self.embeddings.weight)
-
-#   def __call__(self, inputs, is_training):
-#     """Connects the module to some inputs.
-
-#     Args:
-#       inputs: Tensor, final dimension must be equal to embedding_dim. All other
-#         leading dimensions will be flattened and treated as a large batch.
-#       is_training: boolean, whether this connection is to training data.
-
-#     Returns:
-#       dict containing the following keys and values:
-#         quantize: Tensor containing the quantized version of the input.
-#         loss: Tensor containing the loss to optimize.
-#         perplexity: Tensor containing the perplexity of the encodings.
-#         encodings: Tensor containing the discrete encodings, ie which element
-#         of the quantized space each input element was mapped to.
-#         encoding_indices: Tensor containing the discrete encoding indices, ie
-#         which element of the quantized space each input element was mapped to.
-#     """
-
-#     flat_inputs = rearrange(inputs, 'b l d -> (b l) d')  # [B x L x D] -> [BL x D]
-
-#     distances = ( 
-#         torch.sum(flat_inputs ** 2, dim=1, keepdim=True) -
-#         2 * torch.matmul(flat_inputs, self.embeddings.weight) +
-#         torch.sum(self.embeddings.weight ** 2, dim=1, keepdim=True))
-    
-#     encoding_indices = torch.argmax(-distances, dim=1).unsqueeze(1)
-
-#     encodings_one_hot = torch.zeros(encoding_indices.shape[0], self.num_embeddings, device=inputs.device)
-#     encodings_one_hot.scatter_(1, encoding_indices, 1)  # [BL x K]
-
-#     # NB: if your code crashes with a reshape error on the line below about a
-#     # Tensor containing the wrong number of values, then the most likely cause
-#     # is that the input passed in does not have a final dimension equal to
-#     # self.embedding_dim. Ideally we would catch this with an Assert but that
-#     # creates various other problems related to device placement / TPUs.
-#     encoding_indices = tf.reshape(encoding_indices, tf.shape(inputs)[:-1])
-#     quantized = self.quantize(encoding_indices)
-
-#     e_latent_loss = tf.reduce_mean((tf.stop_gradient(quantized) - inputs)**2)
-#     q_latent_loss = tf.reduce_mean((quantized - tf.stop_gradient(inputs))**2)
-#     loss = q_latent_loss + self.commitment_cost * e_latent_loss
-
-#     # Straight Through Estimator
-#     quantized = inputs + tf.stop_gradient(quantized - inputs)
-#     avg_probs = tf.reduce_mean(encodings, 0)
-#     perplexity = tf.exp(-tf.reduce_sum(avg_probs *
-#                                        tf.math.log(avg_probs + 1e-10)))
-
-#     return {
-#         'quantize': quantized,
-#         'loss': loss,
-#         'perplexity': perplexity,
-#         'encodings': encodings,
-#         'encoding_indices': encoding_indices,
-#         'distances': distances,
-#     }
-
-#   def quantize(self, encoding_indices):
-#     """Returns embedding tensor for a batch of indices."""
-#     w = tf.transpose(self.embeddings, [1, 0])
-#     # TODO(mareynolds) in V1 we had a validate_indices kwarg, this is no longer
-#     # supported in V2. Are we missing anything here?
-#     return tf.nn.embedding_lookup(w, encoding_indices)
-
-# class VectorQuantizer(nn.Module):
-#     def __init__(self, embedding_dim, num_embeddings, commitment_cost: float = 0.25):
-#         """
-#         Initializes a VQ-VAE module.
-        
-#         Args:
-#             embedding_dim: Dimensionality of the tensors in the quantized space.
-#             num_embeddings: Number of vectors in the quantized space.
-#             commitment_cost: Scalar controlling the weighting of the loss terms.
-#         """
-#         super(VectorQuantizer, self).__init__()
-#         self.embedding_dim = embedding_dim
-#         self.num_embeddings = num_embeddings
-#         self.commitment_cost = commitment_cost
-
-#         # Embedding layer with uniform initialization
-#         self.embeddings = nn.Embedding(num_embeddings, embedding_dim)
-#         self.embeddings.weight.data.uniform_(-1 / num_embeddings, 1 / num_embeddings)
-
-#     def forward(self, inputs):
-#         """
-#         Forward pass for vector quantization.
-        
-#         Args:
-#             inputs: Tensor with shape [..., embedding_dim].
-        
-#         Returns:
-#             A dictionary containing:
-#                 'quantize': Quantized tensor.
-#                 'loss': VQ loss.
-#                 'perplexity': Perplexity of encodings.
-#                 'encodings': One-hot encoded assignment matrix.
-#                 'encoding_indices': Indices of closest embeddings.
-#         """
-#         # Flatten inputs
-#         flat_inputs = inputs.view(-1, self.embedding_dim)
-        
-#         # Compute distances between input and embeddings
-#         distances = (torch.sum(flat_inputs ** 2, dim=1, keepdim=True) 
-#                      - 2 * torch.matmul(flat_inputs, self.embeddings.weight.t()) 
-#                      + torch.sum(self.embeddings.weight ** 2, dim=1))
-        
-#         # Get encoding indices and encodings
-#         encoding_indices = torch.argmin(distances, dim=1)
-#         encodings = F.one_hot(encoding_indices, self.num_embeddings).float()
-        
-#         # Quantize
-#         quantized = self.embeddings(encoding_indices).view(inputs.shape)
-        
-#         # Compute loss
-#         e_latent_loss = F.mse_loss(quantized.detach(), inputs)
-#         q_latent_loss = F.mse_loss(quantized, inputs.detach())
-#         loss = q_latent_loss + self.commitment_cost * e_latent_loss
-        
-#         # Straight-Through Estimator
-#         quantized = inputs + (quantized - inputs).detach()
-        
-#         # Compute perplexity
-#         avg_probs = torch.mean(encodings, dim=0)
-#         perplexity = torch.exp(-torch.sum(avg_probs * torch.log(avg_probs + 1e-10)))
-        
-#         return {
-#             'quantize': quantized,
-#             'loss': loss,
-#             'perplexity': perplexity,
-#             'encodings': encodings,
-#             'encoding_indices': encoding_indices,
-#             'distances': distances
-#         }
 
 class VectorQuantizer(nn.Module):
     """
@@ -383,7 +197,7 @@ class VectorQuantizer(nn.Module):
 class TiMAE(nn.Module):
     def __init__(self, seq_len: int, in_chans: int, embed_dim: int, depth: int, num_heads: int, 
                  decoder_embed_dim: int, decoder_depth: int, decoder_num_heads: int, mlp_ratio: float = 4.0, 
-                 norm_layer=nn.LayerNorm, norm_pix_loss=False, z_type = 'vanila',  cls_embed = True, dropout = 0.1, 
+                 norm_layer=nn.LayerNorm, norm_pix_loss=False, z_type = 'vanilla',  cls_embed = True, dropout = 0.1, 
                  mask_ratio = 0.15, diagonal_attention=False, lambda_=0.00025, scale_mode = "adaptive_scale", bag_size = 1024,
                  differential_attention = False):
         super().__init__()
@@ -401,7 +215,7 @@ class TiMAE(nn.Module):
         self.lambda_ = lambda_
         self.decoder_embed_dim = decoder_embed_dim
         
-        self.scaler_layer = DAIN_Layer(scale_mode, input_dim=in_chans)
+        # self.scaler_layer = DAIN_Layer(scale_mode, input_dim=in_chans)
 
         # self.src_mask = None if not diagonal_attention else torch.ones(
         #     (int(seq_len*(1 - mask_ratio) + int(cls_embed)), 
@@ -414,8 +228,9 @@ class TiMAE(nn.Module):
         # self.pos_embed = PositionalEncoding(embed_dim, max_len=seq_len)
 
         self.blocks = nn.ModuleList([
-            Block(embed_dim, num_heads, mlp_ratio, qkv_bias=True, norm_layer=norm_layer)
+            Block(embed_dim, num_heads, mlp_ratio, qkv_bias=True, norm_layer=norm_layer, drop_path=dropout)
             for i in range(depth)])
+        
         self.norm = norm_layer(embed_dim)
         # --------------------------------------------------------------------------
 
@@ -424,8 +239,10 @@ class TiMAE(nn.Module):
         if z_type == 'vanilla':
             self.decoder_embed = nn.Linear(embed_dim, decoder_embed_dim, bias=True)
         elif z_type == 'vae':
-            self.decoder_embed = nn.Sequential(torch.nn.Linear(embed_dim, decoder_embed_dim),
-                                               Lambda(decoder_embed_dim, decoder_embed_dim))
+            self.decoder_embed = Lambda(embed_dim, decoder_embed_dim)
+            
+            # nn.Sequential(torch.nn.Linear(embed_dim, decoder_embed_dim),
+            #                                    Lambda(decoder_embed_dim, decoder_embed_dim))
         elif z_type == 'vq-vae':
             self.decoder_embed = nn.Sequential(torch.nn.Linear(embed_dim, decoder_embed_dim),
                                                VectorQuantizer(bag_size, decoder_embed_dim))
@@ -436,7 +253,7 @@ class TiMAE(nn.Module):
         # self.decoder_pos_embed = PositionalEncoding(decoder_embed_dim, max_len=seq_len)
 
         self.decoder_blocks = nn.ModuleList([
-            Block(decoder_embed_dim, decoder_num_heads, mlp_ratio, qkv_bias=True, norm_layer=norm_layer)
+            Block(decoder_embed_dim, decoder_num_heads, mlp_ratio, qkv_bias=True, norm_layer=norm_layer, drop_path=dropout)
             for i in range(decoder_depth)])
 
         self.decoder_norm = norm_layer(decoder_embed_dim)
@@ -507,7 +324,7 @@ class TiMAE(nn.Module):
         # unshuffle to get the binary mask
         mask = torch.gather(mask, dim=1, index=ids_restore)
 
-        return x_masked, mask, ids_restore, ids_keep
+        return x_masked, mask, ids_restore
     
     def forward_encoder(self, x, mask_ratio):
         # embed into higher dimension
@@ -515,7 +332,7 @@ class TiMAE(nn.Module):
 
         x = x + self.pos_embed[:, 1:, :]
 
-        x, mask, ids_restore, ids_keep = self.random_masking(x, mask_ratio)
+        x, mask, ids_restore = self.random_masking(x, mask_ratio)
 
         # append cls token
         cls_token = self.cls_token + self.pos_embed[:, :1, :]
@@ -592,13 +409,13 @@ class TiMAE(nn.Module):
         # loss = (loss * mask).sum() / mask.sum()  # mean loss on removed patches
         # return loss
 
-    def forward(self, x, mask_ratio = 0.15):
+    def forward(self, x, mask_ratio = None):
         if mask_ratio is None:
             mask_ratio = self.mask_ratio
 
         # TODO: sample noise from normal (0, 0.5) and experiment with adding noise
         # if self.training:
-        #     noise = torch.randn_like(x) * 0.5
+        #     noise = torch.randn_like(x) * np.random.uniform(0, 0.5)
         #     x = x + noise
         
         latent, mask, ids_restore = self.forward_encoder(x, mask_ratio)
@@ -606,20 +423,72 @@ class TiMAE(nn.Module):
         loss = self.forward_loss(x, pred, mask)
 
         if self.z_type == 'vae':
-            space_loss = torch.mean(-0.5 * torch.sum(1 + self.decoder_embed[1].latent_logvar \
-                                                     - self.decoder_embed[1].latent_mean ** 2 \
-                                                        - self.decoder_embed[1].latent_logvar.exp(), dim = -1), dim = -1).mean(0)
+            space_loss = torch.mean(-0.5 * torch.sum(1 + self.decoder_embed.latent_logvar \
+                                                     - self.decoder_embed.latent_mean ** 2 \
+                                                        - self.decoder_embed.latent_logvar.exp(), dim = -1), dim = -1).mean(0)
         elif self.z_type == 'vq-vae':
             space_loss = self.decoder_embed[1].vq_loss
         else:
             space_loss = 0
+
+        kld_weight = x.shape[0]/50000
         
-        total_loss = loss[0] + loss[1] + self.lambda_ * space_loss
+        total_loss = loss[0] + loss[1] + self.lambda_ * kld_weight * space_loss
         return total_loss, pred
     
     #@torch.inference_mode()
-    def get_latent(self, x, mask_ratio = 0):
-        #self.eval()
-        x, mask, ids_restore = self.forward_encoder(x, mask_ratio)
-        latent = self.decoder_embed(x)
-        return latent[:, 1:, :]
+    def get_latent(self, x, mask_id = None):
+        x = self.embedder(x)
+        x = x + self.pos_embed[:, 1:, :]
+
+        if mask_id is None:
+            mask_id = torch.zeros(x.shape[0], x.shape[1], device=x.device, dtype=torch.bool)
+        
+        x, _, ids_restore = self.mask_using_id(x, mask_id)
+        
+        # append cls token
+        cls_token = self.cls_token + self.pos_embed[:, :1, :]
+        cls_tokens = cls_token.expand(x.shape[0], -1, -1)
+        x = torch.cat((cls_tokens, x), dim=1)
+
+        for blk in self.blocks:
+            x = blk(x)
+        
+        x = self.norm(x)
+        x = self.decoder_embed(x)
+
+        return x[:, 1:, :]
+    
+    def mask_using_id(self, x, mask_id):
+        """
+        Perform masking based on the provided boolean mask_id.
+        x: [N, L, D], sequence
+        mask_id: [N, L], boolean array where True indicates the element should be masked.
+        """
+        N, L, D = x.shape
+        assert mask_id.shape == (N, L), "mask_id must have shape (N, L)"
+        assert mask_id.dtype == torch.bool, "mask_id must be a boolean tensor"
+
+        # Calculate the number of elements to keep (assumes same for all samples in the batch)
+        len_keep = (~mask_id).sum(dim=1)
+        assert torch.all(len_keep == len_keep[0]), "All samples must have the same number of kept tokens"
+        len_keep = len_keep[0].item()
+
+        # Sort the mask_id to get indices where False (keep) come first, then True (mask)
+        # Convert to int for argsort as PyTorch's argsort doesn't support boolean tensors
+        ids_shuffle = torch.argsort(mask_id.int(), dim=1)
+        ids_restore = torch.argsort(ids_shuffle, dim=1)
+
+        # Keep the first len_keep indices
+        ids_keep = ids_shuffle[:, :len_keep]
+
+        # Gather the kept elements
+        x_masked = torch.gather(x, dim=1, index=ids_keep.unsqueeze(-1).expand(-1, -1, D))
+
+        # Generate the binary mask: 0 is keep, 1 is remove
+        # Start with all 1s, set the first len_keep to 0, then unshuffle with ids_restore
+        mask = torch.ones((N, L), device=x.device)
+        mask[:, :len_keep] = 0
+        mask = torch.gather(mask, dim=1, index=ids_restore)
+
+        return x_masked, mask, ids_restore

@@ -66,7 +66,6 @@ def get_1d_sincos_pos_embed_from_grid(embed_dim, pos):
     emb = np.concatenate([emb_sin, emb_cos], axis=1)  # (M, D)
     return emb
 
-
 # --------------------------------------------------------
 # Interpolate position embeddings for high-resolution
 # References:

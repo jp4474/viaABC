@@ -16,9 +16,9 @@ import neptune
 from lightning.pytorch.loggers import NeptuneLogger
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description='Train Lotka-Volterra model')
+    parser = argparse.ArgumentParser(description='Train MZB Cell Analysis model')
     parser.add_argument('--batch_size', type=int, default=256, help='Batch size for training and validation.')
-    parser.add_argument('--max_epochs', type=int, default=200, help='Maximum number of epochs to train.')
+    parser.add_argument('--max_epochs', type=int, default=400, help='Maximum number of epochs to train.')
     parser.add_argument('--seed', type=int, default=42, help='Random seed for reproducibility.')
     parser.add_argument('--learning_rate', type=float, default=1e-4, help='Learning rate for the optimizer.')
     parser.add_argument('--data_dir', type=str, default='data', help='Directory containing the dataset.')
@@ -30,7 +30,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--decoder_depth', type=int, default=1, help='Depth of the decoder.')
     parser.add_argument('--mask_ratio', type=float, default=0.15, help='Masking ratio for the input data.')
     parser.add_argument('--dropout', type=float, default=0.1, help='Dropout rate.')
-    parser.add_argument('--beta', type=float, default=0.00025, help='Beta parameter for the VAE loss.')
+    parser.add_argument('--beta', type=float, default=4, help='Beta parameter for the VAE loss.')
     parser.add_argument('--type', type=str, default='vanilla', help='Type of model to use.')
     parser.add_argument('--dirpath', type=str, default='checkpoints', help='Directory to save checkpoints.')
     parser.add_argument('--debug', action='store_true', help='Debug mode in Trainer.')    
@@ -119,7 +119,7 @@ def main():
 
         checkpoint_callback = ModelCheckpoint(
             dirpath=args.dirpath,
-            filename='lotka-volterra-{epoch:02d}-{val_loss:.2f}',
+            filename='TiMAE-{epoch:02d}-{val_loss:.4f}',
             save_top_k=1,
             monitor='val_loss',
             mode='min'
@@ -135,7 +135,7 @@ def main():
         logger = NeptuneLogger(
             project="RaneLab/LatentABCSMC",
             api_token=api_token,
-            tags=["training", "lotka"],
+            tags=["training", "MZB"],
         )
 
         logger.log_hyperparams({
@@ -144,6 +144,7 @@ def main():
             "in_chans": in_chans
         })
 
+        # torch.set_float32_matmul_precision('highest')
         trainer = Trainer(
             max_epochs=args.max_epochs,
             accelerator='auto',

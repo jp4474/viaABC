@@ -1,15 +1,14 @@
 import argparse
 from typing import List
 from systems import *
-from lightning.pytorch import seed_everything
 
 def parse_arguments() -> argparse.Namespace:
     """Parse command line arguments."""
-    parser = argparse.ArgumentParser(description='Run Lotka-Volterra ABC-SMC simulation')
+    parser = argparse.ArgumentParser(description='Generate simulations')
     parser.add_argument('--train_sizes', 
                        type=int, 
                        nargs=3,
-                       default=[500000, 50000, 50000],
+                       default=[400000, 1000000, 1000000],
                        help='List of three integers for training data sizes')
     
     parser.add_argument('--seed', 
@@ -20,18 +19,20 @@ def parse_arguments() -> argparse.Namespace:
 
 def main(train_sizes: List[int], seed: int) -> None:
     """
-    Run the Lotka-Volterra simulation with specified parameters.
+    Run the simulation with specified parameters.
     
     Args:
         train_sizes: List of three integers specifying training data sizes
         seed: Random seed for reproducibility
     """
-    # Set seed for reproducibility
-    seed_everything(seed)
     
     # Initialize and run simulation
-    lotka_abc = LotkaVolterra()
-    lotka_abc.generate_training_data(train_sizes, seed=seed)
+    # lotka_abc = LotkaVolterra()
+    # lotka_abc.generate_training_data(train_sizes, seed=seed)
+
+    raw_data = np.load("data/mzb_data.npy")
+    mzb_abc = MZB(observational_data=raw_data)
+    mzb_abc.generate_training_data(train_sizes, seed=seed)
 
 if __name__ == "__main__":
     args = parse_arguments()

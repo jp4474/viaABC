@@ -5,17 +5,24 @@ This script implements the Sequential Monte Carlo (SMC) algorithm for Approximat
 Some code is referenced from https://github.com/Pat-Laub/approxbayescomp/blob/master/src/approxbayescomp/smc.py#L73
 """
 
-from scipy.integrate import solve_ivp
-from scipy.stats import gaussian_kde
-import numpy as np
-import torch
+# Standard library imports
 import logging
-from typing import Union
-import pandas as pd
-import time
 import os
-from scipy.stats import qmc
+import time
 from concurrent.futures import ThreadPoolExecutor
+from typing import Union
+
+# Third-party scientific computing
+import numpy as np
+import pandas as pd
+from scipy.integrate import solve_ivp
+from scipy.stats import gaussian_kde, qmc
+
+# Machine learning and visualization
+import torch
+import umap
+from tqdm import tqdm
+import matplotlib.pyplot as plt
 
 class LatentABCSMC:
     @torch.inference_mode()
@@ -144,17 +151,9 @@ class LatentABCSMC:
 
     def simulate(self, parameters: np.ndarray):
         # TODO: implement batch effect
-        # if self.batch_effect:
-        #     time_pairs = [(self.time_space[i], self.time_space[i + 1]) for i in range(len(self.time_space) - 1)]
-        #     solution = np.ones((self.time_space.shape[0], self.state0.shape[0]))
-        #     for (t0, tmax) in time_pairs:
-        #         y0 = self.raw_observational_data[t0,:]
-        #         interval_solution = solve_ivp(self.ode_system, [t0, tmax], y0=y0, t_eval=[t0, tmax], args=(parameters,))
-        #         solution[:,t0,:] = interval_solution.y.T
-        # else:
         if self.state0 is not None:
             solution = solve_ivp(self.ode_system, [self.t0, self.tmax], y0=self.state0, t_eval=self.time_space, args=(parameters,))
-            return solution.y.T
+            return solution.y.T, solution.status
 
     def sample_priors(self) -> np.ndarray:
         """
@@ -212,7 +211,7 @@ class LatentABCSMC:
     @torch.inference_mode()
     def encode_observational_data(self):
         self.encoded_observational_data = self.model.get_latent(torch.tensor(self.raw_observational_data, dtype=torch.float32).unsqueeze(0).to(self.model.device)).cpu().numpy()
-
+    
     @torch.inference_mode()
     def run(self):
         if self.model is None:
@@ -246,26 +245,25 @@ class LatentABCSMC:
                     previous_particles = np.array(particles[t-1,:,:])
                     previous_weights = np.array(weights[t-1,:])
 
-                    # params = np.ones((self.num_parameters,)) * 0
-                    # for j in range(self.num_parameters):
-                    #     idx = np.random.choice(len(previous_particles[:,j]), p=previous_weights[:,j])
-                    #     params[j] = previous_particles[idx][j]
-
                     idx = np.random.choice(len(previous_particles), p=previous_weights)
 
                     # Step 7: Perturb parameters and calculate the prior probability
-                    perturbed_params = self.perturb_parameters(previous_particles[idx])
+                    perturbed_params = self.perturb_parameters(previous_particles[idx], previous_particles)
 
                     # Step 8: If prior probability of the perturbed parameters is 0, resample
                     prior_probability = self.calculate_prior_prob(perturbed_params)
                     if prior_probability <= 0:
                         continue # Go back to sampling if prior probability is 0
 
-                    thetaLogWeight = np.log(prior_probability) - gaussian_kde(previous_particles.T, weights=previous_weights).logpdf(perturbed_params)
-                    new_weight = np.exp(thetaLogWeight)
+                    # Convert to np.float128 for better numerical precision
+                    thetaLogWeight = np.longdouble(np.log(prior_probability)) - np.longdouble(gaussian_kde(previous_particles.T, weights=previous_weights).logpdf(perturbed_params))
+                    new_weight = np.exp(thetaLogWeight, dtype=np.longdouble)
 
                 # Step 9: Simulate the ODE system and encode the data
-                y = self.simulate(perturbed_params)
+                y, status = self.simulate(perturbed_params)
+                if status != 0:
+                    continue # Go back to sampling if simulation failed
+
                 total_num_simulations += 1
                 running_num_simulations += 1
                 y_tensor = torch.tensor(y, dtype=torch.float32).unsqueeze(0).to(self.model.device)
@@ -337,33 +335,97 @@ class LatentABCSMC:
             self.logger.info(f"Median: {median}")
             self.logger.info(f"Std: {std}")
     
-    def visualize_generation(self, generation: int = -1):
-        # TODO: visualize the particles (parameter space) for the given generation
-        pass
+    def visualize_generation(self, generation: int = -1, save: bool = False):
+        fig, ax = plt.subplots(1, self.num_parameters, figsize=(6, 4))
 
-    def __visualize_latent_space_with_mini_batch(self, mini_batch):
-        mini_batch = torch.tensor(mini_batch, dtype=torch.float32).to(self.model.device)
-        latent = self.model.get_latent(mini_batch).cpu().numpy()
-        # TODO
+        # Plot histograms for Beta and Alpha
+        for i in range(self.num_parameters):
+            ax[i].hist(self.particles[generation][:, i], bins=20, alpha=0.7, label="Posterior")
+            ax[i].set_title(f'Parameter {i+1}')
+            ax[i].axvline(x=self.particles[generation][:, i].mean(), color='g', linestyle='--', label='Mean')
+            ax[i].legend()
 
-    def visualize_latent_space(self, batch):
+        # Set a title for the entire figure
+        fig.suptitle(f"Generation {i+1}")
+        
+        # Adjust layout to prevent overlap
+        plt.tight_layout()
+        plt.show()
+        
+        # Save the figure as a PNG file
+        if save:
+            if generation == -1:
+                generation = self.num_generations
+
+            os.makedirs("figures", exist_ok=True)
+            plt.savefig(f"figures/generation_{i+1}.png", dpi=100)
+        plt.close()
+
+    @torch.inference_mode()
+    def visualize_latent_space(self, dataloader):
+        """Implement UMAP to visualize the latent space"""
+        if self.model is None:
+            raise ValueError("Model must be provided to encode the data and run the algorithm.")
+        
+        # Set the model to evaluation mode
+        self.model.eval()
+        
+        # List to store latent representations
         latent_representations = []
-        # split batch into mini-batches
-        mini_batch_size = 1000
-        mini_batches = [batch[i:i + mini_batch_size] for i in range(0, len(batch), mini_batch_size)]
+        # labels = []  # Optional: if you want to color points by class
+        
+        # Iterate over the dataloader to get latent representations
+        for batch in tqdm(dataloader, desc="Extracting latent representations"):
+            x, y = batch 
+            y = y.to(self.model.device).float()
+            # Get latent representation
+            latent = self.model.get_latent(y)
+            latent_representations.append(latent.cpu())  # Move to CPU for UMAP
+            # labels.append(y.cpu())  # Optional: store labels for coloring
+        
+        # Concatenate all latent representations and labels
+        latent_representations = torch.cat(latent_representations, dim=0).numpy()
+        # labels = torch.cat(labels, dim=0).numpy()  # Optional: concatenate labels
+        
+        # Apply UMAP to reduce dimensionality to 2D
+        reducer = umap.UMAP(n_components=2, random_state=42)
+        umap_embedding = reducer.fit_transform(latent_representations)
+        
+        # Plot the UMAP embedding
+        plt.figure(figsize=(10, 8))
+        scatter = plt.scatter(umap_embedding[:, 0], umap_embedding[:, 1], cmap='Spectral', s=5)
+        plt.colorbar(scatter, label='Class')
+        plt.title('UMAP Visualization of Latent Space')
+        plt.xlabel('UMAP Component 1')
+        plt.ylabel('UMAP Component 2')
+        plt.show()
 
-        for mini_batch in mini_batches:
-            latent = self.__visualize_latent_space_with_mini_batch(mini_batch)
-            latent_representations.append(latent)
-
-        latent_representations = np.concatenate(latent_representations, axis=0)
-        pass # TODO
-
-
+    @torch.inference_mode()
     def visualize_latent_space_generation(self, generation: int = -1):
-        # TODO: impelemt umap to take in the particles at the given generation, simulate the ODE system, and visualize the latent space
-        # call visualize_latent_space method to reduce redundancy
-        pass
+        if generation == -1:
+            generation = self.num_generations - 1
+        
+        particles = self.particles[generation]
+        latent_representations = []
+
+        for params in particles:
+            y, status = self.simulate(params)
+            if status == 0:
+                y_tensor = torch.tensor(y, dtype=torch.float32).unsqueeze(0).to(self.model.device)
+                latent = self.model.get_latent(y_tensor)
+                latent_representations.append(latent.cpu().numpy())
+
+        latent_representations = np.array(latent_representations)
+        reducer = umap.UMAP(n_components=2, random_state=42)
+        umap_embedding = reducer.fit_transform(latent_representations)
+        
+        plt.figure(figsize=(10, 8))
+        scatter = plt.scatter(umap_embedding[:, 0], umap_embedding[:, 1], cmap='Spectral', s=5)
+        plt.colorbar(scatter, label='Class')
+        plt.title(f'UMAP Visualization of Latent Space for Generation {generation + 1}')
+        plt.xlabel('UMAP Component 1')
+        plt.ylabel('UMAP Component 2')
+        plt.show()
 
     def __sample_priors(self, n: int = 1):
         """Sample from prior distribution using Latin Hypercube Sampling"""
