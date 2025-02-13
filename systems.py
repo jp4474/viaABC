@@ -1,6 +1,6 @@
 from latent_abc_smc import LatentABCSMC
 from scipy.integrate import solve_ivp
-from scipy.stats import gaussian_kde, norm
+from scipy.stats import gaussian_kde, norm, uniform
 import numpy as np
 import torch
 import logging
@@ -20,7 +20,7 @@ class LotkaVolterra(LatentABCSMC):
         num_particles = 1000, 
         num_generations = 5, 
         num_parameters = 2, 
-        lower_bounds = np.array([1e-4, 1e-4]), 
+        lower_bounds = np.array([0, 0]), 
         upper_bounds = np.array([10, 10]), 
         perturbation_kernels = np.array([0.1, 0.1]), 
         tolerance_levels = np.array([0.2, 0.1, 0.05, 0.01, 0.005]), 
@@ -70,10 +70,7 @@ class LotkaVolterra(LatentABCSMC):
         return priors
     
     def calculate_prior_prob(self, parameters):
-        # Calculate the prior probability
-        # mask = (parameters > self.lower_bounds) & (parameters < self.upper_bounds)
-        # assert mask.all(), "Parameters must be within bounds"
-        probabilities = (parameters - self.lower_bounds) / (self.upper_bounds - self.lower_bounds)
+        probabilities = uniform.cdf(parameters, loc=self.lower_bounds, scale=self.upper_bounds)
         return np.prod(probabilities)
     
     def perturb_parameters(self, parameters):
@@ -100,17 +97,35 @@ class MZB(LatentABCSMC):
         super().__init__(num_particles, num_generations, num_parameters, lower_bounds, upper_bounds, perturbation_kernels, observational_data, tolerance_levels, model, state0, t0, tmax, time_space)
 
     def sample_priors(self):
-        # Sample from the prior distribution
-        priors = np.random.normal(self.lower_bounds, self.upper_bounds, self.num_parameters)
-        return priors
+        while True:
+            # Sample from the prior distribution
+            priors = np.random.normal(self.lower_bounds, self.upper_bounds, self.num_parameters)
+            
+            # Extract individual parameters
+            phi, y0_Log, kappa_0, rho_Log, beta, delta_Log = priors
+            
+            # Apply constraints
+            if (0 < phi < 1 and 
+                0 < kappa_0 < 1 and 
+                beta > 0):
+                # If all constraints are satisfied, return the priors
+                return priors
+            # If any constraint is violated, the loop will continue and resample
     
     def perturb_parameters(self, parameters, previous_particles):
         loc = parameters
         scale = np.sqrt(2 * np.var(previous_particles, axis=0))
         assert loc.shape == scale.shape, "loc and scale must have the same shape"
 
-        perturbed_parameters = np.random.normal(loc, scale)
-        return perturbed_parameters
+        while True:
+            perturbed_parameters = np.random.normal(loc, scale)
+            # Apply constraints
+            phi, y0_Log, kappa_0, rho_Log, beta, delta_Log = perturbed_parameters
+            if (0 < phi < 1 and
+                0 < kappa_0 < 1 and 
+                beta > 0):
+                # If all constraints are satisfied, return the perturbed parameters
+                return perturbed_parameters
     
     # Define the ODE system
     def ode_system(self, t, state, parameters):
@@ -151,13 +166,20 @@ class MZB(LatentABCSMC):
             warnings.filterwarnings('error')
 
             try:
-                solution = solve_ivp(self.ode_system, [self.t0, self.tmax], y0=y0, t_eval=self.time_space, args=(parameters,))
+                solution = solve_ivp(self.ode_system, [self.t0, self.tmax], y0=y0, t_eval=self.time_space, args=(parameters,), method="BDF")
                 status = solution.status
 
                 if status != 0:
                     return np.zeros((self.time_space.shape[0], 4)), status
                 
                 k_hat = solution.y.T
+                # Check if all values in k_hat are positive
+                if np.any(k_hat < 0):
+                    raise RuntimeWarning("All values in k_hat must be positive.")
+                
+                if np.any(k_hat > 1e8):
+                    raise RuntimeWarning("All values in k_hat must be less than 1e8.")
+
                 numsolve = len(k_hat)
                 MZ_counts_mean = np.zeros(numsolve)
                 donor_fractions_mean = np.zeros(numsolve)
@@ -168,8 +190,30 @@ class MZB(LatentABCSMC):
                 # Vectorized computation for efficiency
                 MZ_counts_mean = k_hat[:, 0] + k_hat[:, 1] + k_hat[:, 2] + k_hat[:, 3]
                 donor_fractions_mean = (k_hat[:, 0] + k_hat[:, 1]) / MZ_counts_mean
-                donor_ki_mean = np.divide(k_hat[:, 0], (k_hat[:, 0] + k_hat[:, 1]), out=np.zeros_like(k_hat[:, 0]), where=(k_hat[:, 0] != 0))
-                host_ki_mean = np.divide(k_hat[:, 2], (k_hat[:, 2] + k_hat[:, 3]), out=np.zeros_like(k_hat[:, 2]), where=(k_hat[:, 2] != 0))
+
+                # Calculate donor_ki_mean
+                donor_ki_mean = np.where(
+                    k_hat[:, 0] <= 1e-8,  # Condition: if k_hat[:, 0] <= 1e-8
+                    0,  # Value if condition is True
+                    np.divide(  # Value if condition is False
+                        k_hat[:, 0],
+                        (k_hat[:, 0] + k_hat[:, 1]),
+                        out=np.zeros_like(k_hat[:, 0]),
+                        where=((k_hat[:, 0] + k_hat[:, 1]) > 0)
+                    )
+                )
+
+                # Calculate host_ki_mean
+                host_ki_mean = np.where(
+                    k_hat[:, 2] <= 1e-8,  # Condition: if k_hat[:, 2] <= 1e-8
+                    0,  # Value if condition is True
+                    np.divide(  # Value if condition is False
+                        k_hat[:, 2],
+                        (k_hat[:, 2] + k_hat[:, 3]),
+                        out=np.zeros_like(k_hat[:, 2]),
+                        where=((k_hat[:, 2] + k_hat[:, 3]) > 0)  # Fixed: Use k_hat[:, 2] + k_hat[:, 3] instead of k_hat[:, 0] + k_hat[:, 1]
+                    )
+                )
                 Nfd_mean = donor_fractions_mean / 0.78
 
                 data = np.array([MZ_counts_mean, donor_ki_mean, host_ki_mean, Nfd_mean]).T
@@ -179,8 +223,25 @@ class MZB(LatentABCSMC):
                 return np.zeros((self.time_space.shape[0], 4)), -1
     
     def __sample_priors(self, n: int = 1):
-        priors = np.random.normal(self.lower_bounds, self.upper_bounds, (n, self.num_parameters))
-        return priors
+        valid_samples = []
+
+        sampler = qmc.LatinHypercube(d=6, seed=0)
+        while len(valid_samples) < n:
+            samples = sampler.random(n=n)
+            lower_bound = [0, 8, 0, -9, 1, -6]
+            upper_bound = [1, 20, 0.6, -1, 6.5, 0.5]
+            scaled_samples = qmc.scale(samples, lower_bound, upper_bound)
+            # priors = np.random.normal(self.lower_bounds, self.upper_bounds, (n, self.num_parameters))
+            priors = scaled_samples
+            for sample in priors:
+                phi, y0_Log, kappa_0, rho_Log, beta, delta_Log = sample
+                if (0 < phi < 1 and 
+                    0 < kappa_0 < 1 and 
+                    beta > 0):
+                    valid_samples.append(sample)
+            if len(valid_samples) >= n:
+                break
+        return np.array(valid_samples[:n])
 
     def __batch_simulations(self, num_simulations: int, prefix: str = "train", num_threads: int = 2):
         """ This method should never be called directly; it is only used by the generate_training_data method. """
@@ -311,23 +372,24 @@ class MZB(LatentABCSMC):
 
                     # Step 8: If prior probability of the perturbed parameters is 0, resample
                     prior_probability = self.calculate_prior_prob(perturbed_params)
-                    if prior_probability <= 0:
+                    if prior_probability <= 1e-6:
                         continue # Go back to sampling if prior probability is 0
 
                     # Convert to np.float128 for better numerical precision
-                    thetaLogWeight = np.longdouble(np.log(prior_probability)) - np.longdouble(gaussian_kde(previous_particles.T, weights=previous_weights).logpdf(perturbed_params))
+                    thetaLogWeight = np.log(prior_probability) - gaussian_kde(previous_particles.T, weights=previous_weights).logpdf(perturbed_params)
                     new_weight = np.exp(thetaLogWeight, dtype=np.longdouble)
 
                 # Step 9: Simulate the ODE system and encode the data
                 y, status = self.simulate(perturbed_params)
-                scale = np.mean(np.abs(y), axis=0)
-                y_scaled = y / scale
 
                 if status != 0:
                     continue # Go back to sampling if simulation failed
 
                 total_num_simulations += 1
                 running_num_simulations += 1
+
+                scale = np.mean(np.abs(y), axis=0)
+                y_scaled = y / scale
                 y_tensor = torch.tensor(y_scaled, dtype=torch.float32).unsqueeze(0).to(self.model.device)
                 y_latent_np = self.model.get_latent(y_tensor).cpu().numpy()
 
