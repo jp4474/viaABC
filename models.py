@@ -376,48 +376,42 @@ class TiMAE(nn.Module):
         mask: [N, W], 0 is keep, 1 is remove,
         """
         
-        # # print(x.shape, pred.shape)
-        if self.training:
-            loss = torch.abs(pred - x)
-            loss = torch.nan_to_num(loss, nan=10, posinf=10, neginf=10)
-            loss = torch.clamp(loss, max=10)
-            loss = loss.mean(dim=-1)  # [N, L], mean loss per timestamp
+        # # # print(x.shape, pred.shape)
+        # if self.training:
+        #     loss = torch.abs(pred - x)
+        #     loss = torch.nan_to_num(loss, nan=10, posinf=10, neginf=10)
+        #     loss = torch.clamp(loss, max=10)
+        #     loss = loss.mean(dim=-1)  # [N, L], mean loss per timestamp
 
-            inv_mask = (mask -1 ) ** 2
-            loss_removed = (loss * mask).sum() / mask.sum()  # mean loss on removed patches
-            loss_seen = (loss * inv_mask).sum() / inv_mask.sum()  # mean loss on seen patches
+        #     inv_mask = (mask -1 ) ** 2
+        #     loss_removed = (loss * mask).sum() / mask.sum()  # mean loss on removed patches
+        #     loss_seen = (loss * inv_mask).sum() / inv_mask.sum()  # mean loss on seen patches
 
-        else:
-            loss = torch.abs(pred - x)
-            loss = torch.nan_to_num(loss, nan=10, posinf=10, neginf=10)
-            loss = torch.clamp(loss, max=10)
-            loss = loss.mean(dim=-1)
+        # else:
+        #     loss = torch.abs(pred - x)
+        #     loss = torch.nan_to_num(loss, nan=10, posinf=10, neginf=10)
+        #     loss = torch.clamp(loss, max=10)
+        #     loss = loss.mean(dim=-1)
 
-            loss_removed = 0
-            loss_seen = loss.mean()
+        #     loss_removed = 0
+        #     loss_seen = loss.mean()
         
-        return loss_removed , loss_seen #, forecast_loss, backcast_loss
+        # return loss_removed , loss_seen #, forecast_loss, backcast_loss
 
-        # if self.norm_pix_loss:
-        #     mean = x.mean(dim=-1, keepdim=True)
-        #     var = x.var(dim=-1, keepdim=True)
-        #     x = (x - mean) / (var + 1e-6)**.5
+        # # if self.norm_pix_loss:
+        # #     mean = x.mean(dim=-1, keepdim=True)
+        # #     var = x.var(dim=-1, keepdim=True)
+        # #     x = (x - mean) / (var + 1e-6)**.5
 
-        # loss = (pred - x) ** 2
-        # loss = loss.mean(dim=-1)  # [N, L], mean loss per timestamp
-
-        # loss = (loss * mask).sum() / mask.sum()  # mean loss on removed patches
-        # return loss
+        loss = (pred - x) ** 2
+        loss = loss.mean(dim=-1)  # [N, L], mean loss per timestamp
+        loss = (loss * mask).sum() / mask.sum()  # mean loss on removed patches
+        return loss
 
     def forward(self, x, mask_ratio = None):
         if mask_ratio is None:
             mask_ratio = self.mask_ratio
-
-        # TODO: sample noise from normal (0, 0.5) and experiment with adding noise
-        # if self.training:
-        #     noise = torch.randn_like(x) * np.random.uniform(0, 0.5)
-        #     x = x + noise
-        
+            
         latent, mask, ids_restore = self.forward_encoder(x, mask_ratio)
         pred = self.forward_decoder(latent, ids_restore)  # [N, L, p*p*3]
         loss = self.forward_loss(x, pred, mask)
@@ -431,64 +425,75 @@ class TiMAE(nn.Module):
         else:
             space_loss = 0
 
-        kld_weight = x.shape[0]/50000
+        kld_weight = x.shape[0]/31210
         
-        total_loss = loss[0] + loss[1] + self.lambda_ * kld_weight * space_loss
+        total_loss = loss + self.lambda_ * kld_weight * space_loss
         return total_loss, pred
     
-    #@torch.inference_mode()
-    def get_latent(self, x, mask_id = None):
-        x = self.embedder(x)
-        x = x + self.pos_embed[:, 1:, :]
-
-        if mask_id is None:
-            mask_id = torch.zeros(x.shape[0], x.shape[1], device=x.device, dtype=torch.bool)
-        
-        x, _, ids_restore = self.mask_using_id(x, mask_id)
-        
-        # append cls token
-        cls_token = self.cls_token + self.pos_embed[:, :1, :]
-        cls_tokens = cls_token.expand(x.shape[0], -1, -1)
-        x = torch.cat((cls_tokens, x), dim=1)
-
-        for blk in self.blocks:
-            x = blk(x)
-        
-        x = self.norm(x)
+    def get_latent(self, x):
+        x, mask, ids_restore = self.forward_encoder(x, 0)
         x = self.decoder_embed(x)
-
+        mask_tokens = self.mask_token.repeat(x.shape[0], ids_restore.shape[1] + 1 - x.shape[1], 1)
+        x_ = torch.cat([x[:, 1:, :], mask_tokens], dim=1)  # no cls token
+        x_ = torch.gather(x_, dim=1, index=ids_restore.unsqueeze(-1).repeat(1, 1, x.shape[2]))  # unshuffle
+        x = torch.cat([x[:, :1, :], x_], dim=1)  # append cls token
         return x[:, 1:, :]
     
-    def mask_using_id(self, x, mask_id):
-        """
-        Perform masking based on the provided boolean mask_id.
-        x: [N, L, D], sequence
-        mask_id: [N, L], boolean array where True indicates the element should be masked.
-        """
-        N, L, D = x.shape
-        assert mask_id.shape == (N, L), "mask_id must have shape (N, L)"
-        assert mask_id.dtype == torch.bool, "mask_id must be a boolean tensor"
+    # def mask_using_id(self, x, mask_id):
+    #     """
+    #     Perform masking based on the provided boolean mask_id.
+    #     x: [N, L, D], sequence
+    #     mask_id: [N, L], boolean array where True indicates the element should be masked.
+    #     """
+    #     N, L, D = x.shape
+    #     assert mask_id.shape == (N, L), "mask_id must have shape (N, L)"
+    #     assert mask_id.dtype == torch.bool, "mask_id must be a boolean tensor"
 
-        # Calculate the number of elements to keep (assumes same for all samples in the batch)
-        len_keep = (~mask_id).sum(dim=1)
-        assert torch.all(len_keep == len_keep[0]), "All samples must have the same number of kept tokens"
-        len_keep = len_keep[0].item()
+    #     # Calculate the number of elements to keep (assumes same for all samples in the batch)
+    #     len_keep = (~mask_id).sum(dim=1)
+    #     assert torch.all(len_keep == len_keep[0]), "All samples must have the same number of kept tokens"
+    #     len_keep = len_keep[0].item()
 
-        # Sort the mask_id to get indices where False (keep) come first, then True (mask)
-        # Convert to int for argsort as PyTorch's argsort doesn't support boolean tensors
-        ids_shuffle = torch.argsort(mask_id.int(), dim=1)
-        ids_restore = torch.argsort(ids_shuffle, dim=1)
+    #     # Sort the mask_id to get indices where False (keep) come first, then True (mask)
+    #     # Convert to int for argsort as PyTorch's argsort doesn't support boolean tensors
+    #     ids_shuffle = torch.argsort(mask_id.int(), dim=1)
+    #     ids_restore = torch.argsort(ids_shuffle, dim=1)
 
-        # Keep the first len_keep indices
-        ids_keep = ids_shuffle[:, :len_keep]
+    #     # Keep the first len_keep indices
+    #     ids_keep = ids_shuffle[:, :len_keep]
 
-        # Gather the kept elements
-        x_masked = torch.gather(x, dim=1, index=ids_keep.unsqueeze(-1).expand(-1, -1, D))
+    #     # Gather the kept elements
+    #     x_masked = torch.gather(x, dim=1, index=ids_keep.unsqueeze(-1).expand(-1, -1, D))
 
-        # Generate the binary mask: 0 is keep, 1 is remove
-        # Start with all 1s, set the first len_keep to 0, then unshuffle with ids_restore
-        mask = torch.ones((N, L), device=x.device)
-        mask[:, :len_keep] = 0
-        mask = torch.gather(mask, dim=1, index=ids_restore)
+    #     # Generate the binary mask: 0 is keep, 1 is remove
+    #     # Start with all 1s, set the first len_keep to 0, then unshuffle with ids_restore
+    #     mask = torch.ones((N, L), device=x.device)
+    #     mask[:, :len_keep] = 0
+    #     mask = torch.gather(mask, dim=1, index=ids_restore)
 
-        return x_masked, mask, ids_restore
+    #     return x_masked, mask, ids_restore
+    
+    # def reconstruct(self, x, mask_id = None):
+    #     x = self.embedder(x)
+    #     x = x + self.pos_embed[:, 1:, :]
+
+    #     if mask_id is None:
+    #         mask_id = torch.zeros(x.shape[0], x.shape[1], device=x.device, dtype=torch.bool)
+        
+    #     x, _, ids_restore = self.mask_using_id(x, mask_id)
+        
+    #     # append cls token
+    #     cls_token = self.cls_token + self.pos_embed[:, :1, :]
+    #     cls_tokens = cls_token.expand(x.shape[0], -1, -1)
+    #     x = torch.cat((cls_tokens, x), dim=1)
+
+    #     for blk in self.blocks:
+    #         x = blk(x)
+        
+    #     x = self.norm(x)
+        
+    #     pred = self.forward_decoder(x, ids_restore)  # [N, L, p*p*3]
+
+    #     return pred
+
+
