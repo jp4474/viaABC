@@ -31,12 +31,17 @@ Example:
 To fine-tune the model,
 
 ```bash
-  python3 run_finetune.py --dirpath lotka_d18_ed9_3_1_vae_mask_0.75_beta_1_ --num_parameters 2 > lotka_d18_ed9_3_1_finetune.log 2>&1 &
+  python3 run_finetune.py
+--dirpath lotka_d18_ed9_3_1_vae_mask_0.75_beta_1_
+--num_parameters 2 > lotka_d18_ed9_3_1_finetune.log 2>&1
 ```
 
 # How to run ABC-SMC?
 ```bash
-  python3 run_abcsmc.py --path "lotka_d18_ed9_3_1_vae_mask_0.75_beta_1_" --tolerance_levels 0.2 0.15 0.1 0.05 0.01 --num_particles 1000 > lotka_d32_ed32_abc_mtm.log 2>&1 &
+  python3 run_abcsmc.py
+--path "lotka_d18_ed9_3_1_vae_mask_0.75_beta_1_"
+--tolerance_levels 0.2 0.15 0.1 0.05 0.01
+--num_particles 1000 > lotka_d32_ed32_abc_mtm.log 2>&1
 ```
 
 The implementation of LotkaVolterra class is based on 'Approximate Bayesian computation scheme for parameter inference and model selection in dynamical systems' [Toni et al., 2008].
