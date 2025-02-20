@@ -2,6 +2,7 @@
 
 LatentABCSMC implements a Sequential Monte Carlo (SMC) algorithm for Approximate Bayesian Computation (ABC). This Python class is designed to estimate posterior distributions of model parameters when direct likelihood calculations are infeasible due to computational constraints or the absence of explicit likelihood functions for the data. The algorithm extends the standard ABC-SMC framework by leveraging a pre-trained Variational Autoencoder (VAE) to encode data into a latent representation. This approach enables the computation of distances in the latent space, offering a more effective alternative to traditional summary statistics or conventional distance metrics.
 
+Theoretically, any VAE model can be used. In this paper, we use adopt Masked Autoencoder (https://arxiv.org/abs/2111.06377) for time-series data.
 
 # How to train?
 Configure your simulation in `latent_abc_smc.py` 
