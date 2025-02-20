@@ -9,8 +9,9 @@ Some code is referenced from https://github.com/Pat-Laub/approxbayescomp/blob/ma
 import logging
 import os
 import time
-from concurrent.futures import ThreadPoolExecutor
-from typing import Union
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+from typing import Union, List
 
 # Third-party scientific computing
 import numpy as np
@@ -27,14 +28,14 @@ import matplotlib.pyplot as plt
 class LatentABCSMC:
     @torch.inference_mode()
     def __init__(self,
-                num_particles: int, 
-                num_generations: int, 
+                #num_particles: int, 
+                #num_generations: int, 
                 num_parameters: int, 
                 lower_bounds: np.ndarray, 
                 upper_bounds: np.ndarray, 
                 perturbation_kernels: np.ndarray, 
                 observational_data: np.ndarray, 
-                tolerance_levels: np.ndarray, 
+                #tolerance_levels: np.ndarray, 
                 model: Union[torch.nn.Module, None],
                 state0: Union[np.ndarray, None],
                 t0: Union[int, None], 
@@ -104,15 +105,15 @@ class LatentABCSMC:
         else:
             self.encoded_observational_data = self.model(torch.tensor(self.raw_observational_data, dtype=torch.float32).unsqueeze(0))[1].cpu().numpy()
 
-        self.num_particles = num_particles
-        self.num_generations = num_generations
+        # self.num_particles = num_particles
+        # self.num_generations = num_generations
 
-        assert num_particles > 0, "Number of particles must be greater than 0"
-        assert num_generations > 0, "Number of generations must be greater than 0"
+        # assert num_particles > 0, "Number of particles must be greater than 0"
+        # assert num_generations > 0, "Number of generations must be greater than 0"
         
         # Validate tolerance
-        self.tolerance_levels = tolerance_levels
-        assert len(tolerance_levels) == num_generations, "Tolerance levels must match the number of generations"
+        # self.tolerance_levels = tolerance_levels
+        # assert len(tolerance_levels) == num_generations, "Tolerance levels must match the number of generations"
         
         self.num_parameters = num_parameters
         self.lower_bounds = lower_bounds
@@ -130,12 +131,10 @@ class LatentABCSMC:
         assert len(perturbation_kernels) == num_parameters, "Perturbation kernels must match the number of parameters"
         self.logger.info("Initialization complete")
         self.logger.info("LatentABCSMC class initialized with the following parameters:")
-        self.logger.info(f"num_particles: {num_particles}")
-        self.logger.info(f"num_generations: {num_generations}")
         self.logger.info(f"num_parameters: {num_parameters}")
         self.logger.info(f"lower_bounds: {lower_bounds}")
         self.logger.info(f"upper_bounds: {upper_bounds}")
-        self.logger.info(f"tolerance_levels: {tolerance_levels}")
+        #self.logger.info(f"tolerance_levels: {tolerance_levels}")
         self.logger.info(f"perturbation_kernels: {perturbation_kernels}")
         self.logger.info(f"t0: {t0}")
         self.logger.info(f"tmax: {tmax}")
@@ -210,21 +209,28 @@ class LatentABCSMC:
     
     @torch.inference_mode()
     def encode_observational_data(self):
-        self.encoded_observational_data = self.model.get_latent(torch.tensor(self.raw_observational_data, dtype=torch.float32).unsqueeze(0).to(self.model.device)).cpu().numpy()
+        mean = self.raw_observational_data.mean(0)
+        std = self.raw_observational_data.std(0)
+        scaled_data = (self.raw_observational_data - mean) / std
+        self.encoded_observational_data = self.model.get_latent(torch.tensor(scaled_data, dtype=torch.float32).unsqueeze(0).to(self.model.device)).cpu().numpy()
     
     @torch.inference_mode()
-    def run(self):
+    def run(self, num_particles: int, tolerance_levels : List):
         if self.model is None:
             raise ValueError("Model must be provided to encode the data and run the algorithm.")
         
-        self.logger.info("Starting ABC SMC run")
+        if tolerance_levels is None:
+            raise ValueError("Tolerance levels must be provided")
+    
+        self.num_generations = len(tolerance_levels)
+        self.num_particles = num_particles
         total_num_simulations = 0
-        start_time = time.time()
         self.encode_observational_data()
-        # numpy array of size num_particles x num_parameters
         particles = np.ones((self.num_generations, self.num_particles, self.num_parameters))
         weights = np.ones((self.num_generations, self.num_particles))
-
+        self.logger.info(f"Tolerance levels: {tolerance_levels}")
+        start_time = time.time()
+        self.logger.info("Starting ABC SMC run")
         for t in range(self.num_generations):
             self.logger.info(f"Generation {t + 1} started")
             start_time_generation = time.time()
@@ -232,7 +238,7 @@ class LatentABCSMC:
             generation_weights = []
             accepted = 0
             running_num_simulations = 0
-            epsilon = self.tolerance_levels[t]
+            epsilon = tolerance_levels[t]
         
             while accepted < self.num_particles:
                 if t == 0:
@@ -261,12 +267,15 @@ class LatentABCSMC:
 
                 # Step 9: Simulate the ODE system and encode the data
                 y, status = self.simulate(perturbed_params)
-                if status != 0:
-                    continue # Go back to sampling if simulation failed
 
                 total_num_simulations += 1
                 running_num_simulations += 1
-                y_tensor = torch.tensor(y, dtype=torch.float32).unsqueeze(0).to(self.model.device)
+
+                if status != 0:
+                    continue # Go back to sampling if simulation failed
+
+                y_scaled = (y - y.mean(axis=0)) / y.std(axis=0)
+                y_tensor = torch.tensor(y_scaled, dtype=torch.float32).unsqueeze(0).to(self.model.device)
                 y_latent_np = self.model.get_latent(y_tensor).cpu().numpy()
 
                 # Step 10: Compute the distance and check if it's within the tolerance
@@ -437,23 +446,46 @@ class LatentABCSMC:
         
         # Scale samples to parameter bounds
         scaled_samples = qmc.scale(samples, self.lower_bounds, self.upper_bounds)
+        print(scaled_samples.shape)
         return scaled_samples
 
     def __batch_simulations(self, num_simulations: int, prefix: str = "train", num_threads: int = 2):
         """ This method should never be called directly; it is only used by the generate_training_data method. """
-        simulations = np.ones((num_simulations, self.raw_observational_data.shape[0], self.raw_observational_data.shape[1]))
-        params = np.ones((num_simulations, self.num_parameters))
         parameters = self.__sample_priors(n=num_simulations)
+        valid_params = []
+        valid_simulations = []
 
-        for i in range(num_simulations):
-            params[i] = parameters[i]
-            simulations[i] = self.simulate(parameters[i])
+        os.makedirs("data", exist_ok=True)  # Create directory if it doesn't exist
 
-        if not os.path.exists("data"):
-            os.makedirs("data")
+        def run_simulation(i, param):
+            try:
+                simulation, status = self.simulate(param)
+                if status == 0:
+                    return i, simulation, param
+                else:
+                    self.logger.error(f"Simulation {i} failed with status: {status}")
+            except Exception as e:
+                self.logger.error(f"Simulation {i} failed with error: {e}")
+            return None
 
-        np.save(f"data/{prefix}_params.npy", params)
-        np.save(f"data/{prefix}_simulations.npy", simulations)
+        with ThreadPoolExecutor(max_workers=num_threads) as executor:
+            futures = [executor.submit(run_simulation, i, param) for i, param in enumerate(parameters)]
+            
+            for future in as_completed(futures):
+                result = future.result()
+                if result is not None:
+                    i, simulation, param = result
+                    valid_simulations.append(simulation)
+                    valid_params.append(param)
+
+        if valid_simulations:
+            valid_simulations = np.array(valid_simulations)
+            valid_params = np.array(valid_params)
+
+            self.logger.info(f"Saving {len(valid_simulations)} simulations to data.")
+            np.savez(f"data/{prefix}_data.npz", params=valid_params, simulations=valid_simulations)
+        else:
+            self.logger.warning("No valid simulations to save.")
 
     def generate_training_data(self, num_simulations: list = [50000, 10000, 10000], seed: int = 1234):
         np.random.seed(seed)

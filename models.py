@@ -3,6 +3,7 @@ Models module containing neural network implementations.
 """
 # Standard library imports
 from typing import Any, Callable, Dict, Optional, Set, Tuple, Type, Union, List
+from functools import partial
 
 # Scientific computing
 import numpy as np
@@ -122,8 +123,8 @@ class Lambda(nn.Module):
         self.hidden_size = hidden_size
         self.latent_length = latent_length
 
-        self.hidden_to_mean = nn.Linear(self.hidden_size, self.latent_length)
-        self.hidden_to_logvar = nn.Linear(self.hidden_size, self.latent_length)
+        self.hidden_to_mean = nn.Linear(self.hidden_size, self.latent_length, bias=False)
+        self.hidden_to_logvar = nn.Linear(self.hidden_size, self.latent_length, bias=False)
 
         nn.init.xavier_uniform_(self.hidden_to_mean.weight)
         nn.init.xavier_uniform_(self.hidden_to_logvar.weight)
@@ -197,7 +198,7 @@ class VectorQuantizer(nn.Module):
 class TiMAE(nn.Module):
     def __init__(self, seq_len: int, in_chans: int, embed_dim: int, depth: int, num_heads: int, 
                  decoder_embed_dim: int, decoder_depth: int, decoder_num_heads: int, mlp_ratio: float = 4.0, 
-                 norm_layer=nn.LayerNorm, norm_pix_loss=False, z_type = 'vanilla',  cls_embed = True, dropout = 0.1, 
+                 norm_layer=partial(nn.LayerNorm, eps=1e-6), norm_pix_loss=False, z_type = 'vanilla',  cls_embed = True, dropout = 0.1, 
                  mask_ratio = 0.15, diagonal_attention=False, lambda_=0.00025, scale_mode = "adaptive_scale", bag_size = 1024,
                  differential_attention = False):
         super().__init__()
@@ -237,12 +238,9 @@ class TiMAE(nn.Module):
         # --------------------------------------------------------------------------
         # MAE decoder specifics
         if z_type == 'vanilla':
-            self.decoder_embed = nn.Linear(embed_dim, decoder_embed_dim, bias=True)
+            self.decoder_embed = nn.Linear(embed_dim, decoder_embed_dim, bias=False)
         elif z_type == 'vae':
             self.decoder_embed = Lambda(embed_dim, decoder_embed_dim)
-            
-            # nn.Sequential(torch.nn.Linear(embed_dim, decoder_embed_dim),
-            #                                    Lambda(decoder_embed_dim, decoder_embed_dim))
         elif z_type == 'vq-vae':
             self.decoder_embed = nn.Sequential(torch.nn.Linear(embed_dim, decoder_embed_dim),
                                                VectorQuantizer(bag_size, decoder_embed_dim))
@@ -259,8 +257,7 @@ class TiMAE(nn.Module):
         self.decoder_norm = norm_layer(decoder_embed_dim)
         self.decoder_pred = nn.Linear(decoder_embed_dim, in_chans, bias=True) # decoder to patch
 
-        self.norm_pix_loss = norm_pix_loss
-
+        self.linear = nn.Linear(decoder_embed_dim, 2)
         self.initialize_weights()
 
     def initialize_weights(self):
@@ -363,11 +360,10 @@ class TiMAE(nn.Module):
 
         x = self.decoder_norm(x)
 
-        x = self.decoder_pred(x)
-        # remove cls token
-        x = x[:, 1:, :]
+        regression_task = self.linear(x[:, :1, :].squeeze(1)) # [N, 6]
+        imputation_task = self.decoder_pred(x[:, 1:, :]) 
 
-        return x
+        return regression_task, imputation_task
 
     def forward_loss(self, x, pred, mask):
         """
@@ -375,46 +371,34 @@ class TiMAE(nn.Module):
         pred: [N, L, W]
         mask: [N, W], 0 is keep, 1 is remove,
         """
-        
         # # # print(x.shape, pred.shape)
-        # if self.training:
-        #     loss = torch.abs(pred - x)
-        #     loss = torch.nan_to_num(loss, nan=10, posinf=10, neginf=10)
-        #     loss = torch.clamp(loss, max=10)
-        #     loss = loss.mean(dim=-1)  # [N, L], mean loss per timestamp
-
-        #     inv_mask = (mask -1 ) ** 2
-        #     loss_removed = (loss * mask).sum() / mask.sum()  # mean loss on removed patches
-        #     loss_seen = (loss * inv_mask).sum() / inv_mask.sum()  # mean loss on seen patches
-
-        # else:
-        #     loss = torch.abs(pred - x)
-        #     loss = torch.nan_to_num(loss, nan=10, posinf=10, neginf=10)
-        #     loss = torch.clamp(loss, max=10)
-        #     loss = loss.mean(dim=-1)
-
-        #     loss_removed = 0
-        #     loss_seen = loss.mean()
-        
-        # return loss_removed , loss_seen #, forecast_loss, backcast_loss
-
-        # # if self.norm_pix_loss:
-        # #     mean = x.mean(dim=-1, keepdim=True)
-        # #     var = x.var(dim=-1, keepdim=True)
-        # #     x = (x - mean) / (var + 1e-6)**.5
 
         loss = (pred - x) ** 2
-        loss = loss.mean(dim=-1)  # [N, L], mean loss per timestamp
-        loss = (loss * mask).sum() / mask.sum()  # mean loss on removed patches
+        loss = loss.mean(dim=-1)
+        inv_mask = (mask-1) ** 2
+
+        if self.training:
+            loss_removed = (loss * mask).sum() / mask.sum()  # mean loss on removed patches
+            loss_seen = (loss * inv_mask).sum() / inv_mask.sum()
+        else:
+            loss_removed = 0
+            loss_seen = (loss * inv_mask).sum() / inv_mask.sum()
+
+        loss = loss_removed + loss_seen
         return loss
 
-    def forward(self, x, mask_ratio = None):
+    def forward(self, x, y = None, mask_ratio = None):
         if mask_ratio is None:
             mask_ratio = self.mask_ratio
             
         latent, mask, ids_restore = self.forward_encoder(x, mask_ratio)
-        pred = self.forward_decoder(latent, ids_restore)  # [N, L, p*p*3]
-        loss = self.forward_loss(x, pred, mask)
+        regression_task, imputation_task = self.forward_decoder(latent, ids_restore)  # [N, L, p*p*3]
+        loss = self.forward_loss(x, imputation_task, mask)
+
+        if y is not None:
+            reg_loss = F.mse_loss(regression_task, y, reduction='mean')
+        else:
+            reg_loss = 0
 
         if self.z_type == 'vae':
             space_loss = torch.mean(-0.5 * torch.sum(1 + self.decoder_embed.latent_logvar \
@@ -425,10 +409,9 @@ class TiMAE(nn.Module):
         else:
             space_loss = 0
 
-        kld_weight = x.shape[0]/31210
+        kld_weight = 1 # x.shape[0]/34179
         
-        total_loss = loss + self.lambda_ * kld_weight * space_loss
-        return total_loss, pred
+        return loss, reg_loss, self.lambda_ * kld_weight * space_loss, regression_task, imputation_task
     
     def get_latent(self, x):
         x, mask, ids_restore = self.forward_encoder(x, 0)

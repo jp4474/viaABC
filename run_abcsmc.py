@@ -1,112 +1,312 @@
-#!/usr/bin/env python3
-
+import os
+import argparse
 import logging
 from pathlib import Path
+from typing import List, Tuple, Optional, Dict, Any
+
+import yaml
 import numpy as np
+import pandas as pd
 import torch
+import torch.nn as nn
+from matplotlib import pyplot as plt
 
 from models import TiMAE
-from lightning_module import CustomLightning
-from systems import *
+from lightning_module import PreTrainLightning, FineTuneLightning
+from systems import LotkaVolterra
+from dataset import NumpyDataset
 
 # Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Configuration
-CONFIG = {
-    'model': {
-        'seq_len': 8,
-        'in_chans': 2,
-        'embed_dim': 64,
-        'num_heads': 8,
-        'depth': 2,
-        'decoder_embed_dim': 64,
-        'decoder_num_heads': 8,
-        'decoder_depth': 1,
-        'z_type': "vae",
-        'lambda_': 0.00025,
-        'mask_ratio': 0.15,
-        'bag_size': 1024,
-        'dropout': 0.0
-    },
-    'abc': {
-        'num_particles': 1000
-    },
-    'paths': {
-        'checkpoint': Path('/home/jp4474/latent-abc-smc/checkpoints/lotka-volterra-epoch=295-val_loss=0.41.ckpt'),
-        'output_dir': Path('./output')
-    }
-}
 
-def setup_model():
-    """Initialize and load the pre-trained model."""
+def load_config(config_path: Path) -> Dict[str, Any]:
+    """
+    Load and validate the configuration file.
+
+    Args:
+        config_path (Path): Path to the configuration file.
+
+    Returns:
+        Dict[str, Any]: Loaded configuration.
+
+    Raises:
+        FileNotFoundError: If the config file is not found.
+        ValueError: If the config file is invalid.
+    """
+    if not config_path.exists():
+        raise FileNotFoundError(f"Config file not found at {config_path}")
+
     try:
-        model = TiMAE(**CONFIG['model'])
-        pl_model = CustomLightning.load_from_checkpoint(
-            CONFIG['paths']['checkpoint'],
-            model=model
+        config = yaml.safe_load(config_path.read_text())
+        if not isinstance(config, dict):
+            raise ValueError("Config file must be a dictionary.")
+        return config
+    except yaml.YAMLError as e:
+        raise ValueError(f"Invalid YAML in config file: {e}")
+
+
+def load_model(path: Path, finetune: bool = False, num_parameters: int = 2) -> PreTrainLightning:
+    """
+    Load the model from the given path.
+
+    Args:
+        path (Path): The path to the model directory.
+        finetune (bool): Whether to load a fine-tuned model.
+        num_parameters (int): Number of parameters for the fine-tuned model.
+
+    Returns:
+        PreTrainLightning: The pre-trained or fine-tuned model.
+
+    Raises:
+        FileNotFoundError: If the config file or model checkpoint is not found.
+    """
+    config_path = path / "config.yaml"
+    config = load_config(config_path)
+
+    # Load model architecture
+    model = TiMAE(**config["model"]["params"])
+
+    # Load pre-trained model
+    pretrain_model_path = next((f for f in path.iterdir() if f.suffix == ".ckpt" and "TiMAE" in f.name), None)
+    if not pretrain_model_path:
+        raise FileNotFoundError("No pre-trained model checkpoint found.")
+
+    pretrain_model = PreTrainLightning.load_from_checkpoint(pretrain_model_path, model=model)
+    logger.info(f"Pre-trained model loaded from {pretrain_model_path}")
+
+    if not finetune:
+        return pretrain_model
+
+    # Load fine-tuned model
+    finetune_model_path = next((f for f in path.iterdir() if f.suffix == ".ckpt" and "FineTune" in f.name), None)
+    if not finetune_model_path:
+        raise FileNotFoundError("No fine-tuned model checkpoint found.")
+
+    finetune_model = FineTuneLightning.load_from_checkpoint(
+        finetune_model_path, pl_module=pretrain_model, num_parameters=num_parameters
+    )
+    logger.info(f"Fine-tuned model loaded from {finetune_model_path}")
+    return finetune_model
+
+
+def load_system(name: str = "lotka_volterra") -> LotkaVolterra:
+    """
+    Load the system from the given name.
+
+    Args:
+        name (str): The name of the system to load.
+
+    Returns:
+        LotkaVolterra: The loaded system.
+
+    Raises:
+        ValueError: If the system name is not recognized.
+    """
+    name = name.lower()
+    if name == "lotka_volterra":
+        system = LotkaVolterra()
+    elif name == "sir":
+        raise NotImplementedError("SIR system is not implemented yet.")
+    else:
+        raise ValueError(f"System {name} not found.")
+
+    logger.info(f"System {name} loaded.")
+    return system
+
+
+def load_observational_data(path: Path, system: str = "lotka_volterra") -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Load observational data for the specified system.
+
+    Args:
+        path (Path): The path to the data directory.
+        system (str): The name of the system.
+
+    Returns:
+        Tuple[np.ndarray, np.ndarray]: Raw and scaled observational data.
+
+    Raises:
+        FileNotFoundError: If the data files are not found.
+    """
+    system = system.lower()
+    prefix = "lotka" if system == "lotka_volterra" else "sir"
+
+    raw_data_path = path / f"{prefix}_data.npy"
+    scaled_data_path = path / f"{prefix}_scaled_data.npy"
+
+    if not raw_data_path.exists() or not scaled_data_path.exists():
+        raise FileNotFoundError(f"Data files not found in {path}")
+
+    raw_np = np.load(raw_data_path)
+    raw_np_scaled = np.load(scaled_data_path)
+
+    logger.info(f"Observational data loaded from {path}")
+    return raw_np, raw_np_scaled
+
+
+@torch.inference_mode()
+def reconstruct_data(pl_model: PreTrainLightning, data: np.ndarray, scaled: bool = False) -> np.ndarray:
+    """
+    Reconstruct the data using the model.
+
+    Args:
+        pl_model (PreTrainLightning): The pre-trained model.
+        data (np.ndarray): The data to reconstruct.
+        scaled (bool): Whether the data is already scaled.
+
+    Returns:
+        np.ndarray: The reconstructed data.
+    """
+    if not scaled:
+        data = (data - data.mean(axis=0)) / data.std(axis=0)
+
+    with torch.no_grad():
+        _, _, _, param_est, reconstruction = pl_model(
+            torch.tensor(data).float().to(pl_model.device).unsqueeze(0), mask_ratio=0
         )
-        pl_model.eval()
-        return pl_model
-    except Exception as e:
-        logger.error(f"Failed to load model: {str(e)}")
-        raise
+        reconstruction = reconstruction.squeeze(0).cpu().numpy()
 
-def run_abc_simulation(pl_model):
-    """Run ABC-SMC simulation with the loaded model."""
-    try:
-        lotka_abc = LotkaVolterra(num_particles=CONFIG['abc']['num_particles'])
-        lotka_abc.update_model(pl_model)
+    logger.info("Data reconstruction completed.")
+    return reconstruction
+
+
+def plot_reconstructions(
+    prediction: np.ndarray, ground_truth: np.ndarray, observational: np.ndarray, path: Path) -> None:
+    """
+    Plot the reconstructions against ground truth and observational data.
+
+    Args:
+        prediction (np.ndarray): The predicted data.
+        ground_truth (np.ndarray): The ground truth data.
+        observational (np.ndarray): The observational data.
+        system (str): The name of the system.
+    """
+    n = prediction.shape[1]
+
+    fig, ax = plt.subplots(1, n, figsize=(20, 5))
+    
+    for i in range(n):
+        ax[i].plot(prediction[:, i], label='Prediction')
+        ax[i].plot(ground_truth[:, i], label='Ground Truth')
+        ax[i].plot(observational[:, i], label='Noisy')
+        ax[i].legend()
+
+    plt.savefig(path / "reconstructions.png")
+    logger.info("Reconstruction plots saved.")
+
+
+def run_abc(
+    system: LotkaVolterra,
+    model: PreTrainLightning,
+    tolerance_levels: List[float],
+    num_particles: int,
+    output_dir: Path,
+    finetune: bool = False,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Run the ABC-SMC algorithm.
+
+    Args:
+        system (LotkaVolterra): The system to run the algorithm on.
+        model (PreTrainLightning): The model to use.
+        tolerance_levels (List[float]): The tolerance levels for the algorithm.
+        num_particles (int): The number of particles to use.
+        output_dir (Path): The directory to save the output.
+        finetune (bool): Whether to finetune the model.
+
+    Returns:
+        Tuple[np.ndarray, np.ndarray]: Particles and weights from the ABC-SMC algorithm.
+    """
+    system.update_model(model)
+    particles, weights = system.run(tolerance_levels=tolerance_levels, num_particles=num_particles)
+    system.compute_statistics()
+
+    output_dir.mkdir(exist_ok=True)
+
+    output_file = output_dir / ("latent_abc_smc_finetune.npz" if finetune else "latent_abc_smc_mtm.npz")
+    np.savez(output_file, particles=particles, weights=weights)
+    logger.info(f"ABC-SMC results saved to {output_file}")
+
+    return particles, weights
+
+def plot_particles(particles: np.ndarray, weights: np.ndarray, output_dir: Path, finetune: bool = False) -> None:
+    """
+    Plot the particles and save the plots.
+
+    Args:
+        particles (np.ndarray): The particles to plot.
+        weights (np.ndarray): The weights of the particles.
+        output_dir (Path): The directory to save the plots.
+        finetune (bool): Whether the particles are from a finetuned model.
+    """
+    plot_dir = output_dir / ("figures_finetune" if finetune else "figures_mtm")
+    plot_dir.mkdir(exist_ok=True)
+
+    num_generations = particles.shape[1]
+    num_parameters = particles.shape[-1]
+    for i in range(num_generations):
+        fig, ax = plt.subplots(1, num_parameters, figsize=(6, 4))
+        for j in range(num_parameters):
+            ax[j].hist(particles[i][:, j], bins=20, alpha=0.7, label="Posterior", weights=weights[i])
+            
+            # Set parameter title based on index
+            if j == 0:
+                ax[j].set_title(r'$\beta$')
+            elif j == 1:
+                ax[j].set_title(r'$\gamma$')
+            else:
+                ax[j].set_title(f'Parameter {j}')
+            
+            ax[j].axvline(x=1, color='r', linestyle='--', label='Ground Truth') # fixme
+            ax[j].axvline(x=particles[i][:, j].mean(), color='g', linestyle='--', label='Mean')
+            ax[j].set_xlim(0, 5)
+            ax[j].legend()
+
+        fig.suptitle(f"Generation {i+1}")
+        plt.tight_layout()
+        plt.savefig(plot_dir / f"generation_{i+1}.png", dpi=100)
         
-        particles, weights = lotka_abc.run()
-        return particles, weights, lotka_abc
-    except Exception as e:
-        logger.error(f"Failed to run ABC simulation: {str(e)}")
-        raise
+    plt.close()
+    logger.info(f"Particle plots saved to {plot_dir}")
 
-def save_results(particles, weights):
-    """Save simulation results to files."""
-    output_dir = CONFIG['paths']['output_dir']
-    output_dir.mkdir(parents=True, exist_ok=True)
-    
-    try:
-        np.save(output_dir / "particles.npy", particles)
-        np.save(output_dir / "weights.npy", weights)
-        logger.info(f"Results saved to {output_dir}")
-    except Exception as e:
-        logger.error(f"Failed to save results: {str(e)}")
-        raise
-
-def main():
-    """Main execution function."""
-    logger.info("Starting ABC-SMC simulation")
-    
-    # Set device
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    logger.info(f"Using device: {device}")
-    
-    # Load model
-    pl_model = setup_model()
-    logger.info("Model loaded successfully")
-    
-    # Run simulation
-    particles, weights, lotka_abc = run_abc_simulation(pl_model)
-    logger.info("ABC-SMC simulation completed")
-    
-    # Save results
-    save_results(particles, weights)
-    
-    # Compute statistics
-    lotka_abc.compute_statistics()
-    logger.info("Statistics computation completed")
 
 if __name__ == "__main__":
-    try:
-        main()
-    except Exception as e:
-        logger.error(f"Program failed: {str(e)}")
-        raise
+    parser = argparse.ArgumentParser(description="Run ABC-SMC algorithm.")
+    parser.add_argument("--path", type=str, required=True, help="Path to the model and data directory.")
+    parser.add_argument("--system", type=str, default="lotka_volterra", help="Name of the system to use.")
+    parser.add_argument("--tolerance_levels", type=float, nargs="+", required=True, help="Tolerance levels for ABC-SMC.")
+    parser.add_argument("--num_particles", type=int, required=True, help="Number of particles for ABC-SMC.")
+    parser.add_argument("--finetune", action="store_true", help="Whether the model is finetuned or not.")
+    args = parser.parse_args()
+
+    # Validate system and set number of parameters
+    if args.system == "lotka_volterra":
+        num_parameters = 2
+    elif args.system == "sir":
+        num_parameters = 3
+    else:
+        raise ValueError(f"System {args.system} not found.")
+
+    # Convert path to Path object
+    path = Path(args.path)
+    output_dir = path / "output"
+    output_dir.mkdir(exist_ok=True)
+
+    # Load model, system, and data
+    model = load_model(path, args.finetune, num_parameters)
+    system = load_system(args.system)
+    raw_data, scaled_data = load_observational_data(Path("data"), system=args.system)
+
+    ground_truth, _ = system.simulate([1, 1])
+    groud_truth_scaled = (ground_truth - ground_truth.mean(axis=0)) / ground_truth.std(axis=0)
+    reconstructed_data_scaled = reconstruct_data(model, raw_data)
+    reconstructed_data = (reconstructed_data_scaled * raw_data.std(axis=0)) + raw_data.mean(axis=0)
+
+    plot_reconstructions(reconstructed_data, ground_truth, raw_data, output_dir)
+    plot_reconstructions(reconstructed_data_scaled, groud_truth_scaled, scaled_data, output_dir)
+
+    # Run ABC-SMC and plot results
+    particles, weights = run_abc(system, model, args.tolerance_levels, args.num_particles, output_dir, args.finetune)
+    plot_particles(particles, weights, output_dir, args.finetune)

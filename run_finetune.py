@@ -10,45 +10,22 @@ from lightning.pytorch.callbacks import ModelCheckpoint, LearningRateMonitor
 from lightning.pytorch.callbacks.early_stopping import EarlyStopping
 
 from models import TiMAE
-from lightning_module import FineTuneLightning
-from dataset import NumpyDataset
+from lightning_module import FineTuneLightning, PreTrainLightning
+from dataset import create_dataloaders
 import neptune
 from lightning.pytorch.loggers import NeptuneLogger
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description='Train Lotka-Volterra model')
+    parser = argparse.ArgumentParser(description='Finetune model')
     parser.add_argument('--batch_size', type=int, default=32, help='Batch size for training and validation.')
-    parser.add_argument('--max_epochs', type=int, default=5, help='Maximum number of epochs to train.')
+    parser.add_argument('--max_epochs', type=int, default=20, help='Maximum number of epochs to train.')
     parser.add_argument('--seed', type=int, default=42, help='Random seed for reproducibility.')
-    parser.add_argument('--learning_rate', type=float, default=2e-5, help='Learning rate for the optimizer.')
+    parser.add_argument('--learning_rate', type=float, default=1e-5, help='Learning rate for the optimizer.')
     parser.add_argument('--data_dir', type=str, default='data', help='Directory containing the dataset.')
     parser.add_argument('--dirpath', type=str, default='checkpoints', help='Directory to save checkpoints.')
     parser.add_argument('--debug', action='store_true', help='Debug mode in Trainer.')
+    parser.add_argument('--num_parameters', type=int, default=2, help='Number of parameters to estimate.')
     return parser.parse_args()
-
-
-def create_dataloaders(data_dir: str, batch_size: int) -> Tuple[DataLoader, DataLoader]:
-    # Check data directory existence
-    if not os.path.exists(data_dir):
-        raise FileNotFoundError(f"Data directory {data_dir} does not exist.")
-
-    train_dataset = NumpyDataset(data_dir, prefix='train')
-    val_dataset = NumpyDataset(data_dir, prefix='val')
-    test_dataset = NumpyDataset(data_dir, prefix='test')
-
-    # Ensure data type matches precision setting
-    train_dataset.simulations = train_dataset.simulations.astype('float64')
-    train_dataset.params = train_dataset.params.astype('float64')
-    val_dataset.simulations = val_dataset.simulations.astype('float64')
-    val_dataset.params = val_dataset.params.astype('float64')
-    test_dataset.simulations = test_dataset.simulations.astype('float64')
-    test_dataset.params = test_dataset.params.astype('float64')
-
-    train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=4, pin_memory=True)
-    val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=4, pin_memory=True)
-    test_dataloader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=4, pin_memory=True)
-
-    return train_dataloader, val_dataloader, test_dataloader
 
 def main():
     args = parse_args()
@@ -57,7 +34,7 @@ def main():
     seed_everything(args.seed)
 
     try:
-        train_dataloader, val_dataloader, test_dataloader = create_dataloaders(args.data_dir, args.batch_size)
+        train_dataloader, val_dataloader = create_dataloaders(args.data_dir, args.batch_size)
 
         # Get data shape from the dataset
         sample_data = train_dataloader.dataset[0][1]
@@ -66,19 +43,20 @@ def main():
         # get model config
         config = yaml.safe_load(open(f"{args.dirpath}/config.yaml"))
         checkpoint_files = [f for f in os.listdir(args.dirpath) if f.endswith("ckpt")]
-        checkpoint_file = sorted(checkpoint_files)[-1]
+        checkpoint_file = os.path.join(args.dirpath, sorted(checkpoint_files)[-1])
         print(f"Loading model from {checkpoint_file}")
 
-        checkpoint = torch.load(os.path.join(args.dirpath, checkpoint_file))
+        # checkpoint = torch.load(os.path.join(args.dirpath, checkpoint_file))
+        # model = TiMAE(**config["model"]["params"])
+        # model_weights = {k[6:]: v for k, v in checkpoint["state_dict"].items() if k.startswith("model.")}
+        # model.load_state_dict(model_weights)
         model = TiMAE(**config["model"]["params"])
-        model_weights = {k[6:]: v for k, v in checkpoint["state_dict"].items() if k.startswith("model.")}
-        model.load_state_dict(model_weights)
-
-        pl_model = FineTuneLightning(model=model, lr=args.learning_rate)
+        pretrain_module = PreTrainLightning.load_from_checkpoint(checkpoint_file, model = model)
+        finetune_module = FineTuneLightning(pl_module=pretrain_module, lr=args.learning_rate, num_parameters=args.num_parameters, linear_probe=False)
 
         checkpoint_callback = ModelCheckpoint(
             dirpath=args.dirpath,
-            filename='kan_fine_tune-{epoch:02d}-{val_loss:.2f}',
+            filename='fine_tune-{epoch:02d}-{val_loss:.2f}',
             save_top_k=1,
             monitor='val_loss',
             mode='min'
@@ -116,7 +94,7 @@ def main():
             fast_dev_run=args.debug
         )
 
-        trainer.fit(pl_model, train_dataloader, val_dataloader)
+        trainer.fit(finetune_module, train_dataloader, val_dataloader)
         # trainer.test(ckpt_path="best", test_dataloaders=test_dataloader)
 
     except Exception as e:

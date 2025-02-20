@@ -8,7 +8,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument('--train_sizes', 
                        type=int, 
                        nargs=3,
-                       default=[400000, 1000000, 1000000],
+                       default=[500000, 50000, 50000],
                        help='List of three integers for training data sizes')
     
     parser.add_argument('--seed', 
@@ -27,12 +27,12 @@ def main(train_sizes: List[int], seed: int) -> None:
     """
     
     # Initialize and run simulation
-    # lotka_abc = LotkaVolterra()
-    # lotka_abc.generate_training_data(train_sizes, seed=seed)
+    lotka_abc = LotkaVolterra()
+    lotka_abc.generate_training_data(train_sizes, seed=seed)
 
-    raw_data = np.load("data/mzb_data.npy")
-    mzb_abc = MZB(observational_data=raw_data)
-    mzb_abc.generate_training_data(train_sizes, seed=seed)
+    # raw_data = np.load("data/mzb_data.npy")
+    # mzb_abc = MZB(observational_data=raw_data)
+    # mzb_abc.generate_training_data(train_sizes, seed=seed)
 
 if __name__ == "__main__":
     args = parse_arguments()

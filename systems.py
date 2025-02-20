@@ -17,13 +17,13 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 class LotkaVolterra(LatentABCSMC):
     def __init__(self,
-        num_particles = 1000, 
-        num_generations = 5, 
+        #num_particles = 1000, 
+        #num_generations = 5, 
         num_parameters = 2, 
         lower_bounds = np.array([0, 0]), 
         upper_bounds = np.array([10, 10]), 
         perturbation_kernels = np.array([0.1, 0.1]), 
-        tolerance_levels = np.array([0.2, 0.1, 0.05, 0.01, 0.005]), 
+        # tolerance_levels = np.array([0.2, 0.1, 0.05, 0.01, 0.005]), 
         model = None, 
         observational_data = np.array([[1.87, 0.65, 0.22, 0.31, 1.64, 1.15, 0.24, 2.91],
                                         [0.49, 2.62, 1.54, 0.02, 1.14, 1.68, 1.07, 0.88]]).T, 
@@ -32,7 +32,7 @@ class LotkaVolterra(LatentABCSMC):
         tmax = 15, 
         time_space = np.array([1.1, 2.4, 3.9, 5.6, 7.5, 9.6, 11.9, 14.4])):
         #time_space = np.array([0.5, 1.1, 2.4, 3.1, 3.9, 5.1, 5.6, 7.1, 7.5, 9.0, 9.6, 11.0, 11.9, 13.0, 14.4, 14.7])),
-        super().__init__(num_particles, num_generations, num_parameters, lower_bounds, upper_bounds, perturbation_kernels, observational_data, tolerance_levels, model, state0, t0, tmax, time_space)
+        super().__init__(num_parameters, lower_bounds, upper_bounds, perturbation_kernels, observational_data, model, state0, t0, tmax, time_space)
 
     def ode_system(self, t, state, parameters):
         # Lotka-Volterra equations
@@ -73,7 +73,7 @@ class LotkaVolterra(LatentABCSMC):
         probabilities = uniform.cdf(parameters, loc=self.lower_bounds, scale=self.upper_bounds)
         return np.prod(probabilities)
     
-    def perturb_parameters(self, parameters):
+    def perturb_parameters(self, parameters, previous_particles):
         # Perturb the parameters
         perturbations = np.random.uniform(-self.perturbation_kernels, self.perturbation_kernels)
         parameters += perturbations
@@ -81,8 +81,8 @@ class LotkaVolterra(LatentABCSMC):
 
 class MZB(LatentABCSMC):
     def __init__(self,
-        num_particles = 1000, 
-        num_generations = 5, 
+        #num_particles = 1000, 
+        #num_generations = 5, 
         num_parameters = 6, 
         lower_bounds = np.array([0.5, 14, 0.1, -5, 3.5, -4]), # mean
         upper_bounds = np.array([0.25, 2, 0.15, 1.2, 0.8, 1.2]),  # std
@@ -94,7 +94,7 @@ class MZB(LatentABCSMC):
         t0 = 40,
         tmax = 732,
         time_space = np.array([59, 69, 76, 88, 95, 102, 108, 109, 113, 119, 122, 123, 124, 141, 156, 158, 183, 212, 217, 219, 235, 261, 270, 289, 291, 306, 442, 524, 563, 566, 731])):
-        super().__init__(num_particles, num_generations, num_parameters, lower_bounds, upper_bounds, perturbation_kernels, observational_data, tolerance_levels, model, state0, t0, tmax, time_space)
+        super().__init__(num_parameters, lower_bounds, upper_bounds, perturbation_kernels, observational_data, tolerance_levels, model, state0, t0, tmax, time_space)
 
     def sample_priors(self):
         while True:
@@ -330,96 +330,3 @@ class MZB(LatentABCSMC):
         
         # Convert back to probability space
         return np.exp(log_sum)
-
-
-    @torch.inference_mode()
-    def run(self):
-        if self.model is None:
-            raise ValueError("Model must be provided to encode the data and run the algorithm.")
-        
-        self.logger.info("Starting ABC SMC run")
-        total_num_simulations = 0
-        start_time = time.time()
-        self.encode_observational_data()
-        # numpy array of size num_particles x num_parameters
-        particles = np.ones((self.num_generations, self.num_particles, self.num_parameters))
-        weights = np.ones((self.num_generations, self.num_particles))
-
-        for t in range(self.num_generations):
-            self.logger.info(f"Generation {t + 1} started")
-            start_time_generation = time.time()
-            generation_particles = []
-            generation_weights = []
-            accepted = 0
-            running_num_simulations = 0
-            epsilon = self.tolerance_levels[t]
-        
-            while accepted < self.num_particles:
-                if t == 0:
-                    # Step 4: Sample from prior in the first generation
-                    perturbed_params = self.sample_priors()
-                    new_weight = 1
-                    prior_probability = 1
-                else:
-                    # Step 6: Sample from the previous generation's particles with weights
-                    previous_particles = np.array(particles[t-1,:,:])
-                    previous_weights = np.array(weights[t-1,:])
-
-                    idx = np.random.choice(len(previous_particles), p=previous_weights)
-
-                    # Step 7: Perturb parameters and calculate the prior probability
-                    perturbed_params = self.perturb_parameters(previous_particles[idx], previous_particles)
-
-                    # Step 8: If prior probability of the perturbed parameters is 0, resample
-                    prior_probability = self.calculate_prior_prob(perturbed_params)
-                    if prior_probability <= 1e-6:
-                        continue # Go back to sampling if prior probability is 0
-
-                    # Convert to np.float128 for better numerical precision
-                    thetaLogWeight = np.log(prior_probability) - gaussian_kde(previous_particles.T, weights=previous_weights).logpdf(perturbed_params)
-                    new_weight = np.exp(thetaLogWeight, dtype=np.longdouble)
-
-                # Step 9: Simulate the ODE system and encode the data
-                y, status = self.simulate(perturbed_params)
-
-                if status != 0:
-                    continue # Go back to sampling if simulation failed
-
-                total_num_simulations += 1
-                running_num_simulations += 1
-
-                scale = np.mean(np.abs(y), axis=0)
-                y_scaled = y / scale
-                y_tensor = torch.tensor(y_scaled, dtype=torch.float32).unsqueeze(0).to(self.model.device)
-                y_latent_np = self.model.get_latent(y_tensor).cpu().numpy()
-
-                # Step 10: Compute the distance and check if it's within the tolerance
-                dist = self.calculate_distance(y_latent_np)
-
-                if dist >= epsilon:
-                    continue  # Go back to sampling if distance is not small enough
-                
-                # Step 11: Accept the particle and store it
-                accepted += 1
-                generation_particles.append(perturbed_params)
-                generation_weights.append(new_weight)
-
-            # Step 12: Normalize weights for the current generation
-            generation_weights /= np.sum(generation_weights, axis=0)
-            particles[t] = np.array(generation_particles)
-            weights[t] = np.array(generation_weights).flatten()
-            end_time_generation = time.time()
-            duration_generation = end_time_generation - start_time_generation
-            duration = end_time_generation - start_time_generation
-            mean_est = np.average(particles[t], weights=weights[t], axis=0)
-            self.logger.info(f"Generation {t + 1} Completed. Accepted {self.num_particles} particles in {duration_generation:.2f} seconds with {running_num_simulations} total simulations.")
-            self.logger.info(f"Mean estimate: {mean_est}")
-
-        self.particles = particles
-        self.weights = weights
-
-        end_time = time.time()
-        duration = end_time - start_time
-        self.logger.info(f"ABC SMC run completed in {duration:.2f} seconds with {total_num_simulations} total simulations.")
-
-        return particles, weights
