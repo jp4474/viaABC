@@ -202,10 +202,8 @@ class TiMAE(nn.Module):
                  mask_ratio = 0.15, diagonal_attention=False, lambda_=0.00025, scale_mode = "adaptive_scale", bag_size = 1024,
                  differential_attention = False):
         super().__init__()
-        # TODO: figure out the dimensions
         # --------------------------------------------------------------------------
-        # MAE encoder specifics
-        # self.conv_emb = torch.nn.Conv1d(in_chans, embed_dim, kernel_size=kernel_size, stride=stride, padding=padding)
+        # Encoder specifics
         self.embedder = nn.Linear(in_chans, embed_dim, bias=True)
         self.cls_embed = cls_embed
         self.trunc_init = False
@@ -236,7 +234,7 @@ class TiMAE(nn.Module):
         # --------------------------------------------------------------------------
 
         # --------------------------------------------------------------------------
-        # MAE decoder specifics
+        # Decoder specifics
         if z_type == 'vanilla':
             self.decoder_embed = nn.Linear(embed_dim, decoder_embed_dim, bias=False)
         elif z_type == 'vae':
@@ -409,7 +407,8 @@ class TiMAE(nn.Module):
         else:
             space_loss = 0
 
-        kld_weight = 1 # x.shape[0]/34179
+        # kld_weight = x.shape[0]/50000
+        kld_weight = 1
         
         return loss, reg_loss, self.lambda_ * kld_weight * space_loss, regression_task, imputation_task
     
@@ -455,28 +454,3 @@ class TiMAE(nn.Module):
     #     mask = torch.gather(mask, dim=1, index=ids_restore)
 
     #     return x_masked, mask, ids_restore
-    
-    # def reconstruct(self, x, mask_id = None):
-    #     x = self.embedder(x)
-    #     x = x + self.pos_embed[:, 1:, :]
-
-    #     if mask_id is None:
-    #         mask_id = torch.zeros(x.shape[0], x.shape[1], device=x.device, dtype=torch.bool)
-        
-    #     x, _, ids_restore = self.mask_using_id(x, mask_id)
-        
-    #     # append cls token
-    #     cls_token = self.cls_token + self.pos_embed[:, :1, :]
-    #     cls_tokens = cls_token.expand(x.shape[0], -1, -1)
-    #     x = torch.cat((cls_tokens, x), dim=1)
-
-    #     for blk in self.blocks:
-    #         x = blk(x)
-        
-    #     x = self.norm(x)
-        
-    #     pred = self.forward_decoder(x, ids_restore)  # [N, L, p*p*3]
-
-    #     return pred
-
-
