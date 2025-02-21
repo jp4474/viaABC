@@ -22,20 +22,18 @@ from scipy.stats import gaussian_kde, qmc
 # Machine learning and visualization
 import torch
 import umap
+#from cuml.manifold.umap import UMAP as cuUMAP
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 
 class LatentABCSMC:
     @torch.inference_mode()
     def __init__(self,
-                #num_particles: int, 
-                #num_generations: int, 
                 num_parameters: int, 
                 lower_bounds: np.ndarray, 
                 upper_bounds: np.ndarray, 
                 perturbation_kernels: np.ndarray, 
                 observational_data: np.ndarray, 
-                #tolerance_levels: np.ndarray, 
                 model: Union[torch.nn.Module, None],
                 state0: Union[np.ndarray, None],
                 t0: Union[int, None], 
@@ -46,9 +44,6 @@ class LatentABCSMC:
         Initialize the Latent-ABC algorithm.
 
         Parameters:
-        num_particles (int): Number of particles to use in the algorithm.
-        num_generations (int): Number of generations to run the algorithm.
-        tolerance_levels (np.ndarray): Array of tolerance levels for each generation.
         model: The latent encoding model to be used in the algorithm.
         num_parameters (int): Number of parameters in the ODE system.
         TODO: fix to take in non-uniform priors
@@ -105,16 +100,6 @@ class LatentABCSMC:
         else:
             self.encoded_observational_data = self.model(torch.tensor(self.raw_observational_data, dtype=torch.float32).unsqueeze(0))[1].cpu().numpy()
 
-        # self.num_particles = num_particles
-        # self.num_generations = num_generations
-
-        # assert num_particles > 0, "Number of particles must be greater than 0"
-        # assert num_generations > 0, "Number of generations must be greater than 0"
-        
-        # Validate tolerance
-        # self.tolerance_levels = tolerance_levels
-        # assert len(tolerance_levels) == num_generations, "Tolerance levels must match the number of generations"
-        
         self.num_parameters = num_parameters
         self.lower_bounds = lower_bounds
         self.upper_bounds = upper_bounds
@@ -134,7 +119,6 @@ class LatentABCSMC:
         self.logger.info(f"num_parameters: {num_parameters}")
         self.logger.info(f"lower_bounds: {lower_bounds}")
         self.logger.info(f"upper_bounds: {upper_bounds}")
-        #self.logger.info(f"tolerance_levels: {tolerance_levels}")
         self.logger.info(f"perturbation_kernels: {perturbation_kernels}")
         self.logger.info(f"t0: {t0}")
         self.logger.info(f"tmax: {tmax}")
@@ -211,7 +195,7 @@ class LatentABCSMC:
     def encode_observational_data(self):
         mean = self.raw_observational_data.mean(0)
         std = self.raw_observational_data.std(0)
-        scaled_data = (self.raw_observational_data - mean) / std
+        scaled_data = self.raw_observational_data/mean
         self.encoded_observational_data = self.model.get_latent(torch.tensor(scaled_data, dtype=torch.float32).unsqueeze(0).to(self.model.device)).cpu().numpy()
     
     @torch.inference_mode()
@@ -371,14 +355,15 @@ class LatentABCSMC:
         plt.close()
 
     @torch.inference_mode()
-    def visualize_latent_space(self, dataloader):
-        """Implement UMAP to visualize the latent space"""
+    def visualize_latent_space(self, dataloader, accelerator="cpu"):
+        """Implement UMAP to visualize the latent space with support for GPU (cuML) or CPU (UMAP)."""
         if self.model is None:
             raise ValueError("Model must be provided to encode the data and run the algorithm.")
         
         # Set the model to evaluation mode
         self.model.eval()
         
+        self.encode_observational_data()
         # List to store latent representations
         latent_representations = []
         # labels = []  # Optional: if you want to color points by class
@@ -396,17 +381,26 @@ class LatentABCSMC:
         latent_representations = torch.cat(latent_representations, dim=0).numpy()
         # labels = torch.cat(labels, dim=0).numpy()  # Optional: concatenate labels
         
-        # Apply UMAP to reduce dimensionality to 2D
-        reducer = umap.UMAP(n_components=2, random_state=42)
-        umap_embedding = reducer.fit_transform(latent_representations)
+        # Apply UMAP based on the accelerator parameter
+        if accelerator == "gpu":
+            print("Using cuML's UMAP (GPU accelerated)...")
+            reducer = cuUMAP(n_components=2, random_state=42)
+        elif accelerator == "cpu":
+            print("Using original UMAP (CPU)...")
+            reducer = umap.UMAP(n_components=2, random_state=42)
         
+        # Fit and transform the latent representations
+        umap_embedding = reducer.fit_transform(latent_representations)
+        test_embedding = reducer.transform(self.encoded_observational_data)
+
         # Plot the UMAP embedding
         plt.figure(figsize=(10, 8))
-        scatter = plt.scatter(umap_embedding[:, 0], umap_embedding[:, 1], cmap='Spectral', s=5)
-        plt.colorbar(scatter, label='Class')
-        plt.title('UMAP Visualization of Latent Space')
+        plt.scatter(umap_embedding[:, 0], umap_embedding[:, 1], color='blue', s=5, label='Train Data')
+        plt.scatter(test_embedding[:, 0], test_embedding[:, 1], color='red', s=10, label='Observational Data')
+        plt.title(f'UMAP Visualization of Latent Space ({accelerator.upper()})')
         plt.xlabel('UMAP Component 1')
         plt.ylabel('UMAP Component 2')
+        plt.legend()
         plt.show()
 
     @torch.inference_mode()
