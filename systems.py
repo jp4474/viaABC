@@ -10,7 +10,9 @@ import time
 import math
 import os
 import warnings
+from systems import *
 from tempfile import TemporaryFile
+from metrics import *
 
 from scipy.stats import qmc
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -43,7 +45,7 @@ class LotkaVolterra(LatentABCSMC):
         dpredator = predator * (-gamma + delta * prey)
         return [dprey, dpredator]
     
-    def calculate_distance(self, y: np.ndarray, norm: int = 2) -> float:
+    def calculate_distance(self, y: np.ndarray) -> float:
         """
         Calculate distance between encoded observational data and input vector y.
         
@@ -56,13 +58,9 @@ class LotkaVolterra(LatentABCSMC):
         """
         x = self.encoded_observational_data.flatten()
         y = y.flatten()
-        
-        norm_x = np.linalg.norm(x)
-        norm_y = np.linalg.norm(y)
-            
-        cosine_similarity = np.dot(x, y) / (norm_x * norm_y)
-        # Clip to handle numerical errors
-        return 1-cosine_similarity
+       
+        cos_sim_value = cosine_similarity(x, y)
+        return 1 - cos_sim_value
 
     def sample_priors(self):
         # Sample from the prior distribution
@@ -70,6 +68,9 @@ class LotkaVolterra(LatentABCSMC):
         return priors
     
     def calculate_prior_prob(self, parameters):
+        if any(parameters > self.upper_bounds) or any(parameters < self.lower_bounds):
+            return 0
+        
         probabilities = uniform.cdf(parameters, loc=self.lower_bounds, scale=self.upper_bounds)
         return np.prod(probabilities)
     
@@ -299,7 +300,7 @@ class MZB(LatentABCSMC):
 
         self.logger.info(f"Training data generation completed and saved. Total time taken: {total_time:.2f} seconds")
 
-    def calculate_distance(self, y: np.ndarray, norm: int = 2) -> float:
+    def calculate_distance(self, y: np.ndarray) -> float:
         """
         Calculate distance between encoded observational data and input vector y.
         
@@ -313,12 +314,9 @@ class MZB(LatentABCSMC):
         x = self.encoded_observational_data.flatten()
         y = y.flatten()
         
-        norm_x = np.linalg.norm(x)
-        norm_y = np.linalg.norm(y)
-            
-        cosine_similarity = np.dot(x, y) / (norm_x * norm_y)
-        # Clip to handle numerical errors
-        return 1-cosine_similarity
+        cos_sim_value = cosine_similarity(x, y)
+
+        return 1 - cos_sim_value
     
     def calculate_prior_prob(self, parameters):
         # Calculate the prior probability using log-sum-exp trick for numerical stability
