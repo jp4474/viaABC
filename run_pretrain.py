@@ -126,7 +126,8 @@ def main():
             "in_chans": in_chans
         })
 
-        scaled_np = np.load(os.path.join(args.data_dir, 'lotka_scaled_data.npy'))
+        raw_np = np.load(os.path.join(args.data_dir, 'lotka_data.npy'))
+        scaled_np = raw_np / np.abs(raw_np).mean(axis=0)
 
         # torch.set_float32_matmul_precision('highest')
         trainer = Trainer(
