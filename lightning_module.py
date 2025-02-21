@@ -28,7 +28,7 @@ class PreTrainLightning(L.LightningModule):
 
     def training_step(self, batch):
         parameters, simulations = batch
-        loss, reg_loss, space_loss, param_est, reconstruction = self(simulations, parameters)
+        loss, reg_loss, space_loss, _, _ = self(simulations, parameters)
         self.log("train_recon_loss", loss, prog_bar=False, on_step=False, on_epoch=True)
         self.log("train_reg_loss", reg_loss, prog_bar=False, on_step=False, on_epoch=True)
         self.log("train_space_loss", space_loss, prog_bar=False, on_step=False, on_epoch=True)
@@ -38,7 +38,7 @@ class PreTrainLightning(L.LightningModule):
     
     def validation_step(self, batch):
         parameters, simulations = batch
-        loss, reg_loss, space_loss, param_est, reconstruction = self(simulations, parameters, 0)
+        loss, reg_loss, space_loss, _, _ = self(simulations, parameters, 0)
         self.log("val_recon_loss", loss, prog_bar=False, on_step=False, on_epoch=True)
         self.log("val_reg_loss", reg_loss, prog_bar=False, on_step=False, on_epoch=True)
         self.log("val_space_loss", space_loss, prog_bar=False, on_step=False, on_epoch=True)
