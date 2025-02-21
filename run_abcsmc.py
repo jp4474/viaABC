@@ -80,7 +80,7 @@ def load_model(path: Path, finetune: bool = False, num_parameters: int = 2) -> P
         return pretrain_model
 
     # Load fine-tuned model
-    finetune_model_path = next((f for f in path.iterdir() if f.suffix == ".ckpt" and "FineTune" in f.name), None)
+    finetune_model_path = next((f for f in path.iterdir() if f.suffix == ".ckpt" and "fine_tune" in f.name), None)
     if not finetune_model_path:
         raise FileNotFoundError("No fine-tuned model checkpoint found.")
 
@@ -173,7 +173,7 @@ def reconstruct_data(pl_model: PreTrainLightning, data: np.ndarray, scaled: bool
 
 
 def plot_reconstructions(
-    prediction: np.ndarray, ground_truth: np.ndarray, observational: np.ndarray, path: Path) -> None:
+    prediction: np.ndarray, ground_truth: np.ndarray, observational: np.ndarray, path: Path, scaled: bool = False) -> None:
     """
     Plot the reconstructions against ground truth and observational data.
 
@@ -193,7 +193,10 @@ def plot_reconstructions(
         ax[i].plot(observational[:, i], label='Noisy')
         ax[i].legend()
 
-    plt.savefig(path / "reconstructions.png")
+    if not scaled:
+        plt.savefig(path / "reconstructions.png")
+    else:
+        plt.savefig(path / "reconstructions_scaled.png")
     logger.info("Reconstruction plots saved.")
 
 
@@ -249,7 +252,7 @@ def plot_particles(particles: np.ndarray, weights: np.ndarray, output_dir: Path,
     for i in range(num_generations):
         fig, ax = plt.subplots(1, num_parameters, figsize=(6, 4))
         for j in range(num_parameters):
-            ax[j].hist(particles[i][:, j], bins=20, alpha=0.7, label="Posterior", weights=weights[i])
+            ax[j].hist(particles[i,:,j], bins=20, alpha=0.7, label="Posterior", weights=weights[i])
             
             # Set parameter title based on index
             if j == 0:
@@ -260,7 +263,7 @@ def plot_particles(particles: np.ndarray, weights: np.ndarray, output_dir: Path,
                 ax[j].set_title(f'Parameter {j}')
             
             ax[j].axvline(x=1, color='r', linestyle='--', label='Ground Truth') # fixme
-            ax[j].axvline(x=particles[i][:, j].mean(), color='g', linestyle='--', label='Mean')
+            ax[j].axvline(x=particles[i,:,j].mean(), color='g', linestyle='--', label='Mean')
             ax[j].set_xlim(0, 5)
             ax[j].legend()
 
@@ -297,15 +300,16 @@ if __name__ == "__main__":
     # Load model, system, and data
     model = load_model(path, args.finetune, num_parameters)
     system = load_system(args.system)
-    raw_data, scaled_data = load_observational_data(Path("data"), system=args.system)
 
-    ground_truth, _ = system.simulate([1, 1])
-    groud_truth_scaled = (ground_truth - ground_truth.mean(axis=0)) / ground_truth.std(axis=0)
-    reconstructed_data_scaled = reconstruct_data(model, raw_data)
-    reconstructed_data = (reconstructed_data_scaled * raw_data.std(axis=0)) + raw_data.mean(axis=0)
+    if not args.finetune:
+        raw_data, scaled_data = load_observational_data(Path("data"), system=args.system)
+        ground_truth, _ = system.simulate([1, 1])
+        groud_truth_scaled = (ground_truth - ground_truth.mean(axis=0)) / ground_truth.std(axis=0)
+        reconstructed_data_scaled = reconstruct_data(model, raw_data)
+        reconstructed_data = (reconstructed_data_scaled * raw_data.std(axis=0)) + raw_data.mean(axis=0)
 
-    plot_reconstructions(reconstructed_data, ground_truth, raw_data, output_dir)
-    plot_reconstructions(reconstructed_data_scaled, groud_truth_scaled, scaled_data, output_dir)
+        plot_reconstructions(reconstructed_data, ground_truth, raw_data, output_dir)
+        plot_reconstructions(reconstructed_data_scaled, groud_truth_scaled, scaled_data, output_dir, scaled=True)
 
     # Run ABC-SMC and plot results
     particles, weights = run_abc(system, model, args.tolerance_levels, args.num_particles, output_dir, args.finetune)

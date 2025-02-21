@@ -14,7 +14,7 @@ class NumpyDataset(Dataset):
         self.data = np.load(os.path.join(data_dir, f'{prefix}_data.npz'), allow_pickle=True)
         self.simulations = self.data['simulations']
         self.params = self.data['params']
-        # self.scales = np.mean(self.simulations, axis=1)
+        self.scales = np.mean(self.simulations, axis=1)
 
         # MZB
         # self.max_ = np.array([ 0.99998673, 19.99958512,  0.5999854 , -1.00000201,  6.49953051,
@@ -38,7 +38,8 @@ class NumpyDataset(Dataset):
         y = self.simulations[idx]
 
         x_scaled = (x - self.min_) / (self.max_ - self.min_)
-        y_scaled = (y - self.m[idx]) / (self.sd[idx])
+        y_scaled = y / self.scales[idx]
+        # y_scaled = (y - self.m[idx]) / (self.sd[idx])
         # Convert to torch tensors
         x = torch.from_numpy(x_scaled).to(torch.float64)
         y = torch.from_numpy(y_scaled).to(torch.float64)
@@ -61,6 +62,6 @@ def create_dataloaders(data_dir: str, batch_size: int) -> Tuple[DataLoader, Data
     val_dataset.params = val_dataset.params.astype('float64')
 
     train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=4, pin_memory=True)
-    val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=4, pin_memory=True)
+    val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=True, num_workers=4, pin_memory=True)
 
     return train_dataloader, val_dataloader

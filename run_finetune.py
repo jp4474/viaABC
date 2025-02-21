@@ -46,10 +46,6 @@ def main():
         checkpoint_file = os.path.join(args.dirpath, sorted(checkpoint_files)[-1])
         print(f"Loading model from {checkpoint_file}")
 
-        # checkpoint = torch.load(os.path.join(args.dirpath, checkpoint_file))
-        # model = TiMAE(**config["model"]["params"])
-        # model_weights = {k[6:]: v for k, v in checkpoint["state_dict"].items() if k.startswith("model.")}
-        # model.load_state_dict(model_weights)
         model = TiMAE(**config["model"]["params"])
         pretrain_module = PreTrainLightning.load_from_checkpoint(checkpoint_file, model = model)
         finetune_module = FineTuneLightning(pl_module=pretrain_module, lr=args.learning_rate, num_parameters=args.num_parameters, linear_probe=False)
