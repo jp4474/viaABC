@@ -385,14 +385,16 @@ class LatentABCSMC:
         # Apply UMAP based on the accelerator parameter
         if accelerator == "gpu":
             print("Using cuML's UMAP (GPU accelerated)...")
-            reducer = cuUMAP(n_components=2, random_state=42)
+            # TODO: implement cuML UMAP
+            # reducer = cuUMAP(n_components=2, random_state=42)
+            raise NotImplementedError("cuML UMAP is not implemented yet.")
         elif accelerator == "cpu":
             print("Using original UMAP (CPU)...")
             reducer = umap.UMAP(n_components=2, random_state=42)
         
         # Fit and transform the latent representations
         umap_embedding = reducer.fit_transform(latent_representations)
-        test_embedding = reducer.transform(self.encoded_observational_data)
+        test_embedding = reducer.transform(self.encoded_observational_data.reshape(1, -1))
 
         # Plot the UMAP embedding
         plt.figure(figsize=(10, 8))
