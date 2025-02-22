@@ -247,7 +247,7 @@ def plot_particles(particles: np.ndarray, weights: np.ndarray, output_dir: Path,
     plot_dir = output_dir / ("figures_finetune" if finetune else "figures_mtm")
     plot_dir.mkdir(exist_ok=True)
 
-    num_generations = particles.shape[1]
+    num_generations = particles.shape[0]
     num_parameters = particles.shape[-1]
     for i in range(num_generations):
         fig, ax = plt.subplots(1, num_parameters, figsize=(6, 4))

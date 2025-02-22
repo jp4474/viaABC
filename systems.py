@@ -56,11 +56,14 @@ class LotkaVolterra(LatentABCSMC):
         Returns:
             float: Distance measure between 0 and 2
         """
-        x = self.encoded_observational_data.flatten()
-        y = y.flatten()
-       
-        cos_sim_value = cosine_similarity(x, y)
-        return 1 - cos_sim_value
+        x = self.encoded_observational_data #.flatten()
+        y = y[0]
+
+        _, _, f1 = bert_score(x, y)
+
+        return 1-f1
+        # cos_sim_value = cosine_similarity(x, y)
+        # return 1 - cos_sim_value
 
     def sample_priors(self):
         # Sample from the prior distribution

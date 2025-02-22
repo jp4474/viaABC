@@ -196,7 +196,7 @@ class LatentABCSMC:
         mean = self.raw_observational_data.mean(0)
         std = self.raw_observational_data.std(0)
         scaled_data = self.raw_observational_data/mean
-        self.encoded_observational_data = self.model.get_latent(torch.tensor(scaled_data, dtype=torch.float32).unsqueeze(0).to(self.model.device)).cpu().numpy()
+        self.encoded_observational_data = self.model.get_latent(torch.tensor(scaled_data, dtype=torch.float32).unsqueeze(0).to(self.model.device)).cpu().numpy().squeeze(0)
     
     @torch.inference_mode()
     def run(self, num_particles: int, tolerance_levels : List):
@@ -258,7 +258,8 @@ class LatentABCSMC:
                 if status != 0:
                     continue # Go back to sampling if simulation failed
 
-                y_scaled = (y - y.mean(axis=0)) / y.std(axis=0)
+                #y_scaled = (y - y.mean(axis=0)) / y.std(axis=0)
+                y_scaled = y / y.mean(axis=0)
                 y_tensor = torch.tensor(y_scaled, dtype=torch.float32).unsqueeze(0).to(self.model.device)
                 y_latent_np = self.model.get_latent(y_tensor).cpu().numpy()
 

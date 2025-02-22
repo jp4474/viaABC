@@ -63,7 +63,8 @@ class PreTrainLightning(L.LightningModule):
         }
     
     def get_latent(self, x):
-        return self.model.get_latent(x).mean(dim=1)
+        # return self.model.get_latent(x).mean(dim=1)
+        return self.model.get_latent(x)
     
 class PlotReconstruction(L.Callback):
     def __init__(self, data):
