@@ -311,23 +311,23 @@ class LatentABCSMC:
         particles = self.particles[generation-1]
         weights = self.weights[generation-1]
         mean = np.average(particles, weights=weights, axis=0)
-        std = np.sqrt(np.average((particles - mean) ** 2, weights=weights, axis=0))
+        var = np.average((particles - mean) ** 2, weights=weights, axis=0)
         median = np.median(particles, axis=0)
 
         self.mean = mean    
-        self.std = std
+        self.var = var
         self.median = median
 
         if return_as_dataframe:
             return pd.DataFrame({
                 'mean': mean,
                 'median': median,
-                'std': std,
+                'variance': var,
             })
         else:
             self.logger.info(f"Mean: {mean}")
             self.logger.info(f"Median: {median}")
-            self.logger.info(f"Std: {std}")
+            self.logger.info(f"Variance: {var}")
     
     def visualize_generation(self, generation: int = -1, save: bool = False):
         fig, ax = plt.subplots(1, self.num_parameters, figsize=(6, 4))
@@ -466,14 +466,17 @@ class LatentABCSMC:
             return None
 
         with ThreadPoolExecutor(max_workers=num_threads) as executor:
-            futures = [executor.submit(run_simulation, i, param) for i, param in enumerate(parameters)]
-            
+            futures = {executor.submit(run_simulation, i, param): i for i, param in enumerate(parameters)}
+
             for future in as_completed(futures):
-                result = future.result()
-                if result is not None:
-                    i, simulation, param = result
-                    valid_simulations.append(simulation)
-                    valid_params.append(param)
+                try:
+                    result = future.result()
+                    if result is not None:
+                        _, simulation, param = result
+                        valid_simulations.append(simulation)
+                        valid_params.append(param)
+                except Exception as e:
+                    self.logger.error(f"Error processing future: {e}")
 
         if valid_simulations:
             valid_simulations = np.array(valid_simulations)
@@ -484,7 +487,7 @@ class LatentABCSMC:
         else:
             self.logger.warning("No valid simulations to save.")
 
-    def generate_training_data(self, num_simulations: list = [50000, 10000, 10000], seed: int = 1234):
+    def generate_training_data(self, num_simulations: list = [50000, 10000, 10000], seed: int = 1234, num_workers: int = 1):
         np.random.seed(seed)
         self.logger.info(f"Generating training data for training with seed {seed}")
 
@@ -494,10 +497,18 @@ class LatentABCSMC:
         for i, num_simulation in enumerate(num_simulations):
             self.logger.info(f"Generating {num_simulation} simulations for training data")
             start = time.time()
-            self.__batch_simulations(num_simulation, prefix=prefix[i])
+            self.__batch_simulations(num_simulation, prefix=prefix[i], num_threads=num_workers * 2)
             end = time.time()
             elapsed = end - start
             total_time += elapsed
             self.logger.info(f"Generated {num_simulation} simulations for training data in {elapsed:.2f} seconds")
 
         self.logger.info(f"Training data generation completed and saved. Total time taken: {total_time:.2f} seconds")
+
+    def load_particles_weights(self, particles_path: str, weights_path: str):
+        try:
+            self.particles = np.load(particles_path)
+            self.weights = np.load(weights_path)
+            self.logger.info("Particles and weights loaded successfully.")
+        except Exception as e:
+            self.logger.error(f"Error loading particles and weights: {e}")

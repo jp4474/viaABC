@@ -371,17 +371,20 @@ class TiMAE(nn.Module):
         """
         # # # print(x.shape, pred.shape)
 
-        loss = (pred - x) ** 2
-        loss = loss.mean(dim=-1)
-        inv_mask = (mask-1) ** 2
+        #loss = (pred - x) ** 2
+        loss = torch.abs(pred - x)
+        loss = torch.nan_to_num(loss,nan=10,posinf=10,neginf=10)
+        loss = torch.clamp(loss,max=10)
+    
+        loss = loss.mean(dim=-1)  # [N, L], mean loss per timestamp
+        inv_mask = (mask -1) ** 2
 
         if self.training:
             loss_removed = (loss * mask).sum() / mask.sum()  # mean loss on removed patches
-            loss_seen = (loss * inv_mask).sum() / inv_mask.sum()
         else:
             loss_removed = 0
-            loss_seen = (loss * inv_mask).sum() / inv_mask.sum()
 
+        loss_seen = (loss * inv_mask).sum() / inv_mask.sum()
         loss = loss_removed + loss_seen
         return loss
 
@@ -394,7 +397,7 @@ class TiMAE(nn.Module):
         loss = self.forward_loss(x, imputation_task, mask)
 
         if y is not None:
-            reg_loss = F.mse_loss(regression_task, y, reduction='mean')
+            reg_loss = F.l1_loss(regression_task, y, reduction='mean')
         else:
             reg_loss = 0
 
@@ -412,14 +415,21 @@ class TiMAE(nn.Module):
         
         return loss, reg_loss, self.lambda_ * kld_weight * space_loss, regression_task, imputation_task
     
-    def get_latent(self, x):
+    def get_latent(self, x, pooling_method = None):
         x, mask, ids_restore = self.forward_encoder(x, 0)
         x = self.decoder_embed(x)
         mask_tokens = self.mask_token.repeat(x.shape[0], ids_restore.shape[1] + 1 - x.shape[1], 1)
         x_ = torch.cat([x[:, 1:, :], mask_tokens], dim=1)  # no cls token
         x_ = torch.gather(x_, dim=1, index=ids_restore.unsqueeze(-1).repeat(1, 1, x.shape[2]))  # unshuffle
         x = torch.cat([x[:, :1, :], x_], dim=1)  # append cls token
-        return x[:, 1:, :]
+        #return x[:, 0, :]
+
+        if pooling_method == "cls":
+            return x[:, 0, :]
+        elif pooling_method == "all":
+            return x
+        else:
+            return x[:, 1:, :]
     
     # def mask_using_id(self, x, mask_id):
     #     """

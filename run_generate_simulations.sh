@@ -1,5 +1,6 @@
 #!/bin/bash
 
-nohup python3 generate_training_data.py > output_generate_training_data.log --train_sizes 500000 100000 100000 2>&1 &
-
+nohup python3 generate_training_data.py > output_generate_training_data.log --train_sizes 200000 20000 20000 --num_workers 16 2>&1 &
+echo "Training data generation started. Check output_generate_training_data.log for progress."
+echo $!
 # End of file

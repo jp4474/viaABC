@@ -14,7 +14,7 @@ class NumpyDataset(Dataset):
         self.data = np.load(os.path.join(data_dir, f'{prefix}_data.npz'), allow_pickle=True)
         self.simulations = self.data['simulations']
         self.params = self.data['params']
-        self.scales = np.mean(self.simulations, axis=1)
+        self.scales = np.mean(self.simulations, axis=1, keepdims=True)
 
         # MZB
         # self.max_ = np.array([ 0.99998673, 19.99958512,  0.5999854 , -1.00000201,  6.49953051,
@@ -62,6 +62,6 @@ def create_dataloaders(data_dir: str, batch_size: int) -> Tuple[DataLoader, Data
     val_dataset.params = val_dataset.params.astype('float64')
 
     train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=4, pin_memory=True)
-    val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=True, num_workers=4, pin_memory=True)
+    val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=4, pin_memory=True)
 
     return train_dataloader, val_dataloader

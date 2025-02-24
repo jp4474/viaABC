@@ -33,6 +33,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--dropout', type=float, default=0.0, help='Dropout rate.')
     parser.add_argument('--beta', type=float, default=4, help='Beta parameter for the VAE loss.')
     parser.add_argument('--type', type=str, default='vanilla', help='Type of model to use.')
+    parser.add_argument('--multi_tasks', action='store_true', help='Use multi-tasks in the model.')
     parser.add_argument('--dirpath', type=str, default='checkpoints', help='Directory to save checkpoints.')
     parser.add_argument('--debug', action='store_true', help='Debug mode in Trainer.')    
     return parser.parse_args()
@@ -97,7 +98,7 @@ def main():
 
         save_model_config(args, seq_len, in_chans)
 
-        pl_model = PreTrainLightning(model=model, lr=args.learning_rate)
+        pl_model = PreTrainLightning(model=model, lr=args.learning_rate, multi_tasks=args.multi_tasks)
 
         checkpoint_callback = ModelCheckpoint(
             dirpath=args.dirpath,

@@ -13,18 +13,22 @@ from pytorch_lightning.callbacks.finetuning import BaseFinetuning
 
 
 class PreTrainLightning(L.LightningModule):
-    def __init__(self, model, lr=1e-3, T_0=10, T_mult=2):
+    def __init__(self, model, multi_tasks = False, lr=1e-3, T_0=10, T_mult=2):
         super().__init__()
         self.model = model
         self.lr = lr
         self.T_0 = T_0  # Number of iterations for the first restart
         self.T_mult = T_mult  # A factor increases T_i after a restart
+        self.multi_tasks = True if multi_tasks else False
 
     def forward(self, simulations, parameters=None, mask_ratio = None):
         # loss_removed, loss_seen, reg_loss, space_loss, param_est, reconstruction = self.model(simulations, parameters)
         # total_loss = loss_removed + loss_seen + reg_loss + space_loss
         # return total_loss, param_est, reconstruction
-        return self.model(x = simulations, mask_ratio = mask_ratio)
+        if self.multi_tasks:
+            return self.model(x = simulations, y = parameters, mask_ratio = mask_ratio)
+        else:
+            return self.model(x = simulations, mask_ratio = mask_ratio)
 
     def training_step(self, batch):
         parameters, simulations = batch

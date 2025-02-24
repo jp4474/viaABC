@@ -13,11 +13,17 @@ def parse_arguments() -> argparse.Namespace:
     
     parser.add_argument('--seed', 
                        type=int,
-                       default=0,
+                       default=42,
                        help='Random seed for reproducibility')
+    
+    parser.add_argument('--num_workers',
+                        type=int,
+                        default=1,
+                        help='Number of workers for parallel processing')
+    
     return parser.parse_args()
 
-def main(train_sizes: List[int], seed: int) -> None:
+def main(train_sizes: List[int], seed: int, num_workers: int) -> None:
     """
     Run the simulation with specified parameters.
     
@@ -28,7 +34,7 @@ def main(train_sizes: List[int], seed: int) -> None:
     
     # Initialize and run simulation
     lotka_abc = LotkaVolterra()
-    lotka_abc.generate_training_data(train_sizes, seed=seed)
+    lotka_abc.generate_training_data(train_sizes, seed=seed, num_workers=num_workers)
 
     # raw_data = np.load("data/mzb_data.npy")
     # mzb_abc = MZB(observational_data=raw_data)
@@ -36,4 +42,4 @@ def main(train_sizes: List[int], seed: int) -> None:
 
 if __name__ == "__main__":
     args = parse_arguments()
-    main(args.train_sizes, args.seed)
+    main(args.train_sizes, args.seed, args.num_workers)
