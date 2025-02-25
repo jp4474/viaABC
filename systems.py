@@ -70,42 +70,15 @@ class LotkaVolterra(LatentABCSMC):
         priors = np.random.uniform(self.lower_bounds, self.upper_bounds, self.num_parameters)
         return priors
     
-    # def calculate_prior_prob(self, parameters):
-    #     probabilities = uniform.pdf(parameters, loc=self.lower_bounds, scale=self.upper_bounds)
-    #     return np.prod(probabilities)
-    
-    # def perturb_parameters(self, parameters, previous_particles):
-    #     # Perturb the parameters
-    #     perturbations = np.random.uniform(-self.perturbation_kernels, self.perturbation_kernels)
-    #     parameters += perturbations
-    #     return parameters
-
     def calculate_prior_prob(self, parameters):
-        # Calculate the prior probability using log-sum-exp trick for numerical stability
-        # Calculate log probabilities
-        log_probs = norm.logpdf(parameters, loc=self.lower_bounds, scale=self.upper_bounds)
-        
-        # Sum the log probabilities (equivalent to multiplying in normal space)  
-        log_sum = np.sum(log_probs)
-        
-        # Convert back to probability space
-        return np.exp(log_sum)
-
+        probabilities = uniform.pdf(parameters, loc=self.lower_bounds, scale=self.upper_bounds)
+        return np.prod(probabilities)
+    
     def perturb_parameters(self, parameters, previous_particles):
-        loc = parameters
-        scale = np.sqrt(2 * np.var(previous_particles, axis=0))
-        assert loc.shape == scale.shape, "loc and scale must have the same shape"
-
-        perturbed_parameters = np.random.normal(loc, scale)
-        return perturbed_parameters
-        # while True:
-        #     perturbed_parameters = np.random.normal(loc, scale)
-        #     # Apply constraints
-        #     alpha, delta = perturbed_parameters
-        #     # if (0 < alpha < 10
-        #     #     and 0 < delta < 10):
-        #     #     # If all constraints are satisfied, return the perturbed parameters
-        #     return perturbed_parameters
+        # Perturb the parameters
+        perturbations = 0.1 * np.random.uniform(-1, 1)
+        parameters += perturbations
+        return parameters
 
 class MZB(LatentABCSMC):
     def __init__(self,
