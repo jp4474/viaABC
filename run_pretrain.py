@@ -149,6 +149,7 @@ def main():
             precision="64-true",
             fast_dev_run=args.debug
         )
+        
 
         trainer.fit(pl_model, train_dataloader, val_dataloader)
 

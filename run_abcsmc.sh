@@ -1,20 +1,18 @@
 #!/bin/bash
-#beta_values=(0 0.01 0.1 1 3)
-#beta_values=(0 0.01 0.1 1 3)
-beta_values=(0.001 0.0001)
-num_particles=10000
-d=64
-ed=32
-enc_depth=4
-dec_depth=2
-mask=0.15
+beta_values=(0 0.001 0.01 0.1 1)
+num_particles=1000
+d=128
+ed=64
+enc_depth=8
+dec_depth=4
+mask=0.5
 
 for beta in "${beta_values[@]}"; do
     # Define the directory path based on the beta value
     if (( $(bc -l <<< "$beta == 0") )); then
-        dirpath="lotka_d${d}_ed${ed}_${enc_depth}_${dec_depth}_ae_mask_${mask}"
+        dirpath="lotka_d${d}_ed${ed}_${enc_depth}_${dec_depth}_ae_mask_${mask}_denoising"
     else
-        dirpath="lotka_d${d}_ed${ed}_${enc_depth}_${dec_depth}_vae_mask_${mask}_beta_${beta}"
+        dirpath="lotka_d${d}_ed${ed}_${enc_depth}_${dec_depth}_vae_mask_${mask}_beta_${beta}_denoising"
     fi
 
     # Define the log file name
@@ -23,7 +21,7 @@ for beta in "${beta_values[@]}"; do
     # Run the ABC-SMC command in the background with nohup
     nohup python3 run_abcsmc.py \
         --path "$dirpath" \
-        --tolerance_levels 0.2 0.18\
+        --tolerance_levels 0.2 0.18 0.16 0.14 0.12\
         --num_particles "$num_particles" \
         > "$log_file" 2>&1 &
 

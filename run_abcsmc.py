@@ -304,12 +304,14 @@ if __name__ == "__main__":
     if not args.finetune:
         raw_data, scaled_data = load_observational_data(Path("data"), system=args.system)
         ground_truth, _ = system.simulate([1, 1])
-        groud_truth_scaled = (ground_truth - ground_truth.mean(axis=0)) / ground_truth.std(axis=0)
+        # ground_truth_scaled = (ground_truth - ground_truth.mean(axis=0)) / ground_truth.std(axis=0)
+        ground_truth_scaled = ground_truth / ground_truth.mean(axis=0)
         reconstructed_data_scaled = reconstruct_data(model, raw_data)
-        reconstructed_data = (reconstructed_data_scaled * raw_data.std(axis=0)) + raw_data.mean(axis=0)
+
+        reconstructed_data = (reconstructed_data_scaled * ground_truth.mean(axis=0))
 
         plot_reconstructions(reconstructed_data, ground_truth, raw_data, output_dir)
-        plot_reconstructions(reconstructed_data_scaled, groud_truth_scaled, scaled_data, output_dir, scaled=True)
+        plot_reconstructions(reconstructed_data_scaled, ground_truth_scaled, scaled_data, output_dir, scaled=True)
 
     # Run ABC-SMC and plot results
     particles, weights = run_abc(system, model, args.tolerance_levels, args.num_particles, output_dir, args.finetune)
