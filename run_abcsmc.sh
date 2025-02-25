@@ -1,11 +1,13 @@
 #!/bin/bash
-beta_values=(0 0.01 0.1 1 3)
-num_particles=1000
+#beta_values=(0 0.01 0.1 1 3)
+#beta_values=(0 0.01 0.1 1 3)
+beta_values=(0.001 0.0001)
+num_particles=10000
 d=64
 ed=32
 enc_depth=4
 dec_depth=2
-mask=0.75
+mask=0.15
 
 for beta in "${beta_values[@]}"; do
     # Define the directory path based on the beta value
@@ -16,12 +18,12 @@ for beta in "${beta_values[@]}"; do
     fi
 
     # Define the log file name
-    log_file="${dirpath}_abc.log"
+    log_file="${dirpath}_abc_normal.log"
 
     # Run the ABC-SMC command in the background with nohup
     nohup python3 run_abcsmc.py \
         --path "$dirpath" \
-        --tolerance_levels 0.3 0.25 0.2 0.15 0.1 \
+        --tolerance_levels 0.2 0.18\
         --num_particles "$num_particles" \
         > "$log_file" 2>&1 &
 

@@ -11,7 +11,6 @@ import lightning as L
 from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts, LambdaLR
 from pytorch_lightning.callbacks.finetuning import BaseFinetuning
 
-
 class PreTrainLightning(L.LightningModule):
     def __init__(self, model, multi_tasks = False, lr=1e-3, warmup_steps=1000, total_steps=100000):
         super().__init__()
@@ -22,9 +21,6 @@ class PreTrainLightning(L.LightningModule):
         self.total_steps = total_steps
 
     def forward(self, simulations, parameters=None, mask_ratio = None):
-        # loss_removed, loss_seen, reg_loss, space_loss, param_est, reconstruction = self.model(simulations, parameters)
-        # total_loss = loss_removed + loss_seen + reg_loss + space_loss
-        # return total_loss, param_est, reconstruction
         if self.multi_tasks:
             return self.model(x = simulations, y = parameters, mask_ratio = mask_ratio)
         else:
@@ -88,18 +84,9 @@ class PlotReconstruction(L.Callback):
         super().__init__()
         self.data = data
 
-        # self.param_names =  [
-        #     r'$\phi$',
-        #     r'$y_{0}$ (Log)',
-        #     r'$\kappa_{0}$',
-        #     r'$\rho$ (Log)', 
-        #     r'$\beta$',
-        #     r'$\delta$ (Log)'
-        # ]
-
         self.param_names =  [
-            r'$\beta$',
-            r'$\gamma$',
+            r'$\alpha$',
+            r'$\delta$',
         ]
 
     def on_validation_epoch_end(self, trainer, pl_module):
@@ -115,12 +102,12 @@ class PlotReconstruction(L.Callback):
                 
                 # Plotting
                 # channel_names = ['MZB', 'Donor Ki67', 'Host Ki67', 'Nfd']
-                channel_names = ['Predator', 'Prey']
+                channel_names = ['Prey', 'Predator']
                 fig, ax = plt.subplots(1, 2, figsize=(10, 5))
 
                 for i in range(2):
-                    ax[i].plot(reconstruction_np[:, i], label='Reconstruction')
-                    ax[i].plot(self.data[:, i], label='Original')
+                    ax[i].plot(reconstruction_np[:, i], label='Scaled Reconstruction')
+                    ax[i].plot(self.data[:, i], label='Scaled Original')
                     ax[i].set_title(channel_names[i])  # Set title for each subplot
                     ax[i].grid(True)
                     ax[i].set_xlabel('Time Steps')

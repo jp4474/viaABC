@@ -17,61 +17,81 @@ from torch import Tensor
 
 # Third-party imports
 from einops import rearrange
-from timm.models.vision_transformer import Block, PatchEmbed, Attention
-from timm.layers import PatchEmbed, Mlp, DropPath, AttentionPoolLatent, RmsNorm, PatchDropout, SwiGLUPacked, SwiGLU
+from timm.models.vision_transformer import Attention
+from timm.layers import Mlp, DropPath, LayerScale
 
 # Local imports
 from pos_embed import get_2d_sincos_pos_embed
 from scaler import DAIN_Layer
 
-#TODO: This is doing Masked 
 
-class DifferentialAttention(nn.Module):
-    def __init__(self, dim, num_heads, layer_num):
+def lambda_init(layer_idx):
+    return 0.8 - 0.6 * torch.exp(torch.tensor(-0.3 * (layer_idx - 1)))
+
+def DiffAttention(Q, K, V, lamb, scaling):
+    Q1, Q2 = torch.chunk(Q, 2, dim=-1)
+    K1, K2 = torch.chunk(K, 2, dim=-1)
+    A1 = torch.matmul(Q1, K1.transpose(-1, -2)) * scaling
+    A2 = torch.matmul(Q2, K2.transpose(-1, -2)) * scaling
+    attention = torch.softmax(A1, dim=-1) - lamb * torch.softmax(A2, dim=-1)
+    output = torch.matmul(attention, V)
+    return output
+
+class MultiHeadDiffAttention(nn.Module):
+    def __init__(self, dim, num_heads, layer_idx):
         super().__init__()
-        self.dim = dim
         self.num_heads = num_heads
-        self.head_dim = dim // num_heads // 2
-        self.scale_value = self.head_dim ** -0.5
+        self.dim = dim
+        assert dim % num_heads == 0, "dim must be divisible by num_heads"
+        self.head_dim = dim // num_heads
 
-        self.q = nn.Linear(dim, dim, bias=False)
-        self.k = nn.Linear(dim, dim, bias=False)
-        self.v = nn.Linear(dim, dim, bias=False)
+        self.q_proj = nn.Linear(dim, dim * 2, bias=False)
+        self.k_proj = nn.Linear(dim, dim * 2, bias=False)
+        self.v_proj = nn.Linear(dim, dim, bias=False)
+        self.out_proj = nn.Linear(dim, dim, bias=False)
 
-        self.lambda_q1 = nn.Parameter(torch.zeros(self.head_dim, dtype=torch.float32).normal_(mean=0, std=0.1))
-        self.lambda_q2 = nn.Parameter(torch.zeros(self.head_dim, dtype=torch.float32).normal_(mean=0, std=0.1))
-        self.lambda_k1 = nn.Parameter(torch.zeros(self.head_dim, dtype=torch.float32).normal_(mean=0, std=0.1))
-        self.lambda_k2 = nn.Parameter(torch.zeros(self.head_dim, dtype=torch.float32).normal_(mean=0, std=0.1))
-        self.lambda_init = 0.8 - 0.6 * math.exp(-0.3 * layer_num)
-        
-        self.norm = nn.RMSNorm(2 * self.head_dim, eps=1e-5, elementwise_affine=False)
-        self.output_projection = nn.Linear(dim, dim)
+        self.scaling = self.head_dim**-0.5
+
+        self.lambda_init = lambda_init(layer_idx)
+
+        self.lambda_q1 = nn.Parameter(
+            torch.zeros(self.head_dim, dtype=torch.float32).normal_(mean=0, std=0.1)
+        )
+        self.lambda_k1 = nn.Parameter(
+            torch.zeros(self.head_dim, dtype=torch.float32).normal_(mean=0, std=0.1)
+        )
+        self.lambda_q2 = nn.Parameter(
+            torch.zeros(self.head_dim, dtype=torch.float32).normal_(mean=0, std=0.1)
+        )
+        self.lambda_k2 = nn.Parameter(
+            torch.zeros(self.head_dim, dtype=torch.float32).normal_(mean=0, std=0.1)
+        )
+
+        self.norm = nn.LayerNorm(dim)
 
     def forward(self, x):
-        queries = rearrange(self.q(x), "b n (h d q) -> b n (q h) d", h=self.num_heads, q=2, d=self.head_dim)
-        queries = queries * self.scale_value
+        batch_size, seq_len, _ = x.shape
 
-        keys = rearrange(self.k(x), "b n (h d k) -> b n (k h) d", h=self.num_heads, k=2, d=self.head_dim)
-        v = rearrange(self.v(x), "b n (h d) -> b h n d", h=self.num_heads, d=2*self.head_dim)
+        Q = self.q_proj(x).view(batch_size, seq_len, self.num_heads, 2 * self.head_dim)
+        K = self.k_proj(x).view(batch_size, seq_len, self.num_heads, 2 * self.head_dim)
+        V = self.v_proj(x).view(batch_size, seq_len, self.num_heads, self.head_dim)
 
-        attention = torch.einsum("bnqd,bnkd->bnqk", queries, keys)
-        attention = torch.nan_to_num(attention)
-        attention = F.softmax(attention, dim=-1, dtype=torch.float32)
+        Q = Q.transpose(1, 2)
+        K = K.transpose(1, 2)
+        V = V.transpose(1, 2)
 
-        lambda_1 = torch.sum(self.lambda_q1 * self.lambda_k1, dim=-1).float()
-        lambda_2 = torch.sum(self.lambda_q2 * self.lambda_k2, dim=-1).float()
-        lambda_value = torch.exp(lambda_1) - torch.exp(lambda_2) + self.lambda_init
+        lambda_1 = torch.exp(torch.sum(self.lambda_q1 * self.lambda_k1, dim=-1))
+        lambda_2 = torch.exp(torch.sum(self.lambda_q2 * self.lambda_k2, dim=-1))
+        lamb = lambda_1 - lambda_2 + self.lambda_init
 
-        attention = rearrange(attention, "b n (q h) (k a) -> q k b n h a", q=2, k=2, h=self.num_heads, a=self.num_heads)
-        attention = attention[0, 0, ...] - lambda_value * attention[1, 1, ...]
+        attn_output = DiffAttention(Q, K, V, lamb, self.scaling)
 
-        out = torch.einsum("bnah,bhnd->bnad", attention, v)
-        out = self.norm(out)
-        out = out * (1 - self.lambda_init)
-        out = rearrange(out, "b n h d -> b n (h d)")
-        out = self.output_projection(out)
+        attn_output = attn_output.transpose(1, 2).contiguous().view(batch_size, seq_len, self.dim)
 
-        return out
+        output = self.out_proj(attn_output)
+        output = self.norm(output)
+        
+        return output
     
 class PositionalEncoding(nn.Module):
     def __init__(self, d_model, max_len=5000):
@@ -181,11 +201,66 @@ class VectorQuantizer(nn.Module):
 
         return quantized_latents  # [B x L x D
 
+
+
+
+class Block(nn.Module):
+    def __init__(
+            self,
+            dim: int,
+            num_heads: int,
+            mlp_ratio: float = 4.,
+            qkv_bias: bool = False,
+            qk_norm: bool = False,
+            proj_bias: bool = True,
+            proj_drop: float = 0.,
+            attn_drop: float = 0.,
+            init_values: Optional[float] = None,
+            drop_path: float = 0.,
+            act_layer: Type[nn.Module] = nn.GELU,
+            norm_layer: Type[nn.Module] = nn.LayerNorm,
+            mlp_layer: Type[nn.Module] = Mlp,
+            diff_attention: bool = False,
+            layer_idx: int = 0,
+    ) -> None:
+        super().__init__()
+        self.norm1 = norm_layer(dim)
+
+        self.attn = Attention(
+            dim,
+            num_heads=num_heads,
+            qkv_bias=qkv_bias,
+            qk_norm=qk_norm,
+            #proj_bias=proj_bias,
+            attn_drop=attn_drop,
+            proj_drop=proj_drop,
+            norm_layer=norm_layer,
+        ) if not diff_attention else MultiHeadDiffAttention(dim, num_heads, layer_idx)
+
+        self.ls1 = LayerScale(dim, init_values=init_values) if init_values else nn.Identity()
+        self.drop_path1 = DropPath(drop_path) if drop_path > 0. else nn.Identity()
+
+        self.norm2 = norm_layer(dim)
+        self.mlp = mlp_layer(
+            in_features=dim,
+            hidden_features=int(dim * mlp_ratio),
+            act_layer=act_layer,
+            bias=proj_bias,
+            drop=proj_drop,
+        )
+        self.ls2 = LayerScale(dim, init_values=init_values) if init_values else nn.Identity()
+        self.drop_path2 = DropPath(drop_path) if drop_path > 0. else nn.Identity()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = x + self.drop_path1(self.ls1(self.attn(self.norm1(x))))
+        x = x + self.drop_path2(self.ls2(self.mlp(self.norm2(x))))
+        return x
+    
 class TiMAE(nn.Module):
     def __init__(self, seq_len: int, in_chans: int, embed_dim: int, depth: int, num_heads: int, 
                  decoder_embed_dim: int, decoder_depth: int, decoder_num_heads: int, mlp_ratio: float = 4.0, 
                  norm_layer=partial(nn.LayerNorm, eps=1e-6), z_type = 'vanilla',  cls_embed = True, dropout = 0.1, 
-                 mask_ratio = 0.15, lambda_=0.00025, bag_size = 1024, trainable_pos_emb = False):
+                 mask_ratio = 0.15, lambda_=0.00025, bag_size = 1024, trainable_pos_emb = False, noise_factor = 0.5, diff_attention = False):
         super().__init__()
         # --------------------------------------------------------------------------
         # Encoder specifics
@@ -198,6 +273,7 @@ class TiMAE(nn.Module):
         self.z_type = z_type
         self.lambda_ = lambda_
         self.decoder_embed_dim = decoder_embed_dim
+        self.noise_factor = noise_factor
         
         # self.scaler_layer = DAIN_Layer(scale_mode, input_dim=in_chans)
 
@@ -212,7 +288,7 @@ class TiMAE(nn.Module):
         # self.pos_embed = PositionalEncoding(embed_dim, max_len=seq_len)
 
         self.blocks = nn.ModuleList([
-            Block(embed_dim, num_heads, mlp_ratio, qkv_bias=True, norm_layer=norm_layer, drop_path=dropout)
+            Block(embed_dim, num_heads, mlp_ratio, qkv_bias=True, norm_layer=norm_layer, drop_path=dropout, diff_attention = diff_attention, layer_idx=i)
             for i in range(depth)])
         
         self.norm = norm_layer(embed_dim)
@@ -234,7 +310,7 @@ class TiMAE(nn.Module):
         # self.decoder_pos_embed = PositionalEncoding(decoder_embed_dim, max_len=seq_len)
 
         self.decoder_blocks = nn.ModuleList([
-            Block(decoder_embed_dim, decoder_num_heads, mlp_ratio, qkv_bias=True, norm_layer=norm_layer, drop_path=dropout)
+            Block(decoder_embed_dim, decoder_num_heads, mlp_ratio, qkv_bias=True, norm_layer=norm_layer, drop_path=dropout, diff_attention=diff_attention, layer_idx=i)
             for i in range(decoder_depth)])
 
         self.decoder_norm = norm_layer(decoder_embed_dim)
@@ -377,7 +453,12 @@ class TiMAE(nn.Module):
         if mask_ratio is None:
             mask_ratio = self.mask_ratio
             
-        latent, mask, ids_restore = self.forward_encoder(x, mask_ratio)
+        if self.training and self.noise_factor > 0:
+            x_ = x + self.noise_factor * torch.randn_like(x)
+        else:
+            x_ = x
+            
+        latent, mask, ids_restore = self.forward_encoder(x_, mask_ratio)
         regression_task, imputation_task = self.forward_decoder(latent, ids_restore)  # [N, L, p*p*3]
         loss = self.forward_loss(x, imputation_task, mask)
 
@@ -407,7 +488,6 @@ class TiMAE(nn.Module):
         x_ = torch.cat([x[:, 1:, :], mask_tokens], dim=1)  # no cls token
         x_ = torch.gather(x_, dim=1, index=ids_restore.unsqueeze(-1).repeat(1, 1, x.shape[2]))  # unshuffle
         x = torch.cat([x[:, :1, :], x_], dim=1)  # append cls token
-        #return x[:, 0, :]
 
         if pooling_method == "cls":
             return x[:, 0, :]

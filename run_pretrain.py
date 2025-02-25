@@ -18,10 +18,10 @@ from lightning.pytorch.loggers import NeptuneLogger
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description='Train MZB Cell Analysis model')
-    parser.add_argument('--batch_size', type=int, default=256, help='Batch size for training and validation.')
-    parser.add_argument('--max_epochs', type=int, default=800, help='Maximum number of epochs to train.')
+    parser.add_argument('--batch_size', type=int, default=768, help='Batch size for training and validation.')
+    parser.add_argument('--max_epochs', type=int, default=384, help='Maximum number of epochs to train.')
     parser.add_argument('--seed', type=int, default=42, help='Random seed for reproducibility.')
-    parser.add_argument('--learning_rate', type=float, default=1e-4, help='Learning rate for the optimizer.')
+    parser.add_argument('--learning_rate', type=float, default=3e-4, help='Learning rate for the optimizer.')
     parser.add_argument('--data_dir', type=str, default='data', help='Directory containing the dataset.')
     parser.add_argument('--embed_dim', type=int, default=64, help='Embedding dimension for the model.')
     parser.add_argument('--num_heads', type=int, default=8, help='Number of attention heads.')
@@ -32,6 +32,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--mask_ratio', type=float, default=0.15, help='Masking ratio for the input data.')
     parser.add_argument('--dropout', type=float, default=0.0, help='Dropout rate.')
     parser.add_argument('--beta', type=float, default=4, help='Beta parameter for the VAE loss.')
+    parser.add_argument('--diff_attention', action='store_true', help='Use different attention for encoder and decoder.')
     parser.add_argument('--type', type=str, default='vanilla', help='Type of model to use.')
     parser.add_argument('--multi_tasks', action='store_true', help='Use multi-tasks in the model.')
     parser.add_argument('--dirpath', type=str, default='checkpoints', help='Directory to save checkpoints.')
@@ -55,7 +56,8 @@ def save_model_config(args, seq_len: int, in_chans: int):
                 'lambda_': args.beta,
                 'mask_ratio': args.mask_ratio,
                 'bag_size': 1024,
-                'dropout': args.dropout
+                'dropout': args.dropout,
+                'diff_attention': args.diff_attention,
             }
         }
     }
@@ -93,7 +95,8 @@ def main():
             lambda_=args.beta, 
             mask_ratio=args.mask_ratio,
             bag_size=1024, 
-            dropout=args.dropout
+            dropout=args.dropout,
+            diff_attention=args.diff_attention
         )
 
         save_model_config(args, seq_len, in_chans)
@@ -127,8 +130,11 @@ def main():
             "in_chans": in_chans
         })
 
-        raw_np = np.load(os.path.join(args.data_dir, 'lotka_data.npy'))
-        scaled_np = raw_np / np.abs(raw_np).mean(axis=0)
+        # raw_np = np.load(os.path.join(args.data_dir, 'lotka_data.npy'))
+        # scaled_np = raw_np / np.abs(raw_np).mean(axis=0)
+
+        data = np.load(os.path.join(args.data_dir, 'lotka_data.npz'))
+        scaled_np = data['scaled_data']
 
         # torch.set_float32_matmul_precision('highest')
         trainer = Trainer(

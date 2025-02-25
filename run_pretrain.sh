@@ -1,17 +1,17 @@
 #!/bin/bash
-beta_values=(0 0.01 0.1 1 3)
-d=64
-ed=32
-enc_depth=4
-dec_depth=2
-mask=0.25
+beta_values=(0 0.0001 0.001 0.01 0.1 1)
+d=128
+ed=64
+enc_depth=8
+dec_depth=4
+mask=0.5
 
 for beta in "${beta_values[@]}"; do
     # Define the directory path with the current beta value
     if (( $(bc -l <<< "$beta == 0") )); then
-        dirpath="lotka_d${d}_ed${ed}_${enc_depth}_${dec_depth}_ae_mask_${mask}"
+        dirpath="lotka_d${d}_ed${ed}_${enc_depth}_${dec_depth}_ae_mask_${mask}_denoising_diff_attn"
     else
-        dirpath="lotka_d${d}_ed${ed}_${enc_depth}_${dec_depth}_vae_mask_${mask}_beta_${beta}"
+        dirpath="lotka_d${d}_ed${ed}_${enc_depth}_${dec_depth}_vae_mask_${mask}_beta_${beta}_denoising_diff_attn"
     fi
     
     # Set the log file name
@@ -30,6 +30,7 @@ for beta in "${beta_values[@]}"; do
             --decoder_embed_dim "$ed" \
             --decoder_num_heads 8 \
             --mask_ratio "$mask" \
+            --diff_attention \
             > "$log_file" 2>&1 &
     else 
         nohup python3 run_pretrain.py \
@@ -43,6 +44,7 @@ for beta in "${beta_values[@]}"; do
             --decoder_embed_dim "$ed" \
             --decoder_num_heads 8 \
             --mask_ratio "$mask" \
+            --diff_attention \
             > "$log_file" 2>&1 &
     fi
 
