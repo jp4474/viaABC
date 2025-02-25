@@ -198,7 +198,7 @@ class LatentABCSMC:
         scaled_data = self.raw_observational_data/mean
         self.encoded_observational_data = self.model.get_latent(torch.tensor(scaled_data, dtype=torch.float32).unsqueeze(0).to(self.model.device)).cpu().numpy().squeeze(0)
     
-    def __log_generation_stats(self, t: int, particles: np.ndarray, weights: np.ndarray, start_time: float, num_simulations: int):
+    def _log_generation_stats(self, t: int, particles: np.ndarray, weights: np.ndarray, start_time: float, num_simulations: int):
         duration = time.time() - start_time
         self.logger.info(f"Generation {t + 1} Completed. Accepted {self.num_particles} particles in {duration:.2f} seconds with {num_simulations} total simulations.")
 
@@ -244,9 +244,12 @@ class LatentABCSMC:
 
             while accepted < self.num_particles:
                 if t == 0:
-                    perturbed_params = self.sample_priors()
-                    prior_probability = 1.0
-                    new_weight = 1.0
+                    # perturbed_params = self.sample_priors()
+                    # prior_probability = 1.0
+                    # new_weight = 1.0
+                    generation_particles, generation_weights = self.initialize_particles(num_particles, epsilon)
+                    accepted += num_particles
+                    continue
                 else:
                     idx = np.random.choice(len(previous_particles), p=previous_weights)
                     perturbed_params = self.perturb_parameters(previous_particles[idx], previous_particles)
@@ -284,7 +287,7 @@ class LatentABCSMC:
             particles[t] = np.array(generation_particles)
             weights[t] = np.array(generation_weights) / np.sum(generation_weights)
 
-            self.__log_generation_stats(t, particles[t], weights[t], start_time_generation, running_num_simulations)
+            self._log_generation_stats(t, particles[t], weights[t], start_time_generation, running_num_simulations)
 
         self.particles = particles
         self.weights = weights
@@ -335,7 +338,7 @@ class LatentABCSMC:
             ax[i].legend()
 
         # Set a title for the entire figure
-        fig.suptitle(f"Generation {i+1}")
+        fig.suptitle(f"Generation {generation+1}")
         
         # Adjust layout to prevent overlap
         plt.tight_layout()
@@ -344,10 +347,10 @@ class LatentABCSMC:
         # Save the figure as a PNG file
         if save:
             if generation == -1:
-                generation = self.num_generations
-
+                generation = self.num_generations-1
+ 
             os.makedirs("figures", exist_ok=True)
-            plt.savefig(f"figures/generation_{i+1}.png", dpi=100)
+            plt.savefig(f"figures/generation_{generation+1}.png", dpi=100)
         plt.close()
 
     @torch.inference_mode()
@@ -507,3 +510,51 @@ class LatentABCSMC:
             self.logger.info("Particles and weights loaded successfully.")
         except Exception as e:
             self.logger.error(f"Error loading particles and weights: {e}")
+
+    def update_train_dataset(self, train_dataset):
+        # check if train_dataset is a torch Dataset
+        if not isinstance(train_dataset, torch.utils.data.Dataset):
+            raise ValueError("train_dataset must be a torch Dataset.")
+        
+        self.train_dataset = train_dataset
+        self.logger.info("Training dataset updated.")
+
+    @torch.inference_mode()
+    def initialize_particles(self, num_particles: int, epsilon: float):
+        if self.train_dataset is None:
+            raise ValueError("Training dataset must be provided to initialize particles.")
+        
+        train_loader = torch.utils.data.DataLoader(self.train_dataset, batch_size=1000, shuffle=False)
+        candidates = {'parameters': [], 'distances': []}
+        
+        # Iterate through the data loader
+        for i, batch in enumerate(train_loader):
+            x, y = batch
+            y = y.to(self.model.device).float()
+            latent = self.model.get_latent(y).cpu().numpy()
+            
+            # Ensure the latent is a tensor before appending
+            candidates['parameters'].append(x.numpy())
+            candidates['distances'].append(self.calculate_distance(latent))
+
+        # Concatenate parameters and distances (all are tensors, so use torch.cat and torch.stack)
+        candidates['parameters'] = np.concatenate(candidates['parameters'], axis=0)
+        candidates['distances'] = np.concatenate(candidates['distances'], axis=0)
+
+        # Sort the candidates by distance
+        sorted_indices = np.argsort(candidates['distances'])
+        sorted_candidates = candidates['parameters'][sorted_indices]
+        sorted_distances = candidates['distances'][sorted_indices]
+
+        # Filter candidates by epsilon
+        valid_indices = sorted_distances < epsilon
+        sorted_candidates = sorted_candidates[valid_indices]
+
+        # Grab the first num_particles candidates
+        particles = sorted_candidates[:num_particles]
+        weights = np.ones(num_particles)
+
+        return particles, weights
+        
+
+        

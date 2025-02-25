@@ -91,7 +91,7 @@ def load_model(path: Path, finetune: bool = False, num_parameters: int = 2) -> P
     return finetune_model
 
 
-def load_system(name: str = "lotka_volterra") -> LotkaVolterra:
+def load_system(name: str = "lotka_volterra", data_dir: str = "data") -> LotkaVolterra:
     """
     Load the system from the given name.
 
@@ -107,6 +107,8 @@ def load_system(name: str = "lotka_volterra") -> LotkaVolterra:
     name = name.lower()
     if name == "lotka_volterra":
         system = LotkaVolterra()
+        train_ds = NumpyDataset("data", "train")
+        system.update_train_dataset(train_ds)
     elif name == "sir":
         raise NotImplementedError("SIR system is not implemented yet.")
     else:
@@ -160,7 +162,8 @@ def reconstruct_data(pl_model: PreTrainLightning, data: np.ndarray, scaled: bool
         np.ndarray: The reconstructed data.
     """
     if not scaled:
-        data = (data - data.mean(axis=0)) / data.std(axis=0)
+        # data = (data - data.mean(axis=0)) / data.std(axis=0)
+        data = data / data.mean(axis=0)
 
     with torch.no_grad():
         _, _, _, param_est, reconstruction = pl_model(
@@ -282,6 +285,7 @@ if __name__ == "__main__":
     parser.add_argument("--tolerance_levels", type=float, nargs="+", required=True, help="Tolerance levels for ABC-SMC.")
     parser.add_argument("--num_particles", type=int, required=True, help="Number of particles for ABC-SMC.")
     parser.add_argument("--finetune", action="store_true", help="Whether the model is finetuned or not.")
+    parser.add_argument("--data_dir", type=str, default="data", help="Path to the data directory.")
     args = parser.parse_args()
 
     # Validate system and set number of parameters
@@ -299,7 +303,7 @@ if __name__ == "__main__":
 
     # Load model, system, and data
     model = load_model(path, args.finetune, num_parameters)
-    system = load_system(args.system)
+    system = load_system(args.system, args.data_dir)
 
     if not args.finetune:
         raw_data, scaled_data = load_observational_data(Path("data"), system=args.system)

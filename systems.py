@@ -4,7 +4,7 @@ from scipy.stats import gaussian_kde, norm, uniform
 import numpy as np
 import torch
 import logging
-from typing import Union
+from typing import Union, List
 import pandas as pd
 import time
 import math
@@ -33,7 +33,6 @@ class LotkaVolterra(LatentABCSMC):
         t0 = 0,
         tmax = 15, 
         time_space = np.array([1.1, 2.4, 3.9, 5.6, 7.5, 9.6, 11.9, 14.4])):
-        #time_space = np.array([0.5, 1.1, 2.4, 3.1, 3.9, 5.1, 5.6, 7.1, 7.5, 9.0, 9.6, 11.0, 11.9, 13.0, 14.4, 14.7])),
         super().__init__(num_parameters, lower_bounds, upper_bounds, perturbation_kernels, observational_data, model, state0, t0, tmax, time_space)
 
     def ode_system(self, t, state, parameters):
@@ -45,25 +44,29 @@ class LotkaVolterra(LatentABCSMC):
         dpredator = predator * (-gamma + delta * prey)
         return [dprey, dpredator]
     
-    def calculate_distance(self, y: np.ndarray) -> float:
+    def calculate_distance(self, y: np.ndarray) -> np.ndarray:
         """
-        Calculate distance between encoded observational data and input vector y.
+        Calculate distances between encoded observational data and input vectors in y in a vectorized manner.
         
         Args:
-            y: Input vector to compare against
-            norm: Type of norm to use (1=Manhattan, 2=Euclidean, inf=Chebyshev)
-        
+            y: Batched input vectors to compare against (shape: [batch_size, vector_size])
+            
         Returns:
-            float: Distance measure between 0 and 2
+            np.ndarray: Distance measures between 0 and 2 for each item in the batch
         """
-        x = self.encoded_observational_data #.flatten()
-        y = y[0]
+        x = self.encoded_observational_data  # Encoded data (single reference vector)
 
-        _, _, f1 = bert_score(x, y)
+        if y.shape[0] == 1:
+            y = y.squeeze(0)
+        
+        # Compute similarity for all items in the batch using bert_score (assuming bert_score can handle batched inputs)
+        _, _, f1_scores = bert_score(x, y)
+        
+        # Calculate distances for all items in the batch
+        distances = 1 - f1_scores
+        
+        return distances
 
-        return 1-f1
-        # cos_sim_value = cosine_similarity(x, y)
-        # return 1 - cos_sim_value
 
     def sample_priors(self):
         # Sample from the prior distribution
@@ -79,6 +82,7 @@ class LotkaVolterra(LatentABCSMC):
         perturbations = 0.1 * np.random.uniform(-1, 1)
         parameters += perturbations
         return parameters
+        
 
 class MZB(LatentABCSMC):
     def __init__(self,

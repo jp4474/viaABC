@@ -1,5 +1,6 @@
 #!/bin/bash
-beta_values=(0 0.001 0.01 0.1 1)
+# beta_values=(0 0.0001 0.001 0.01 0.1 1)
+beta_values=(0)
 num_particles=1000
 d=128
 ed=64
@@ -16,7 +17,7 @@ for beta in "${beta_values[@]}"; do
     fi
 
     # Define the log file name
-    log_file="${dirpath}_abc_normal.log"
+    log_file="${dirpath}_abc.log"
 
     # Run the ABC-SMC command in the background with nohup
     nohup python3 run_abcsmc.py \
