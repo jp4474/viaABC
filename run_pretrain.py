@@ -18,10 +18,10 @@ from lightning.pytorch.loggers import NeptuneLogger
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description='Train MZB Cell Analysis model')
-    parser.add_argument('--batch_size', type=int, default=768, help='Batch size for training and validation.')
+    parser.add_argument('--batch_size', type=int, default=256, help='Batch size for training and validation.')
     parser.add_argument('--max_epochs', type=int, default=800, help='Maximum number of epochs to train.')
     parser.add_argument('--seed', type=int, default=42, help='Random seed for reproducibility.')
-    parser.add_argument('--learning_rate', type=float, default=2e-4, help='Learning rate for the optimizer.')
+    parser.add_argument('--learning_rate', type=float, default=1e-4, help='Learning rate for the optimizer.')
     parser.add_argument('--data_dir', type=str, default='data', help='Directory containing the dataset.')
     parser.add_argument('--embed_dim', type=int, default=64, help='Embedding dimension for the model.')
     parser.add_argument('--num_heads', type=int, default=8, help='Number of attention heads.')

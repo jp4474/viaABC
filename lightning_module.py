@@ -8,18 +8,18 @@ import torch
 import pandas as pd
 import numpy as np
 import lightning as L
-from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
+from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts, LambdaLR
 from pytorch_lightning.callbacks.finetuning import BaseFinetuning
 
 
 class PreTrainLightning(L.LightningModule):
-    def __init__(self, model, multi_tasks = False, lr=1e-3, T_0=10, T_mult=2):
+    def __init__(self, model, multi_tasks = False, lr=1e-3, warmup_steps=1000, total_steps=100000):
         super().__init__()
         self.model = model
         self.lr = lr
-        self.T_0 = T_0  # Number of iterations for the first restart
-        self.T_mult = T_mult  # A factor increases T_i after a restart
         self.multi_tasks = True if multi_tasks else False
+        self.warmup_steps = warmup_steps
+        self.total_steps = total_steps
 
     def forward(self, simulations, parameters=None, mask_ratio = None):
         # loss_removed, loss_seen, reg_loss, space_loss, param_est, reconstruction = self.model(simulations, parameters)
@@ -52,20 +52,33 @@ class PreTrainLightning(L.LightningModule):
     
     def configure_optimizers(self):
         params = filter(lambda p: p.requires_grad, self.parameters())
-        optimizer = torch.optim.AdamW(params=params, lr=self.lr, weight_decay=0.05)
-        
-        # Cosine Annealing with Warm Restarts
-        scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=self.T_0, T_mult=self.T_mult)
+        optimizer = torch.optim.AdamW(
+            params=params,
+            lr=self.lr,
+            betas=(0.9, 0.999),
+            eps=1e-6,
+            weight_decay=0.01,
+        )
+        def linear_warmup_decay(step, warmup_steps, total_steps):
+            if step < warmup_steps:
+                return step / warmup_steps
+            return max((total_steps - step) / (total_steps - warmup_steps), 0)
+
+        # Linear Warmup + Decay
+        scheduler = LambdaLR(
+            optimizer, 
+            lr_lambda=lambda step: linear_warmup_decay(step, self.warmup_steps, self.total_steps)
+        )
         
         return {
             "optimizer": optimizer,
             "lr_scheduler": {
                 "scheduler": scheduler,
-                "interval": "step",  # or 'epoch' depending on your needs
+                "interval": "step", 
                 "frequency": 1
             }
         }
-    
+
     def get_latent(self, x):
         # return self.model.get_latent(x).mean(dim=1)
         return self.model.get_latent(x)

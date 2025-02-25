@@ -72,20 +72,6 @@ class DifferentialAttention(nn.Module):
         out = self.output_projection(out)
 
         return out
-     
-class LayerScale(nn.Module):
-    def __init__(
-            self,
-            dim: int,
-            init_values: float = 1e-5,
-            inplace: bool = False,
-    ) -> None:
-        super().__init__()
-        self.inplace = inplace
-        self.gamma = nn.Parameter(init_values * torch.ones(dim))
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return x.mul_(self.gamma) if self.inplace else x * self.gamma
     
 class PositionalEncoding(nn.Module):
     def __init__(self, d_model, max_len=5000):
@@ -198,9 +184,8 @@ class VectorQuantizer(nn.Module):
 class TiMAE(nn.Module):
     def __init__(self, seq_len: int, in_chans: int, embed_dim: int, depth: int, num_heads: int, 
                  decoder_embed_dim: int, decoder_depth: int, decoder_num_heads: int, mlp_ratio: float = 4.0, 
-                 norm_layer=partial(nn.LayerNorm, eps=1e-6), norm_pix_loss=False, z_type = 'vanilla',  cls_embed = True, dropout = 0.1, 
-                 mask_ratio = 0.15, diagonal_attention=False, lambda_=0.00025, scale_mode = "adaptive_scale", bag_size = 1024,
-                 differential_attention = False):
+                 norm_layer=partial(nn.LayerNorm, eps=1e-6), z_type = 'vanilla',  cls_embed = True, dropout = 0.1, 
+                 mask_ratio = 0.15, lambda_=0.00025, bag_size = 1024, trainable_pos_emb = False):
         super().__init__()
         # --------------------------------------------------------------------------
         # Encoder specifics
@@ -223,7 +208,7 @@ class TiMAE(nn.Module):
         if cls_embed:
             self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
 
-        self.pos_embed = nn.Parameter(torch.zeros(1, self.seq_len + 1, embed_dim), requires_grad=False)  # fixed sin-cos embedding
+        self.pos_embed = nn.Parameter(torch.zeros(1, self.seq_len + 1, embed_dim), requires_grad=trainable_pos_emb)  # fixed sin-cos embedding
         # self.pos_embed = PositionalEncoding(embed_dim, max_len=seq_len)
 
         self.blocks = nn.ModuleList([
@@ -236,7 +221,7 @@ class TiMAE(nn.Module):
         # --------------------------------------------------------------------------
         # Decoder specifics
         if z_type == 'vanilla':
-            self.decoder_embed = nn.Linear(embed_dim, decoder_embed_dim, bias=False)
+            self.decoder_embed = nn.Linear(embed_dim, decoder_embed_dim)
         elif z_type == 'vae':
             self.decoder_embed = Lambda(embed_dim, decoder_embed_dim)
         elif z_type == 'vq-vae':
@@ -245,7 +230,7 @@ class TiMAE(nn.Module):
 
         self.mask_token = nn.Parameter(torch.zeros(1, 1, decoder_embed_dim))
         
-        self.decoder_pos_embed = nn.Parameter(torch.zeros(1, self.seq_len + 1, decoder_embed_dim), requires_grad=False)  # fixed sin-cos embedding
+        self.decoder_pos_embed = nn.Parameter(torch.zeros(1, self.seq_len + 1, decoder_embed_dim), requires_grad=trainable_pos_emb)  # fixed sin-cos embedding
         # self.decoder_pos_embed = PositionalEncoding(decoder_embed_dim, max_len=seq_len)
 
         self.decoder_blocks = nn.ModuleList([
@@ -371,10 +356,10 @@ class TiMAE(nn.Module):
         """
         # # # print(x.shape, pred.shape)
 
-        #loss = (pred - x) ** 2
-        loss = torch.abs(pred - x)
-        loss = torch.nan_to_num(loss,nan=10,posinf=10,neginf=10)
-        loss = torch.clamp(loss,max=10)
+        loss = (pred - x) ** 2
+        # loss = torch.abs(pred - x)
+        # loss = torch.nan_to_num(loss,nan=10,posinf=10,neginf=10)
+        # loss = torch.clamp(loss,max=10)
     
         loss = loss.mean(dim=-1)  # [N, L], mean loss per timestamp
         inv_mask = (mask -1) ** 2

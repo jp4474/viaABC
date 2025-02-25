@@ -198,103 +198,103 @@ class LatentABCSMC:
         scaled_data = self.raw_observational_data/mean
         self.encoded_observational_data = self.model.get_latent(torch.tensor(scaled_data, dtype=torch.float32).unsqueeze(0).to(self.model.device)).cpu().numpy().squeeze(0)
     
+    def __log_generation_stats(self, t: int, particles: np.ndarray, weights: np.ndarray, start_time: float, num_simulations: int):
+        duration = time.time() - start_time
+        self.logger.info(f"Generation {t + 1} Completed. Accepted {self.num_particles} particles in {duration:.2f} seconds with {num_simulations} total simulations.")
+
+        mean = np.average(particles, weights=weights, axis=0)
+        var = np.average((particles - mean) ** 2, weights=weights, axis=0)
+        median = np.median(particles, axis=0)
+
+        self.logger.info(f"Mean: {mean}")
+        self.logger.info(f"Median: {median}")
+        self.logger.info(f"Variance: {var}")
+
     @torch.inference_mode()
-    def run(self, num_particles: int, tolerance_levels : List):
+    def run(self, num_particles: int, tolerance_levels: List[float]):
         if self.model is None:
             raise ValueError("Model must be provided to encode the data and run the algorithm.")
-        
-        if tolerance_levels is None:
-            raise ValueError("Tolerance levels must be provided")
-    
+        if not tolerance_levels:
+            raise ValueError("Tolerance levels must be provided.")
+
         self.num_generations = len(tolerance_levels)
         self.num_particles = num_particles
         total_num_simulations = 0
+
         self.encode_observational_data()
         particles = np.ones((self.num_generations, self.num_particles, self.num_parameters))
         weights = np.ones((self.num_generations, self.num_particles))
+
         self.logger.info(f"Tolerance levels: {tolerance_levels}")
         start_time = time.time()
         self.logger.info("Starting ABC SMC run")
+
         for t in range(self.num_generations):
             self.logger.info(f"Generation {t + 1} started")
             start_time_generation = time.time()
+
             generation_particles = []
             generation_weights = []
             accepted = 0
             running_num_simulations = 0
             epsilon = tolerance_levels[t]
-        
+            if t > 0:
+                previous_particles = particles[t - 1]
+                previous_weights = weights[t - 1]
+
             while accepted < self.num_particles:
                 if t == 0:
-                    # Step 4: Sample from prior in the first generation
                     perturbed_params = self.sample_priors()
-                    new_weight = 1
-                    prior_probability = 1
+                    prior_probability = 1.0
+                    new_weight = 1.0
                 else:
-                    # Step 6: Sample from the previous generation's particles with weights
-                    previous_particles = np.array(particles[t-1,:,:])
-                    previous_weights = np.array(weights[t-1,:])
-
                     idx = np.random.choice(len(previous_particles), p=previous_weights)
-
-                    # Step 7: Perturb parameters and calculate the prior probability
                     perturbed_params = self.perturb_parameters(previous_particles[idx], previous_particles)
-
-                    # Step 8: If prior probability of the perturbed parameters is 0, resample
                     prior_probability = self.calculate_prior_prob(perturbed_params)
+
                     if prior_probability <= 0:
-                        continue # Go back to sampling if prior probability is 0
+                        continue
 
-                    # Convert to np.float128 for better numerical precision
-                    thetaLogWeight = np.longdouble(np.log(prior_probability)) - np.longdouble(gaussian_kde(previous_particles.T, weights=previous_weights).logpdf(perturbed_params))
-                    new_weight = np.exp(thetaLogWeight, dtype=np.longdouble)
+                    theta_log_weight = np.log(prior_probability) - gaussian_kde(previous_particles.T, weights=previous_weights).logpdf(perturbed_params)
+                    new_weight = np.exp(theta_log_weight)
 
-                # Step 9: Simulate the ODE system and encode the data
+                if new_weight <= 0:
+                    continue
+
                 y, status = self.simulate(perturbed_params)
-
-                total_num_simulations += 1
-                running_num_simulations += 1
+                running_num_simulations += 1  # Increment for every simulation attempt
 
                 if status != 0:
-                    continue # Go back to sampling if simulation failed
+                    continue
 
-                #y_scaled = (y - y.mean(axis=0)) / y.std(axis=0)
-                y_scaled = y / y.mean(axis=0)
+                y_scaled = y / np.abs(y).mean(0)
                 y_tensor = torch.tensor(y_scaled, dtype=torch.float32).unsqueeze(0).to(self.model.device)
                 y_latent_np = self.model.get_latent(y_tensor).cpu().numpy()
 
-                # Step 10: Compute the distance and check if it's within the tolerance
                 dist = self.calculate_distance(y_latent_np)
-
                 if dist >= epsilon:
-                    continue  # Go back to sampling if distance is not small enough
-                
-                # Step 11: Accept the particle and store it
+                    continue
+
                 accepted += 1
                 generation_particles.append(perturbed_params)
                 generation_weights.append(new_weight)
+                
+            total_num_simulations += running_num_simulations
 
-            # Step 12: Normalize weights for the current generation
-            generation_weights /= np.sum(generation_weights, axis=0)
             particles[t] = np.array(generation_particles)
-            weights[t] = np.array(generation_weights).flatten()
-            end_time_generation = time.time()
-            duration_generation = end_time_generation - start_time_generation
-            duration = end_time_generation - start_time_generation
-            mean_est = np.average(particles[t], weights=weights[t], axis=0)
-            self.logger.info(f"Generation {t + 1} Completed. Accepted {self.num_particles} particles in {duration_generation:.2f} seconds with {running_num_simulations} total simulations.")
-            self.logger.info(f"Mean estimate: {mean_est}")
+            weights[t] = np.array(generation_weights) / np.sum(generation_weights)
+
+            self.__log_generation_stats(t, particles[t], weights[t], start_time_generation, running_num_simulations)
 
         self.particles = particles
         self.weights = weights
 
-        end_time = time.time()
-        duration = end_time - start_time
+        duration = time.time() - start_time
         self.logger.info(f"ABC SMC run completed in {duration:.2f} seconds with {total_num_simulations} total simulations.")
 
         return particles, weights
 
-    def compute_statistics(self, generation: int = 0, return_as_dataframe: bool = False):
+    def compute_statistics(self, generation: int = 0):
         """ Compute statistics of the particles at the given generation.
         Args:
             generation (int): Generation to compute statistics for. Defaults to the last generation.
@@ -318,16 +318,11 @@ class LatentABCSMC:
         self.var = var
         self.median = median
 
-        if return_as_dataframe:
-            return pd.DataFrame({
-                'mean': mean,
-                'median': median,
-                'variance': var,
-            })
-        else:
-            self.logger.info(f"Mean: {mean}")
-            self.logger.info(f"Median: {median}")
-            self.logger.info(f"Variance: {var}")
+        self.logger.info(f"Mean: {mean}")
+        self.logger.info(f"Median: {median}")
+        self.logger.info(f"Variance: {var}")
+
+        return mean, median, var
     
     def visualize_generation(self, generation: int = -1, save: bool = False):
         fig, ax = plt.subplots(1, self.num_parameters, figsize=(6, 4))
