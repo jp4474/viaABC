@@ -12,7 +12,7 @@ from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts, LambdaLR
 from pytorch_lightning.callbacks.finetuning import BaseFinetuning
 
 class PreTrainLightning(L.LightningModule):
-    def __init__(self, model, multi_tasks = False, lr=1e-3, warmup_steps=1000, total_steps=100000):
+    def __init__(self, model, multi_tasks = False, lr=1e-3, warmup_steps=1000, total_steps=52000):
         super().__init__()
         self.model = model
         self.lr = lr

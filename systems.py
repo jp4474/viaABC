@@ -67,7 +67,6 @@ class LotkaVolterra(LatentABCSMC):
         
         return distances
 
-
     def sample_priors(self):
         # Sample from the prior distribution
         priors = np.random.uniform(self.lower_bounds, self.upper_bounds, self.num_parameters)
@@ -79,7 +78,7 @@ class LotkaVolterra(LatentABCSMC):
     
     def perturb_parameters(self, parameters, previous_particles):
         # Perturb the parameters
-        perturbations = 0.1 * np.random.uniform(-1, 1)
+        perturbations = 0.05 * np.random.uniform(-1, 1)
         parameters += perturbations
         return parameters
         
