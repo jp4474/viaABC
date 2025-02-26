@@ -281,11 +281,10 @@ class LatentABCSMC:
                 accepted += 1
                 generation_particles.append(perturbed_params)
                 generation_weights.append(new_weight)
-                
-            total_num_simulations += running_num_simulations
 
+            total_num_simulations += running_num_simulations
             particles[t] = np.array(generation_particles)
-            weights[t] = np.array(generation_weights) / np.sum(generation_weights)
+            weights[t] = np.array(generation_weights).reshape(num_particles) / np.sum(generation_weights)
 
             self._log_generation_stats(t, particles[t], weights[t], start_time_generation, running_num_simulations)
 
@@ -534,7 +533,7 @@ class LatentABCSMC:
             latent = self.model.get_latent(y).cpu().numpy()
             
             # Ensure the latent is a tensor before appending
-            candidates['parameters'].append(x.numpy())
+            candidates['parameters'].append(x.numpy() * 10)
             candidates['distances'].append(self.calculate_distance(latent))
 
         # Concatenate parameters and distances (all are tensors, so use torch.cat and torch.stack)
@@ -552,7 +551,7 @@ class LatentABCSMC:
 
         # Grab the first num_particles candidates
         particles = sorted_candidates[:num_particles]
-        weights = np.ones(num_particles)
+        weights = [1.0] * num_particles
 
         return particles, weights
         
