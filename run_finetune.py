@@ -17,8 +17,8 @@ from lightning.pytorch.loggers import NeptuneLogger
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description='Finetune model')
-    parser.add_argument('--batch_size', type=int, default=32, help='Batch size for training and validation.')
-    parser.add_argument('--max_epochs', type=int, default=20, help='Maximum number of epochs to train.')
+    parser.add_argument('--batch_size', type=int, default=768, help='Batch size for training and validation.')
+    parser.add_argument('--max_epochs', type=int, default=100, help='Maximum number of epochs to train.')
     parser.add_argument('--seed', type=int, default=42, help='Random seed for reproducibility.')
     parser.add_argument('--learning_rate', type=float, default=1e-5, help='Learning rate for the optimizer.')
     parser.add_argument('--data_dir', type=str, default='data', help='Directory containing the dataset.')
@@ -59,7 +59,7 @@ def main():
         )
 
         lr_monitor = LearningRateMonitor(logging_interval='epoch')
-        early_stop_callback = EarlyStopping(monitor="val_loss", patience=30, mode="min")
+        early_stop_callback = EarlyStopping(monitor="val_loss", patience=10, mode="min")
 
         api_token = os.getenv("NEPTUNE_API_TOKEN")
         if not api_token:

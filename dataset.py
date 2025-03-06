@@ -14,21 +14,7 @@ class NumpyDataset(Dataset):
         self.data = np.load(os.path.join(data_dir, f'{prefix}_data.npz'), allow_pickle=True)
         self.simulations = self.data['simulations']
         self.params = self.data['params']
-        self.scales = np.mean(self.simulations, axis=1, keepdims=True)
-
-        # MZB
-        # self.max_ = np.array([ 0.99998673, 19.99958512,  0.5999854 , -1.00000201,  6.49953051,
-        #  0.49987116])
-        # self.min_ = np.array([ 6.16673630e-06,  8.00015844e+00,  1.35937240e-05, -8.99987713e+00,
-        #  1.00007737e+00, -5.99925511e+00])
-
-        self.m = np.mean(self.simulations, axis=1)
-        self.sd = np.std(self.simulations, axis=1)
-
-        self.max_ = np.array([10, 10])
-        self.min_ = np.array([0, 0])
-        
-        # self.scales = np.abs(self.simulations).mean(axis=1)
+        self.scales = np.mean(np.abs(self.simulations), axis = 1, keepdims=True)
 
     def __len__(self):
         return len(self.simulations)
@@ -37,15 +23,12 @@ class NumpyDataset(Dataset):
         x = self.params[idx]
         y = self.simulations[idx]
 
-        x_scaled = (x - self.min_) / (self.max_ - self.min_)
-        y_scaled = y / self.scales[idx]
-        # y_scaled = (y - self.m[idx]) / (self.sd[idx])
-        # Convert to torch tensors
-        x = torch.from_numpy(x_scaled).to(torch.float64)
-        y = torch.from_numpy(y_scaled).to(torch.float64)
+        y = y / self.scales[idx]
 
-        return x, y 
-    
+        x = torch.from_numpy(x).to(torch.float64)
+        y = torch.from_numpy(y).to(torch.float64)
+
+        return x, y
 
 def create_dataloaders(data_dir: str, batch_size: int) -> Tuple[DataLoader, DataLoader]:
     # Check data directory existence
@@ -65,3 +48,37 @@ def create_dataloaders(data_dir: str, batch_size: int) -> Tuple[DataLoader, Data
     val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=4, pin_memory=True)
 
     return train_dataloader, val_dataloader
+
+class SiameseMNIST(Dataset):
+    """
+    Train: For each sample creates randomly a positive or a negative pair
+    Test: Creates fixed pairs for testing
+    """
+
+    def __init__(self, data_dir: str, prefix='train'):
+        self.data_dir = data_dir
+        
+        # Load data
+        self.data = np.load(os.path.join(data_dir, f'{prefix}_data.npz'), allow_pickle=True)
+        self.anchors = self.data['anchor_y']
+        self.positives = self.data['pos_y']
+        self.negatives = self.data['neg_y']
+
+        self.max = np.array([1.23131727e+05, 5.07489562e+01])
+        self.min = np.array([-6.81139813e-07,  5.17101545e-07])
+
+    def __getitem__(self, index):
+        anchor = self.anchors[index]
+        positive = self.positives[index]
+        negative = self.negatives[index]
+
+        # Scale and Convert to torch tensors
+        anchor = (anchor - self.min) / (self.max - self.min)
+        positive = (positive - self.min) / (self.max - self.min)
+        negative = (negative - self.min) / (self.max - self.min)
+        
+        anchor = torch.from_numpy(anchor).to(torch.float64)
+        positive = torch.from_numpy(positive).to(torch.float64)
+        negative = torch.from_numpy(negative).to(torch.float64)
+
+        return anchor, positive, negative

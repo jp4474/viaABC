@@ -8,7 +8,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument('--train_sizes', 
                        type=int, 
                        nargs=3,
-                       default=[500000, 50000, 50000],
+                       default=[50000, 10000, 10000],
                        help='List of three integers for training data sizes')
     
     parser.add_argument('--seed', 

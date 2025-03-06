@@ -14,3 +14,6 @@ penv
 *.checkpoints
 *.ckpt
 *.yaml
+*.npz
+*.npy
+*.png

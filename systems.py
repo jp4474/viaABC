@@ -59,13 +59,18 @@ class LotkaVolterra(LatentABCSMC):
         if y.shape[0] == 1:
             y = y.squeeze(0)
         
-        # Compute similarity for all items in the batch using bert_score (assuming bert_score can handle batched inputs)
-        _, _, f1_scores = bert_score(x, y)
+        # # Compute similarity for all items in the batch using bert_score (assuming bert_score can handle batched inputs)
+        # _, _, f1_scores = bert_score(x, y)
         
-        # Calculate distances for all items in the batch
-        distances = 1 - f1_scores
+        # # Calculate distances for all items in the batch
+        # distances = 1 - f1_scores
         
-        return distances
+        # return distances
+
+
+        cos_sim = cosine_similarity(x, y)
+
+        return 1 - cos_sim
 
     def sample_priors(self):
         # Sample from the prior distribution
@@ -76,9 +81,9 @@ class LotkaVolterra(LatentABCSMC):
         probabilities = uniform.pdf(parameters, loc=self.lower_bounds, scale=self.upper_bounds)
         return np.prod(probabilities)
     
-    def perturb_parameters(self, parameters, previous_particles):
+    def perturb_parameters(self, parameters, previous_particles, sigma = 0.1):
         # Perturb the parameters
-        perturbations = 0.05 * np.random.uniform(-1, 1)
+        perturbations = sigma * np.random.uniform(-1, 1)
         parameters += perturbations
         return parameters
         

@@ -9,7 +9,7 @@ from lightning.pytorch import Trainer, seed_everything
 from lightning.pytorch.callbacks import ModelCheckpoint, LearningRateMonitor, Callback
 from lightning.pytorch.callbacks.early_stopping import EarlyStopping
 
-from models import TiMAE
+from models import TiMAE, LSTMVAE_LINEAR_ENCODE
 from lightning_module import PreTrainLightning, PlotReconstruction
 from dataset import NumpyDataset, create_dataloaders
 import neptune
@@ -18,10 +18,10 @@ from lightning.pytorch.loggers import NeptuneLogger
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description='Train MZB Cell Analysis model')
-    parser.add_argument('--batch_size', type=int, default=768, help='Batch size for training and validation.')
-    parser.add_argument('--max_epochs', type=int, default=200, help='Maximum number of epochs to train.')
+    parser.add_argument('--batch_size', type=int, default=256, help='Batch size for training and validation.')
+    parser.add_argument('--max_epochs', type=int, default=500, help='Maximum number of epochs to train.')
     parser.add_argument('--seed', type=int, default=42, help='Random seed for reproducibility.')
-    parser.add_argument('--learning_rate', type=float, default=3e-4, help='Learning rate for the optimizer.')
+    parser.add_argument('--learning_rate', type=float, default=5e-5, help='Learning rate for the optimizer.')
     parser.add_argument('--data_dir', type=str, default='data', help='Directory containing the dataset.')
     parser.add_argument('--embed_dim', type=int, default=64, help='Embedding dimension for the model.')
     parser.add_argument('--num_heads', type=int, default=8, help='Number of attention heads.')
@@ -30,12 +30,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--decoder_num_heads', type=int, default=8, help='Number of attention heads in the decoder.')
     parser.add_argument('--decoder_depth', type=int, default=1, help='Depth of the decoder.')
     parser.add_argument('--mask_ratio', type=float, default=0.15, help='Masking ratio for the input data.')
-    parser.add_argument('--dropout', type=float, default=0.0, help='Dropout rate.')
-    parser.add_argument('--beta', type=float, default=4, help='Beta parameter for the VAE loss.')
-    parser.add_argument('--diff_attention', action='store_true', help='Use different attention for encoder and decoder.')
+    parser.add_argument('--dropout', type=float, default=0.1, help='Dropout rate.')
+    parser.add_argument('--beta', type=float, default=1, help='Beta parameter for the VAE loss.')
+    parser.add_argument('--diff_attn', action='store_true', help='Use different attention for encoder and decoder.')
     parser.add_argument('--type', type=str, default='vanilla', help='Type of model to use.')
     parser.add_argument('--multi_tasks', action='store_true', help='Use multi-tasks in the model.')
     parser.add_argument('--dirpath', type=str, default='checkpoints', help='Directory to save checkpoints.')
+    parser.add_argument('--noise_factor', type=float, default=0.0, help='Noise factor (Std) for the model.')
     parser.add_argument('--debug', action='store_true', help='Debug mode in Trainer.')    
     return parser.parse_args()
 
@@ -57,10 +58,24 @@ def save_model_config(args, seq_len: int, in_chans: int):
                 'mask_ratio': args.mask_ratio,
                 'bag_size': 1024,
                 'dropout': args.dropout,
-                'diff_attention': args.diff_attention,
+                'diff_attention': args.diff_attn,
+                'noise_factor': args.noise_factor
             }
         }
     }
+
+    # config = {
+    #     'model': {
+    #         'name' : 'LSTMVAE_LINEAR_ENCODE',
+    #         'params': {
+    #             'input_dim': 2,
+    #             'linear_latent_dim': 64,
+    #             'hidden_dim': 64,
+    #             'latent_dim': 64,
+    #             'output_dim': 2
+    #         }
+    #     }
+    # }
     
     if not os.path.exists(args.dirpath):
         os.makedirs(args.dirpath)
@@ -96,8 +111,17 @@ def main():
             mask_ratio=args.mask_ratio,
             bag_size=1024, 
             dropout=args.dropout,
-            diff_attention=args.diff_attention
+            diff_attention=args.diff_attn,
+            noise_factor=args.noise_factor,
         )
+
+        # model = LSTMVAE_LINEAR_ENCODE(
+        #     input_dim=2,
+        #     linear_latent_dim=64,
+        #     hidden_dim=64,
+        #     latent_dim=64,
+        #     output_dim=2
+        # )
 
         save_model_config(args, seq_len, in_chans)
 
@@ -106,13 +130,14 @@ def main():
         checkpoint_callback = ModelCheckpoint(
             dirpath=args.dirpath,
             filename='TiMAE-{epoch:02d}-{val_loss:.4f}',
+            #filename='LSTMVAE_LINEAR_ENCODE-{epoch:02d}-{val_loss:.4f}',
             save_top_k=1,
             monitor='val_loss',
             mode='min'
         )
 
         lr_monitor = LearningRateMonitor(logging_interval='epoch')
-        early_stop_callback = EarlyStopping(monitor="val_loss", patience=25, mode="min")
+        early_stop_callback = EarlyStopping(monitor="val_loss", patience=100, mode="min")
 
         api_token = os.getenv("NEPTUNE_API_TOKEN")
         if not api_token:
@@ -130,27 +155,21 @@ def main():
             "in_chans": in_chans
         })
 
-        # raw_np = np.load(os.path.join(args.data_dir, 'lotka_data.npy'))
-        # scaled_np = raw_np / np.abs(raw_np).mean(axis=0)
+        data_for_reconstruction = np.load(os.path.join(args.data_dir, 'lotka_data.npz'))
 
-        data = np.load(os.path.join(args.data_dir, 'lotka_data.npz'))
-        scaled_np = data['scaled_data']
-
-        # torch.set_float32_matmul_precision('highest')
+        torch.set_float32_matmul_precision('high')
         trainer = Trainer(
             max_epochs=args.max_epochs,
             accelerator='auto',
             devices=1,
-            callbacks=[checkpoint_callback, lr_monitor, early_stop_callback, PlotReconstruction(data=scaled_np)],
+            callbacks=[checkpoint_callback, lr_monitor, early_stop_callback, PlotReconstruction(data_for_reconstruction)],
             logger=logger,
             log_every_n_steps=10,
-            # accumulate_grad_batches=1,
             enable_progress_bar=False,
             precision="64-true",
             fast_dev_run=args.debug
         )
         
-
         trainer.fit(pl_model, train_dataloader, val_dataloader)
 
     except Exception as e:

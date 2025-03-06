@@ -136,6 +136,7 @@ class LatentABCSMC:
         # TODO: implement batch effect
         if self.state0 is not None:
             solution = solve_ivp(self.ode_system, [self.t0, self.tmax], y0=self.state0, t_eval=self.time_space, args=(parameters,))
+                        
             return solution.y.T, solution.status
 
     def sample_priors(self) -> np.ndarray:
@@ -244,12 +245,12 @@ class LatentABCSMC:
 
             while accepted < self.num_particles:
                 if t == 0:
-                    # perturbed_params = self.sample_priors()
-                    # prior_probability = 1.0
-                    # new_weight = 1.0
-                    generation_particles, generation_weights = self.initialize_particles(num_particles, epsilon)
-                    accepted += num_particles
-                    continue
+                    perturbed_params = self.sample_priors()
+                    prior_probability = 1.0
+                    new_weight = 1.0
+                    #generation_particles, generation_weights = self.initialize_particles(num_particles, epsilon)
+                    #accepted += num_particles
+                    #continue
                 else:
                     idx = np.random.choice(len(previous_particles), p=previous_weights)
                     perturbed_params = self.perturb_parameters(previous_particles[idx], previous_particles)
@@ -273,7 +274,6 @@ class LatentABCSMC:
                 y_scaled = y / np.abs(y).mean(0)
                 y_tensor = torch.tensor(y_scaled, dtype=torch.float32).unsqueeze(0).to(self.model.device)
                 y_latent_np = self.model.get_latent(y_tensor).cpu().numpy()
-
                 dist = self.calculate_distance(y_latent_np)
                 if dist >= epsilon:
                     continue
@@ -549,8 +549,19 @@ class LatentABCSMC:
         valid_indices = sorted_distances < epsilon
         sorted_candidates = sorted_candidates[valid_indices]
 
+        # Randomly sample num_particles from the valid candidates
+        if len(sorted_candidates) < num_particles:
+            raise ValueError("Not enough valid candidates to sample from.")
+        
+        np.random.seed(1234)
+        np.random.shuffle(sorted_candidates)
+
+        # Sample
+        indices = np.random.choice(len(sorted_candidates), num_particles, replace=False)
+
         # Grab the first num_particles candidates
-        particles = sorted_candidates[:num_particles]
+        # particles = sorted_candidates[:num_particles]
+        particles = sorted_candidates[indices]
         weights = [1.0] * num_particles
 
         return particles, weights

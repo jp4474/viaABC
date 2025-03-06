@@ -11,7 +11,7 @@ import torch
 import torch.nn as nn
 from matplotlib import pyplot as plt
 
-from models import TiMAE
+from models import TiMAE, LSTMVAE_LINEAR_ENCODE
 from lightning_module import PreTrainLightning, FineTuneLightning
 from systems import LotkaVolterra
 from dataset import NumpyDataset
@@ -66,10 +66,11 @@ def load_model(path: Path, finetune: bool = False, num_parameters: int = 2) -> P
     config = load_config(config_path)
 
     # Load model architecture
-    model = TiMAE(**config["model"]["params"])
+    # model = TiMAE(**config["model"]["params"])
+    model = LSTMVAE_LINEAR_ENCODE(**config["model"]["params"])
 
     # Load pre-trained model
-    pretrain_model_path = next((f for f in path.iterdir() if f.suffix == ".ckpt" and "TiMAE" in f.name), None)
+    pretrain_model_path = next((f for f in path.iterdir() if f.suffix == ".ckpt" and "LSTMVAE" in f.name), None)
     if not pretrain_model_path:
         raise FileNotFoundError("No pre-trained model checkpoint found.")
 
@@ -166,8 +167,11 @@ def reconstruct_data(pl_model: PreTrainLightning, data: np.ndarray, scaled: bool
         data = data / data.mean(axis=0)
 
     with torch.no_grad():
-        _, _, _, param_est, reconstruction = pl_model(
-            torch.tensor(data).float().to(pl_model.device).unsqueeze(0), mask_ratio=0
+        # _, _, _, param_est, reconstruction = pl_model(
+        #     torch.tensor(data).float().to(pl_model.device).unsqueeze(0), mask_ratio=0
+        # )
+        reconstruction, _, _ = pl_model(
+            torch.tensor(data).float().to(pl_model.device).unsqueeze(0)
         )
         reconstruction = reconstruction.squeeze(0).cpu().numpy()
 
