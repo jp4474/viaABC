@@ -25,7 +25,6 @@ from timm.layers import Mlp, DropPath, LayerScale
 from pos_embed import get_2d_sincos_pos_embed
 from scaler import DAIN_Layer
 
-
 def lambda_init(layer_idx):
     return 0.8 - 0.6 * torch.exp(torch.tensor(-0.3 * (layer_idx - 1)))
 
@@ -130,8 +129,8 @@ class Lambda(nn.Module):
         self.hidden_size = hidden_size
         self.latent_length = latent_length
 
-        self.hidden_to_mean = nn.Linear(self.hidden_size, self.latent_length, bias=False)
-        self.hidden_to_logvar = nn.Linear(self.hidden_size, self.latent_length, bias=False)
+        self.hidden_to_mean = nn.Linear(self.hidden_size, self.latent_length)
+        self.hidden_to_logvar = nn.Linear(self.hidden_size, self.latent_length)
 
         nn.init.xavier_uniform_(self.hidden_to_mean.weight)
         nn.init.xavier_uniform_(self.hidden_to_logvar.weight)
@@ -146,9 +145,11 @@ class Lambda(nn.Module):
         self.latent_mean = self.hidden_to_mean(cell_output)
         self.latent_logvar = self.hidden_to_logvar(cell_output)
 
+
         if self.training and not hasattr(self, 'finetuning'):
             std = torch.exp(0.5 * self.latent_logvar)
             eps = torch.randn_like(std)
+            # return eps.mul(std).add_(self.latent_mean)
             return eps.mul(std).add_(self.latent_mean)
         else:
             return self.latent_mean
@@ -203,6 +204,26 @@ class VectorQuantizer(nn.Module):
         return quantized_latents  # [B x L x D
 
 
+class TiMAEEmbedding(nn.Module):
+    def __init__(
+        self, 
+        input_dim: int,
+        emb_size: int
+    ):
+        super().__init__()
+
+        self.conv = nn.Conv1d(input_dim, emb_size, kernel_size=3, padding=1)
+
+    def forward(self, x: torch.Tensor):
+        """_summary_
+
+        Args:
+            x (torch.Tensor): a tensor of shape (batch_size, seq_len, input_dim)
+
+        Returns:
+            torch.Tensor: a tensor of shape (batch_size, seq_len, hidden_size)
+        """        
+        return self.conv(x.permute(0, 2, 1)).permute(0, 2, 1)
 
 
 class Block(nn.Module):
@@ -257,7 +278,7 @@ class Block(nn.Module):
         x = x + self.drop_path2(self.ls2(self.mlp(self.norm2(x))))
         return x
     
-class TiMAE(nn.Module):
+class TSMVAE(nn.Module):
     def __init__(self, seq_len: int, in_chans: int, embed_dim: int, depth: int, num_heads: int, 
                  decoder_embed_dim: int, decoder_depth: int, decoder_num_heads: int, mlp_ratio: float = 4.0, 
                  norm_layer=partial(nn.LayerNorm, eps=1e-6), z_type = 'vanilla',  cls_embed = True, dropout = 0.1, 
@@ -266,6 +287,8 @@ class TiMAE(nn.Module):
         # --------------------------------------------------------------------------
         # Encoder specifics
         self.embedder = nn.Linear(in_chans, embed_dim, bias=True)
+        #self.embedder = TiMAEEmbedding(in_chans, embed_dim)
+        
         self.cls_embed = cls_embed
         self.trunc_init = False
         self.mask_ratio = mask_ratio
@@ -329,7 +352,11 @@ class TiMAE(nn.Module):
         decoder_pos_embed = PositionalEncoding(self.decoder_embed_dim, max_len=self.seq_len)
         self.decoder_pos_embed.data.copy_(decoder_pos_embed.pe.float())
         
-        w = self.embedder.weight.data
+        if isinstance(self.embedder, nn.Linear):
+            w = self.embedder.weight.data
+        else:
+            w = self.embedder.conv.weight.data
+
         if self.cls_embed:
             torch.nn.init.trunc_normal_(self.cls_token, std=0.02)
 
@@ -413,6 +440,12 @@ class TiMAE(nn.Module):
         x_ = torch.gather(x_, dim=1, index=ids_restore.unsqueeze(-1).repeat(1, 1, x.shape[2]))  # unshuffle
         x = torch.cat([x[:, :1, :], x_], dim=1)  # append cls token
 
+        cls_token = torch.mean(x[:, 1:, :], dim=1)
+        # if self.z_type == 'vanilla':
+        #     cls_token = x[:, :1, :]
+        # elif self.z_type == 'vae':
+        #     cls_token = self.decoder_embed[1].latent_mean[:, :1, :]
+
         # add pos embed
         x = x + self.decoder_pos_embed
 
@@ -422,10 +455,10 @@ class TiMAE(nn.Module):
 
         x = self.decoder_norm(x)
 
-        regression_task = self.linear(x[:, :1, :].squeeze(1)) # [N, 6]
-        imputation_task = self.decoder_pred(x[:, 1:, :]) 
+        param_est = self.linear(cls_token.squeeze(1)) # [N, 6]
+        x_pred = self.decoder_pred(x[:, 1:, :]) 
 
-        return regression_task, imputation_task
+        return param_est, x_pred
 
     def forward_loss(self, x, pred, mask):
         """
@@ -442,7 +475,7 @@ class TiMAE(nn.Module):
     def forward(self, x, y = None, mask_ratio = None):
         if mask_ratio is None:
             mask_ratio = self.mask_ratio
-  
+
         if self.training and self.noise_factor > 0:
             x_ = x + self.noise_factor * torch.randn_like(x, dtype=x.dtype)
         else:
@@ -454,11 +487,11 @@ class TiMAE(nn.Module):
             x_ = x_
             
         latent, mask, ids_restore = self.forward_encoder(x_, mask_ratio)
-        regression_task, imputation_task = self.forward_decoder(latent, ids_restore)  # [N, L, p*p*3]
-        loss = self.forward_loss(x, imputation_task, mask)
+        param_est, x_pred = self.forward_decoder(latent, ids_restore)  # [N, L, p*p*3]
+        loss = self.forward_loss(x, x_pred, mask)
 
         if y is not None:
-            reg_loss = F.mse_loss(regression_task, y)
+            reg_loss = F.mse_loss(param_est, y)
         else:
             reg_loss = 0
 
@@ -474,13 +507,15 @@ class TiMAE(nn.Module):
         # kld_weight = x.shape[0]/50000
         kld_weight = 1
         
-        return loss, reg_loss, self.lambda_ * kld_weight * space_loss, regression_task, imputation_task
+        return loss, 1 * reg_loss, self.lambda_ * kld_weight * space_loss, param_est, x_pred
     
     def get_latent(self, x, pooling_method = None):
         x, mask, ids_restore = self.forward_encoder(x, 0)
         x = self.decoder_embed(x)
-        mask_tokens = self.mask_token.repeat(x.shape[0], ids_restore.shape[1] + 1 - x.shape[1], 1)
-        x_ = torch.cat([x[:, 1:, :], mask_tokens], dim=1)  # no cls token
+
+        # mask_tokens = self.mask_token.repeat(x.shape[0], ids_restore.shape[1] + 1 - x.shape[1], 1)
+        # x_ = torch.cat([x[:, 1:, :], mask_tokens], dim=1)  # no cls token
+        x_ = x[:, 1:, :]
         x_ = torch.gather(x_, dim=1, index=ids_restore.unsqueeze(-1).repeat(1, 1, x.shape[2]))  # unshuffle
         x = torch.cat([x[:, :1, :], x_], dim=1)  # append cls token
 
@@ -491,7 +526,7 @@ class TiMAE(nn.Module):
         else:
             return x[:, 1:, :]
         
-class TiMAETriplet(nn.Module):
+class TSMVAETriplet(nn.Module):
     def __init__(self, seq_len: int, in_chans: int, embed_dim: int, depth: int, num_heads: int, 
                  decoder_embed_dim: int, decoder_depth: int, decoder_num_heads: int, mlp_ratio: float = 4.0, 
                  norm_layer=partial(nn.LayerNorm, eps=1e-6), z_type = 'vanilla',  cls_embed = True, dropout = 0.1, 
@@ -531,14 +566,9 @@ class TiMAETriplet(nn.Module):
 
         # --------------------------------------------------------------------------
         # Decoder specifics
-        if z_type == 'vanilla':
-            self.decoder_embed = nn.Linear(embed_dim, decoder_embed_dim)
-        elif z_type == 'vae':
-            self.decoder_embed = Lambda(embed_dim, decoder_embed_dim)
-        elif z_type == 'vq-vae':
-            self.decoder_embed = nn.Sequential(torch.nn.Linear(embed_dim, decoder_embed_dim),
-                                               VectorQuantizer(bag_size, decoder_embed_dim))
-
+   
+        self.decoder_embed = nn.Sequential(torch.nn.Linear(embed_dim, decoder_embed_dim),  Lambda(decoder_embed_dim, decoder_embed_dim))
+       
         self.mask_token = nn.Parameter(torch.zeros(1, 1, decoder_embed_dim))
         
         self.decoder_pos_embed = nn.Parameter(torch.zeros(1, self.seq_len + 1, decoder_embed_dim), requires_grad=trainable_pos_emb)  # fixed sin-cos embedding
@@ -659,28 +689,40 @@ class TiMAETriplet(nn.Module):
 
         return regression_task, imputation_task
 
+    # def forward_loss(self, x, pred, mask):
+    #     """
+    #     x: [N, W, L]
+    #     pred: [N, L, W]
+    #     mask: [N, W], 0 is keep, 1 is remove,
+    #     """
+
+    #     loss = (pred - x) ** 2
+    #     # loss = torch.abs(pred - x)
+    #     # loss = torch.nan_to_num(loss,nan=10,posinf=10,neginf=10)
+    #     # loss = torch.clamp(loss,max=10)
+    
+    #     loss = loss.mean(dim=-1)  # [N, L], mean loss per timestamp
+    #     inv_mask = (mask -1) ** 2
+
+    #     if self.training:
+    #         loss_removed = (loss * mask).sum() / mask.sum()  # mean loss on removed patches
+    #     else:
+    #         loss_removed = 0
+
+    #     loss_seen = (loss * inv_mask).sum() / inv_mask.sum()
+    #     loss = loss_removed + loss_seen
+    #     return loss
+
     def forward_loss(self, x, pred, mask):
         """
-        x: [N, W, L]
-        pred: [N, L, W]
-        mask: [N, W], 0 is keep, 1 is remove,
+        x: [B, T, D]
+        pred: [B, T, D]
+        mask: [B, T], 0 is keep, 1 is remove,
         """
+        # \sum_{t=1}^{T} \sum_{d=1}^{D} (x_{t,d} - \hat{x}_{t,d})^2 / (T * D)
 
         loss = (pred - x) ** 2
-        # loss = torch.abs(pred - x)
-        # loss = torch.nan_to_num(loss,nan=10,posinf=10,neginf=10)
-        # loss = torch.clamp(loss,max=10)
-    
-        loss = loss.mean(dim=-1)  # [N, L], mean loss per timestamp
-        inv_mask = (mask -1) ** 2
-
-        if self.training:
-            loss_removed = (loss * mask).sum() / mask.sum()  # mean loss on removed patches
-        else:
-            loss_removed = 0
-
-        loss_seen = (loss * inv_mask).sum() / inv_mask.sum()
-        loss = loss_removed + loss_seen
+        loss = torch.mean(torch.sum(loss, dim=-1), dim = -1).mean(0) 
         return loss
 
     def forward(self, x, y = None, mask_ratio = None):
@@ -702,19 +744,16 @@ class TiMAETriplet(nn.Module):
             reg_loss = 0
 
         if self.z_type == 'vae':
-            space_loss = torch.mean(-0.5 * torch.sum(1 + self.decoder_embed.latent_logvar \
-                                                     - self.decoder_embed.latent_mean ** 2 \
-                                                        - self.decoder_embed.latent_logvar.exp(), dim = -1), dim = -1).mean(0)
-            #TODO: triplet_loss = self.decoder_embed.latent_mean
-        elif self.z_type == 'vq-vae':
-            space_loss = self.decoder_embed[1].vq_loss
+            space_loss = torch.mean(-0.5 * torch.sum(1 + self.decoder_embed[1].latent_logvar \
+                                                        - self.decoder_embed[1].latent_mean ** 2 \
+                                                        - self.decoder_embed[1].latent_logvar.exp(), dim = -1), dim = -1).mean(0)
         else:
             space_loss = 0
 
         # kld_weight = x.shape[0]/50000
         kld_weight = 1
         
-        return loss, reg_loss, self.lambda_ * kld_weight * space_loss, regression_task, imputation_task, 
+        return loss, reg_loss, self.lambda_ * kld_weight * space_loss, regression_task, imputation_task, self.decoder_embed[1].latent_mean
     
     def get_latent(self, x, pooling_method = None):
         x, mask, ids_restore = self.forward_encoder(x, 0)

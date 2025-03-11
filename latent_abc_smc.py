@@ -13,6 +13,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from typing import Union, List
 
+from metrics import *
 # Third-party scientific computing
 import numpy as np
 import pandas as pd
@@ -22,6 +23,7 @@ from scipy.stats import gaussian_kde, qmc
 # Machine learning and visualization
 import torch
 import umap
+
 #from cuml.manifold.umap import UMAP as cuUMAP
 from tqdm import tqdm
 import matplotlib.pyplot as plt
@@ -32,14 +34,16 @@ class LatentABCSMC:
                 num_parameters: int, 
                 lower_bounds: np.ndarray, 
                 upper_bounds: np.ndarray, 
-                perturbation_kernels: np.ndarray, 
                 observational_data: np.ndarray, 
                 model: Union[torch.nn.Module, None],
                 state0: Union[np.ndarray, None],
                 t0: Union[int, None], 
                 tmax: Union[int, None], 
                 time_space: np.ndarray,
-                batch_effect: bool = False):
+                pooling_method: str,
+                metric: str = "l2",
+                # batch_effect: bool = False,
+                ):
         """
         Initialize the Latent-ABC algorithm.
 
@@ -107,27 +111,33 @@ class LatentABCSMC:
         # Ensure lower and upper bounds match the number of parameters
         assert len(lower_bounds) == len(upper_bounds) == num_parameters, "Lower and upper bounds must match the number of parameters"
 
-        self.perturbation_kernels = perturbation_kernels
+        if pooling_method is None:
+            raise ValueError("Pooling method must be provided.")
+        else:
+            self.pooling_method = pooling_method
 
-        assert (perturbation_kernels > 0).all(), "Perturbation kernels must be greater than 0"
-        
-        self.batch_effect = batch_effect # TODO: implement batch effect
-        # Ensure perturbation kernels match the number of parameters
-        assert len(perturbation_kernels) == num_parameters, "Perturbation kernels must match the number of parameters"
+        if metric is None:
+            raise ValueError("Metric must be provided.")
+        else:
+            #TODO: check if provided metric is a valid metric
+            self.metric = metric
+
         self.logger.info("Initialization complete")
         self.logger.info("LatentABCSMC class initialized with the following parameters:")
         self.logger.info(f"num_parameters: {num_parameters}")
         self.logger.info(f"lower_bounds: {lower_bounds}")
         self.logger.info(f"upper_bounds: {upper_bounds}")
-        self.logger.info(f"perturbation_kernels: {perturbation_kernels}")
         self.logger.info(f"t0: {t0}")
         self.logger.info(f"tmax: {tmax}")
         self.logger.info(f"time_space: {time_space}")
+        self.logger.info(f"pooling_method: {pooling_method}")
+        self.logger.info(f"metric: {metric}")
 
     def update_model(self, model: torch.nn.Module):
         self.model = model
         self.model.eval()
         self.logger.info("Model updated")
+        self.encode_observational_data()
 
     def ode_system(self, t: int, state: np.ndarray, parameters: np.ndarray):
         raise NotImplementedError
@@ -180,24 +190,45 @@ class LatentABCSMC:
         """
         raise NotImplementedError
 
-    def calculate_distance(self, y: np.ndarray) -> float:
+    def calculate_distance(self, y: np.ndarray) -> np.ndarray:
         """
-        Calculate the distance between the simulated data and the observed data.
-
+        Calculate distances between encoded observational data and input vectors in y in a vectorized manner.
+        
         Args:
-            y (np.ndarray): Simulated data.
-
+            y: Batched input vectors to compare against (shape: [batch_size, vector_size])
+            
         Returns:
-            float: Distance between the simulated data and the observed data.
+            np.ndarray: Distance measures between 0 and 2 for each item in the batch
         """
-        raise NotImplementedError
+        x = self.encoded_observational_data  # Encoded data (single reference vector)
+
+        # safe-guard
+        if y.shape[0] == 1:
+            y = y.squeeze(0)
+        
+        if self.metric == "cosine":
+            # Compute cosine similarity for all items in the batch
+            cos_sim_values = cosine_similarity(x, y)
+            distances = 1 - cos_sim_values
+        elif self.metric == "l2":
+            # Compute L2 distance for all items in the batch
+            distances = l2_distance(x, y)
+        elif self.metric == "bertscore":
+            # # Compute similarity for all items in the batch using bert_score (assuming bert_score can handle batched inputs)
+            _, _, f1_scores = bert_score(x, y)
+            
+            # Calculate distances for all items in the batch
+            distances = 1-f1_scores
+            
+        return distances
     
     @torch.inference_mode()
     def encode_observational_data(self):
-        mean = self.raw_observational_data.mean(0)
-        std = self.raw_observational_data.std(0)
+        mean = np.abs(self.raw_observational_data).mean(0)
         scaled_data = self.raw_observational_data/mean
-        self.encoded_observational_data = self.model.get_latent(torch.tensor(scaled_data, dtype=torch.float32).unsqueeze(0).to(self.model.device)).cpu().numpy().squeeze(0)
+
+        tensor = torch.tensor(scaled_data, dtype=torch.float32).unsqueeze(0).to(self.model.device) # [1, T, d]
+        self.encoded_observational_data = self.model.get_latent(tensor, pooling_method=self.pooling_method).cpu().numpy().squeeze(0)
     
     def _log_generation_stats(self, t: int, particles: np.ndarray, weights: np.ndarray, start_time: float, num_simulations: int):
         duration = time.time() - start_time
@@ -212,9 +243,10 @@ class LatentABCSMC:
         self.logger.info(f"Variance: {var}")
 
     @torch.inference_mode()
-    def run(self, num_particles: int, tolerance_levels: List[float]):
+    def run(self, num_particles: int, tolerance_levels: List[float], sigma: float = 0.1):
         if self.model is None:
             raise ValueError("Model must be provided to encode the data and run the algorithm.")
+        
         if not tolerance_levels:
             raise ValueError("Tolerance levels must be provided.")
 
@@ -248,12 +280,9 @@ class LatentABCSMC:
                     perturbed_params = self.sample_priors()
                     prior_probability = 1.0
                     new_weight = 1.0
-                    #generation_particles, generation_weights = self.initialize_particles(num_particles, epsilon)
-                    #accepted += num_particles
-                    #continue
                 else:
                     idx = np.random.choice(len(previous_particles), p=previous_weights)
-                    perturbed_params = self.perturb_parameters(previous_particles[idx], previous_particles)
+                    perturbed_params = self.perturb_parameters(previous_particles[idx], previous_particles, sigma = sigma)
                     prior_probability = self.calculate_prior_prob(perturbed_params)
 
                     if prior_probability <= 0:
@@ -273,7 +302,7 @@ class LatentABCSMC:
 
                 y_scaled = y / np.abs(y).mean(0)
                 y_tensor = torch.tensor(y_scaled, dtype=torch.float32).unsqueeze(0).to(self.model.device)
-                y_latent_np = self.model.get_latent(y_tensor).cpu().numpy()
+                y_latent_np = self.model.get_latent(y_tensor, pooling_method=self.pooling_method).cpu().numpy().squeeze(0)
                 dist = self.calculate_distance(y_latent_np)
                 if dist >= epsilon:
                     continue
@@ -566,5 +595,12 @@ class LatentABCSMC:
 
         return particles, weights
         
-
+    def get_latent(self, x):
+        if self.model is None:
+            raise ValueError("Model must be provided to encode the data and run the method.")
         
+        # if x is numpy convert to tensor
+        if isinstance(x, np.ndarray):
+            x = torch.tensor(x, dtype=torch.float32).unsqueeze(0).to(self.model.device)
+
+        return self.model.get_latent(x, self.pooling_method)

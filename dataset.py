@@ -23,6 +23,7 @@ class NumpyDataset(Dataset):
         x = self.params[idx]
         y = self.simulations[idx]
 
+        x = x / 10
         y = y / self.scales[idx]
 
         x = torch.from_numpy(x).to(torch.float64)
@@ -48,37 +49,3 @@ def create_dataloaders(data_dir: str, batch_size: int) -> Tuple[DataLoader, Data
     val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=4, pin_memory=True)
 
     return train_dataloader, val_dataloader
-
-class SiameseMNIST(Dataset):
-    """
-    Train: For each sample creates randomly a positive or a negative pair
-    Test: Creates fixed pairs for testing
-    """
-
-    def __init__(self, data_dir: str, prefix='train'):
-        self.data_dir = data_dir
-        
-        # Load data
-        self.data = np.load(os.path.join(data_dir, f'{prefix}_data.npz'), allow_pickle=True)
-        self.anchors = self.data['anchor_y']
-        self.positives = self.data['pos_y']
-        self.negatives = self.data['neg_y']
-
-        self.max = np.array([1.23131727e+05, 5.07489562e+01])
-        self.min = np.array([-6.81139813e-07,  5.17101545e-07])
-
-    def __getitem__(self, index):
-        anchor = self.anchors[index]
-        positive = self.positives[index]
-        negative = self.negatives[index]
-
-        # Scale and Convert to torch tensors
-        anchor = (anchor - self.min) / (self.max - self.min)
-        positive = (positive - self.min) / (self.max - self.min)
-        negative = (negative - self.min) / (self.max - self.min)
-        
-        anchor = torch.from_numpy(anchor).to(torch.float64)
-        positive = torch.from_numpy(positive).to(torch.float64)
-        negative = torch.from_numpy(negative).to(torch.float64)
-
-        return anchor, positive, negative

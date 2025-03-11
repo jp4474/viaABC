@@ -19,21 +19,19 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 class LotkaVolterra(LatentABCSMC):
     def __init__(self,
-        #num_particles = 1000, 
-        #num_generations = 5, 
         num_parameters = 2, 
         lower_bounds = np.array([0, 0]), 
         upper_bounds = np.array([10, 10]), 
-        perturbation_kernels = np.array([0.1, 0.1]), 
-        # tolerance_levels = np.array([0.2, 0.1, 0.05, 0.01, 0.005]), 
         model = None, 
         observational_data = np.array([[1.87, 0.65, 0.22, 0.31, 1.64, 1.15, 0.24, 2.91],
                                         [0.49, 2.62, 1.54, 0.02, 1.14, 1.68, 1.07, 0.88]]).T, 
         state0 = np.array([1, 0.5]),
         t0 = 0,
         tmax = 15, 
-        time_space = np.array([1.1, 2.4, 3.9, 5.6, 7.5, 9.6, 11.9, 14.4])):
-        super().__init__(num_parameters, lower_bounds, upper_bounds, perturbation_kernels, observational_data, model, state0, t0, tmax, time_space)
+        time_space = np.array([1.1, 2.4, 3.9, 5.6, 7.5, 9.6, 11.9, 14.4]),
+        pooling_method = "cls",
+        metric = "cosine"):
+        super().__init__(num_parameters, lower_bounds, upper_bounds, observational_data, model, state0, t0, tmax, time_space, pooling_method, metric)
 
     def ode_system(self, t, state, parameters):
         # Lotka-Volterra equations
@@ -43,35 +41,7 @@ class LotkaVolterra(LatentABCSMC):
         dprey = prey * (alpha - beta * predator)
         dpredator = predator * (-gamma + delta * prey)
         return [dprey, dpredator]
-    
-    def calculate_distance(self, y: np.ndarray) -> np.ndarray:
-        """
-        Calculate distances between encoded observational data and input vectors in y in a vectorized manner.
         
-        Args:
-            y: Batched input vectors to compare against (shape: [batch_size, vector_size])
-            
-        Returns:
-            np.ndarray: Distance measures between 0 and 2 for each item in the batch
-        """
-        x = self.encoded_observational_data  # Encoded data (single reference vector)
-
-        if y.shape[0] == 1:
-            y = y.squeeze(0)
-        
-        # # Compute similarity for all items in the batch using bert_score (assuming bert_score can handle batched inputs)
-        # _, _, f1_scores = bert_score(x, y)
-        
-        # # Calculate distances for all items in the batch
-        # distances = 1 - f1_scores
-        
-        # return distances
-
-
-        cos_sim = cosine_similarity(x, y)
-
-        return 1 - cos_sim
-
     def sample_priors(self):
         # Sample from the prior distribution
         priors = np.random.uniform(self.lower_bounds, self.upper_bounds, self.num_parameters)
@@ -83,7 +53,7 @@ class LotkaVolterra(LatentABCSMC):
     
     def perturb_parameters(self, parameters, previous_particles, sigma = 0.1):
         # Perturb the parameters
-        perturbations = sigma * np.random.uniform(-1, 1)
+        perturbations = sigma * np.random.uniform(-1, 1, self.num_parameters)
         parameters += perturbations
         return parameters
         

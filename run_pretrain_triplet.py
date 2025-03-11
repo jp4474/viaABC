@@ -9,9 +9,9 @@ from lightning.pytorch import Trainer, seed_everything
 from lightning.pytorch.callbacks import ModelCheckpoint, LearningRateMonitor, Callback
 from lightning.pytorch.callbacks.early_stopping import EarlyStopping
 
-from models import TSMVAE
-from lightning_module import PreTrainLightning, PlotReconstruction
-from dataset import NumpyDataset, create_dataloaders
+from models import TSMVAETriplet
+from lightning_module import PreTrainLightningTriplet, PlotReconstruction
+from dataset_triplet import create_dataloaders
 import neptune
 import numpy as np
 from lightning.pytorch.loggers import NeptuneLogger
@@ -43,7 +43,7 @@ def parse_args() -> argparse.Namespace:
 def save_model_config(args, seq_len: int, in_chans: int):
     config = {
         'model': {
-            'name': 'TSMVAE',
+            'name': 'TSMVAETriplet',
             'params': {
                 'seq_len': seq_len,
                 'in_chans': in_chans,
@@ -63,19 +63,6 @@ def save_model_config(args, seq_len: int, in_chans: int):
             }
         }
     }
-
-    # config = {
-    #     'model': {
-    #         'name' : 'LSTMVAE_LINEAR_ENCODE',
-    #         'params': {
-    #             'input_dim': 2,
-    #             'linear_latent_dim': 64,
-    #             'hidden_dim': 64,
-    #             'latent_dim': 64,
-    #             'output_dim': 2
-    #         }
-    #     }
-    # }
     
     if not os.path.exists(args.dirpath):
         os.makedirs(args.dirpath)
@@ -97,7 +84,7 @@ def main():
         sample_data = train_dataloader.dataset[0][1]  # Assumes dataset returns (seq_len, in_chans)
         seq_len, in_chans = sample_data.shape
 
-        model = TSMVAE(
+        model = TSMVAETriplet(
             seq_len=seq_len, 
             in_chans=in_chans, 
             embed_dim=args.embed_dim, 
@@ -115,22 +102,13 @@ def main():
             noise_factor=args.noise_factor,
         )
 
-        # model = LSTMVAE_LINEAR_ENCODE(
-        #     input_dim=2,
-        #     linear_latent_dim=64,
-        #     hidden_dim=64,
-        #     latent_dim=64,
-        #     output_dim=2
-        # )
-
         save_model_config(args, seq_len, in_chans)
 
-        pl_model = PreTrainLightning(model=model, lr=args.learning_rate, multi_tasks=args.multi_tasks)
+        pl_model = PreTrainLightningTriplet(model=model, lr=args.learning_rate, multi_tasks=args.multi_tasks)
 
         checkpoint_callback = ModelCheckpoint(
             dirpath=args.dirpath,
-            filename='TSMVAE-{epoch:02d}-{val_loss:.4f}',
-            #filename='LSTMVAE_LINEAR_ENCODE-{epoch:02d}-{val_loss:.4f}',
+            filename='TSMVAETriplet-{epoch:02d}-{val_loss:.4f}',
             save_top_k=1,
             monitor='val_loss',
             mode='min'
@@ -155,14 +133,15 @@ def main():
             "in_chans": in_chans
         })
 
-        data_for_reconstruction = np.load(os.path.join(args.data_dir, 'lotka_data.npz'))
+        # data_for_reconstruction = np.load(os.path.join(args.data_dir, 'lotka_data.npz'))
+        # , PlotReconstruction(data_for_reconstruction)
 
         torch.set_float32_matmul_precision('high')
         trainer = Trainer(
             max_epochs=args.max_epochs,
             accelerator='auto',
             devices=1,
-            callbacks=[checkpoint_callback, lr_monitor, early_stop_callback, PlotReconstruction(data_for_reconstruction)],
+            callbacks=[checkpoint_callback, lr_monitor, early_stop_callback],
             logger=logger,
             log_every_n_steps=10,
             enable_progress_bar=False,

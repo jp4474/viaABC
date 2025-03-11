@@ -8,6 +8,8 @@ import torch
 import pandas as pd
 import numpy as np
 import lightning as L
+import torch.nn.functional as F
+from torch.autograd import Variable
 from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts, LambdaLR
 from pytorch_lightning.callbacks.finetuning import BaseFinetuning
 
@@ -22,7 +24,7 @@ class loss_fn(nn.Module):
         return RECON, self.alpha * KLD
 
 class PreTrainLightning(L.LightningModule):
-    def __init__(self, model, multi_tasks = False, lr=1e-3, warmup_steps=500, total_steps=78000):
+    def __init__(self, model, multi_tasks = False, lr=1e-3, warmup_steps=500, total_steps=80000):
         super().__init__()
         self.model = model
         self.lr = lr
@@ -87,8 +89,8 @@ class PreTrainLightning(L.LightningModule):
             }
         }
 
-    def get_latent(self, x):
-        return self.model.get_latent(x)
+    def get_latent(self, x, pooling_method = None):
+        return self.model.get_latent(x, pooling_method)
     
 class PlotReconstruction(L.Callback):
     def __init__(self, data):
@@ -146,7 +148,7 @@ class PlotReconstruction(L.Callback):
 
                 # Log the figure to Neptune
                 current_epoch = trainer.current_epoch
-                log_key = f"validation/reconstructed_images/epoch_{current_epoch}"
+                log_key = f"validation/reconstructed_image"
                 try:
                     trainer.logger.experiment[log_key].append(File.as_image(fig))
                 except Exception as e:
@@ -212,7 +214,7 @@ class PreTrainLightningTriplet(L.LightningModule):
         self.multi_tasks = True if multi_tasks else False
         self.warmup_steps = warmup_steps
         self.total_steps = total_steps
-        self.criterion = loss_fn(0.00025)
+        self.criterion = torch.nn.MarginRankingLoss(margin=1.0)
 
     def forward(self, simulations):
         return self.model(simulations)
@@ -220,28 +222,177 @@ class PreTrainLightningTriplet(L.LightningModule):
     def training_step(self, batch):
         anchors, positives, negatives = batch
 
-        loss_anchor, _, space_loss_anchor, _, _ = self(anchors)
-        loss_positive, _, space_loss_positive, _, _ = self(positives)
-        loss_negative, _, space_loss_negative, _, _ = self(negatives)
+        loss_anchor, reg_loss_anchor, space_loss_anchor, _, _, latent_mean_anchor = self(anchors)
+        loss_positive, reg_loss_positive, space_loss_positive, _, _, latent_mean_positive = self(positives)
+        loss_negative, reg_loss_negative, space_loss_negative, _, _, latent_mean_negative = self(negatives)
 
         loss = (loss_anchor + loss_positive + loss_negative) / 3
+        reg_loss = (reg_loss_anchor + reg_loss_positive + reg_loss_negative) / 3
         space_loss = (space_loss_anchor + space_loss_positive + space_loss_negative) / 3
+
+        pooled_anchor = latent_mean_anchor.mean(dim=1)
+        pooled_positive = latent_mean_positive.mean(dim=1)
+        pooled_negative = latent_mean_negative.mean(dim=1)
+
+        dist_a = F.pairwise_distance(pooled_anchor, pooled_positive, 2)
+        dist_b = F.pairwise_distance(pooled_anchor, pooled_negative, 2)
+
+        target = torch.FloatTensor(dist_a.size()).fill_(1).to(self.device)
+        target = Variable(target)
+
+        loss_triplet = self.criterion(dist_a, dist_b, target)
+        loss_embedd = pooled_anchor.norm(2) + pooled_positive.norm(2) + pooled_negative.norm(2)
 
         self.log("train_recon_loss", loss, prog_bar=False, on_step=False, on_epoch=True)
         self.log("train_reg_loss", reg_loss, prog_bar=False, on_step=False, on_epoch=True)
         self.log("train_space_loss", space_loss, prog_bar=False, on_step=False, on_epoch=True)
-        total_loss = loss + space_loss
-        total_loss = loss + reg_loss + space_loss
+        self.log("train_triplet_loss", loss_triplet, prog_bar=False, on_step=False, on_epoch=True)
+        self.log("train_embedd_loss", loss_embedd, prog_bar=False, on_step=False, on_epoch=True)
+
+        total_loss = loss + space_loss + reg_loss + loss_triplet + 5e-3 * loss_embedd
         self.log("train_loss", total_loss, prog_bar=True, on_step=False, on_epoch=True)
         return total_loss
     
     def validation_step(self, batch):
-        parameters, simulations = batch
-        loss, reg_loss, space_loss, _, _ = self(simulations, parameters, 0)
+        anchors, positives, negatives = batch
+
+        loss_anchor, reg_loss_anchor, space_loss_anchor, _, _, latent_mean_anchor = self(anchors)
+        loss_positive, reg_loss_positive, space_loss_positive, _, _, latent_mean_positive = self(positives)
+        loss_negative, reg_loss_negative, space_loss_negative, _, _, latent_mean_negative = self(negatives)
+
+        loss = (loss_anchor + loss_positive + loss_negative) / 3
+        reg_loss = (reg_loss_anchor + reg_loss_positive + reg_loss_negative) / 3
+        space_loss = (space_loss_anchor + space_loss_positive + space_loss_negative) / 3
+
+        pooled_anchor = latent_mean_anchor.mean(dim=1)
+        pooled_positive = latent_mean_positive.mean(dim=1)
+        pooled_negative = latent_mean_negative.mean(dim=1)
+
+        dist_a = F.pairwise_distance(pooled_anchor, pooled_positive, 2)
+        dist_b = F.pairwise_distance(pooled_anchor, pooled_negative, 2)
+
+        target = torch.FloatTensor(dist_a.size()).fill_(1).to(self.device)
+        target = Variable(target)
+
+        loss_triplet = self.criterion(dist_a, dist_b, target)
+        loss_embedd = latent_mean_anchor.norm(2) + latent_mean_positive.norm(2) + latent_mean_negative.norm(2)
+
         self.log("val_recon_loss", loss, prog_bar=False, on_step=False, on_epoch=True)
         self.log("val_reg_loss", reg_loss, prog_bar=False, on_step=False, on_epoch=True)
         self.log("val_space_loss", space_loss, prog_bar=False, on_step=False, on_epoch=True)
-        total_loss = loss + reg_loss + space_loss
+        self.log("val_triplet_loss", loss_triplet, prog_bar=False, on_step=False, on_epoch=True)
+        self.log("val_embedd_loss", loss_embedd, prog_bar=False, on_step=False, on_epoch=True)
+
+        total_loss = loss + reg_loss + space_loss + loss_triplet + 5e-3 * loss_embedd
+        self.log("val_loss", total_loss, prog_bar=True, on_step=False, on_epoch=True)
+        return total_loss
+    
+    def configure_optimizers(self):
+        params = filter(lambda p: p.requires_grad, self.parameters())
+        optimizer = torch.optim.AdamW(
+            params=params,
+            lr=self.lr,
+            betas=(0.9, 0.999),
+            eps=1e-6,
+            weight_decay=0.01,
+        )
+        def linear_warmup_decay(step, warmup_steps, total_steps):
+            if step < warmup_steps:
+                return step / warmup_steps
+            return max((total_steps - step) / (total_steps - warmup_steps), 0)
+
+        # Linear Warmup + Decay
+        scheduler = LambdaLR(
+            optimizer, 
+            lr_lambda=lambda step: linear_warmup_decay(step, self.warmup_steps, self.total_steps)
+        )
+        
+        return {
+            "optimizer": optimizer,
+            "lr_scheduler": {
+                "scheduler": scheduler,
+                "interval": "step", 
+                "frequency": 1
+            }
+        }
+
+    def get_latent(self, x):
+        # return self.model.get_latent(x).mean(dim=1)
+        return self.model.get_latent(x) #.mean(dim=1)
+    
+
+
+class FineTuningTriplet(L.LightningModule):
+    def __init__(self, model, multi_tasks = False, lr=1e-3, warmup_steps=1000, total_steps=52000):
+        super().__init__()
+        self.model = model
+        self.lr = lr
+        self.multi_tasks = True if multi_tasks else False
+        self.warmup_steps = warmup_steps
+        self.total_steps = total_steps
+        self.criterion = torch.nn.MarginRankingLoss(margin=0.2)
+
+    def forward(self, simulations):
+        return self.model(simulations)
+
+    def training_step(self, batch):
+        anchors, positives, negatives = batch
+
+        loss_anchor, reg_loss_anchor, space_loss_anchor, _, _, latent_mean_anchor = self(anchors)
+        loss_positive, reg_loss_positive, space_loss_positive, _, _, latent_mean_positive = self(positives)
+        loss_negative, reg_loss_negative, space_loss_negative, _, _, latent_mean_negative = self(negatives)
+
+        loss = (loss_anchor + loss_positive + loss_negative) / 3
+        reg_loss = (reg_loss_anchor + reg_loss_positive + reg_loss_negative) / 3
+        space_loss = (space_loss_anchor + space_loss_positive + space_loss_negative) / 3
+
+        dist_a = F.pairwise_distance(latent_mean_anchor, latent_mean_positive, 2)
+        dist_b = F.pairwise_distance(latent_mean_anchor, latent_mean_negative, 2)
+
+        target = torch.FloatTensor(dist_a.size()).fill_(1).to(self.device)
+        target = Variable(target)
+
+        loss_triplet = self.criterion(dist_a, dist_b, target)
+
+        loss_embedd = latent_mean_anchor.norm(2) + latent_mean_positive.norm(2) + latent_mean_negative.norm(2)
+
+        self.log("train_recon_loss", loss, prog_bar=False, on_step=False, on_epoch=True)
+        self.log("train_reg_loss", reg_loss, prog_bar=False, on_step=False, on_epoch=True)
+        self.log("train_space_loss", space_loss, prog_bar=False, on_step=False, on_epoch=True)
+        self.log("train_triplet_loss", loss_triplet, prog_bar=False, on_step=False, on_epoch=True)
+        self.log("train_embedd_loss", loss_embedd, prog_bar=False, on_step=False, on_epoch=True)
+
+        total_loss = loss + space_loss + reg_loss + loss_triplet + loss_embedd
+        self.log("train_loss", total_loss, prog_bar=True, on_step=False, on_epoch=True)
+        return total_loss
+    
+    def validation_step(self, batch):
+        anchors, positives, negatives = batch
+
+        loss_anchor, reg_loss_anchor, space_loss_anchor, _, _, latent_mean_anchor = self(anchors)
+        loss_positive, reg_loss_positive, space_loss_positive, _, _, latent_mean_positive = self(positives)
+        loss_negative, reg_loss_negative, space_loss_negative, _, _, latent_mean_negative = self(negatives)
+
+        loss = (loss_anchor + loss_positive + loss_negative) / 3
+        reg_loss = (reg_loss_anchor + reg_loss_positive + reg_loss_negative) / 3
+        space_loss = (space_loss_anchor + space_loss_positive + space_loss_negative) / 3
+
+        dist_a = F.pairwise_distance(latent_mean_anchor, latent_mean_positive, 2)
+        dist_b = F.pairwise_distance(latent_mean_anchor, latent_mean_negative, 2)
+
+        target = torch.FloatTensor(dist_a.size()).fill_(1).to(self.device)
+        target = Variable(target)
+
+        loss_triplet = self.criterion(dist_a, dist_b, target)
+        loss_embedd = latent_mean_anchor.norm(2) + latent_mean_positive.norm(2) + latent_mean_negative.norm(2)
+
+        self.log("val_recon_loss", loss, prog_bar=False, on_step=False, on_epoch=True)
+        self.log("val_reg_loss", reg_loss, prog_bar=False, on_step=False, on_epoch=True)
+        self.log("val_space_loss", space_loss, prog_bar=False, on_step=False, on_epoch=True)
+        self.log("val_triplet_loss", loss_triplet, prog_bar=False, on_step=False, on_epoch=True)
+        self.log("val_embedd_loss", loss_embedd, prog_bar=False, on_step=False, on_epoch=True)
+
+        total_loss = loss + reg_loss + space_loss + loss_triplet + loss_embedd
         self.log("val_loss", total_loss, prog_bar=True, on_step=False, on_epoch=True)
         return total_loss
     
@@ -277,3 +428,5 @@ class PreTrainLightningTriplet(L.LightningModule):
     def get_latent(self, x):
         # return self.model.get_latent(x).mean(dim=1)
         return self.model.get_latent(x)
+    
+

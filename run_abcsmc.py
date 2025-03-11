@@ -11,7 +11,7 @@ import torch
 import torch.nn as nn
 from matplotlib import pyplot as plt
 
-from models import TiMAE, LSTMVAE_LINEAR_ENCODE
+from models import TSMVAE
 from lightning_module import PreTrainLightning, FineTuneLightning
 from systems import LotkaVolterra
 from dataset import NumpyDataset
@@ -66,11 +66,11 @@ def load_model(path: Path, finetune: bool = False, num_parameters: int = 2) -> P
     config = load_config(config_path)
 
     # Load model architecture
-    # model = TiMAE(**config["model"]["params"])
-    model = LSTMVAE_LINEAR_ENCODE(**config["model"]["params"])
+    model = TSMVAE(**config["model"]["params"])
+    # model = LSTMVAE_LINEAR_ENCODE(**config["model"]["params"])
 
     # Load pre-trained model
-    pretrain_model_path = next((f for f in path.iterdir() if f.suffix == ".ckpt" and "LSTMVAE" in f.name), None)
+    pretrain_model_path = next((f for f in path.iterdir() if f.suffix == ".ckpt" and "TSMVAE" in f.name), None)
     if not pretrain_model_path:
         raise FileNotFoundError("No pre-trained model checkpoint found.")
 
@@ -136,14 +136,21 @@ def load_observational_data(path: Path, system: str = "lotka_volterra") -> Tuple
     system = system.lower()
     prefix = "lotka" if system == "lotka_volterra" else "sir"
 
-    raw_data_path = path / f"{prefix}_data.npy"
-    scaled_data_path = path / f"{prefix}_scaled_data.npy"
+    data_path = path / f"{prefix}_data.npz"
 
-    if not raw_data_path.exists() or not scaled_data_path.exists():
-        raise FileNotFoundError(f"Data files not found in {path}")
+    if not data_path.exists():
+        raise FileNotFoundError(f"Data file not found in {path}. Make sure it is named '{prefix}_data.npz'.")
 
-    raw_np = np.load(raw_data_path)
-    raw_np_scaled = np.load(scaled_data_path)
+    data = np.load(data_path, allow_pickle=True)
+    obs_data = data.get('obs_data')
+    scaled_obs_data = data.get('scaled_obs_data')
+    obs_scale = data.get('obs_scale')
+    ground_truth = data.get('ground_truth')
+    scaled_ground_truth = data.get('scaled_ground_truth')
+    ground_truth_scale = data.get('ground_truth_scale')
+
+    raw_np = obs_data
+    raw_np_scaled = scaled_obs_data
 
     logger.info(f"Observational data loaded from {path}")
     return raw_np, raw_np_scaled
@@ -163,15 +170,11 @@ def reconstruct_data(pl_model: PreTrainLightning, data: np.ndarray, scaled: bool
         np.ndarray: The reconstructed data.
     """
     if not scaled:
-        # data = (data - data.mean(axis=0)) / data.std(axis=0)
-        data = data / data.mean(axis=0)
+        data = data / np.abs(data).mean(axis=0)
 
     with torch.no_grad():
-        # _, _, _, param_est, reconstruction = pl_model(
-        #     torch.tensor(data).float().to(pl_model.device).unsqueeze(0), mask_ratio=0
-        # )
-        reconstruction, _, _ = pl_model(
-            torch.tensor(data).float().to(pl_model.device).unsqueeze(0)
+        _, _, _, param_est, reconstruction = pl_model(
+            torch.tensor(data).float().to(pl_model.device).unsqueeze(0), mask_ratio=0
         )
         reconstruction = reconstruction.squeeze(0).cpu().numpy()
 
