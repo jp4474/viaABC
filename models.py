@@ -282,12 +282,14 @@ class TSMVAE(nn.Module):
     def __init__(self, seq_len: int, in_chans: int, embed_dim: int, depth: int, num_heads: int, 
                  decoder_embed_dim: int, decoder_depth: int, decoder_num_heads: int, mlp_ratio: float = 4.0, 
                  norm_layer=partial(nn.LayerNorm, eps=1e-6), z_type = 'vanilla',  cls_embed = True, dropout = 0.1, 
-                 mask_ratio = 0.15, lambda_=0.00025, bag_size = 1024, trainable_pos_emb = False, noise_factor = 0.5, diff_attention = False, scale_mode = 'adaptive_scale'):
+                 mask_ratio = 0.15, lambda_=0.00025, bag_size = 1024, trainable_pos_emb = False, noise_factor = 0.5, diff_attention = False, tokenize = 'linear'):
         super().__init__()
         # --------------------------------------------------------------------------
         # Encoder specifics
-        self.embedder = nn.Linear(in_chans, embed_dim, bias=True)
-        #self.embedder = TiMAEEmbedding(in_chans, embed_dim)
+        if tokenize == 'linear':
+            self.embedder = nn.Linear(in_chans, embed_dim, bias=True)
+        else:
+            self.embedder = TiMAEEmbedding(in_chans, embed_dim)
         
         self.cls_embed = cls_embed
         self.trunc_init = False
@@ -723,7 +725,7 @@ class TSMVAETriplet(nn.Module):
 
         loss = (pred - x) ** 2
         loss = torch.mean(torch.sum(loss, dim=-1), dim = -1).mean(0) 
-        return loss
+        return 0.5 * loss # mse loss
 
     def forward(self, x, y = None, mask_ratio = None):
         if mask_ratio is None:
