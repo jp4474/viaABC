@@ -19,7 +19,6 @@ def cosine_similarity(x, y):
 
     return cosine_sim
 
-
 def bert_score(x, y):
     """Compute BERTScore (Precision, Recall, F1) between two sets of embeddings."""
     # Normalize the embeddings across the feature dimension (columns)

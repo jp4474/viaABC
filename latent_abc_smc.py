@@ -209,7 +209,7 @@ class LatentABCSMC:
         if self.metric == "cosine":
             # Compute cosine similarity for all items in the batch
             cos_sim_values = cosine_similarity(x, y)
-            distances = 1 - cos_sim_values
+            distances = 1-cos_sim_values
         elif self.metric == "l2":
             # Compute L2 distance for all items in the batch
             distances = l2_distance(x, y)
@@ -594,7 +594,8 @@ class LatentABCSMC:
         weights = [1.0] * num_particles
 
         return particles, weights
-        
+    
+    @torch.inference_mode()
     def get_latent(self, x):
         if self.model is None:
             raise ValueError("Model must be provided to encode the data and run the method.")
@@ -603,4 +604,10 @@ class LatentABCSMC:
         if isinstance(x, np.ndarray):
             x = torch.tensor(x, dtype=torch.float32).unsqueeze(0).to(self.model.device)
 
-        return self.model.get_latent(x, self.pooling_method)
+        x = self.model.get_latent(x, self.pooling_method)
+
+        # if x is tensor convert to numpy, safeguard
+        if isinstance(x, torch.Tensor):
+            x = x.cpu().numpy()
+        
+        return x

@@ -525,8 +525,8 @@ class TSMVAE(nn.Module):
             return x[:, 0, :]
         elif pooling_method == "all":
             return x
-        else:
-            return x[:, 1:, :]
+        elif pooling_method == "mean":
+            return torch.mean(x, dim=1)
         
 class TSMVAETriplet(nn.Module):
     def __init__(self, seq_len: int, in_chans: int, embed_dim: int, depth: int, num_heads: int, 
