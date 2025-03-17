@@ -92,7 +92,7 @@ class PreTrainLightning(L.LightningModule):
     def get_latent(self, x, pooling_method = None):
         return self.model.get_latent(x, pooling_method)
     
-class PlotReconstruction(L.Callback):
+class PlotReconstructionLotka(L.Callback):
     def __init__(self, data):
         super().__init__()
         self.data = data
@@ -158,6 +158,58 @@ class PlotReconstruction(L.Callback):
 
     def on_train_end(self, trainer, pl_module):
         self.on_validation_epoch_end(trainer, pl_module)  # Log the last epoch's data
+
+class PlotReconstructionMZB(L.Callback):
+    def __init__(self, data):
+        super().__init__()
+        self.data = data
+
+        # Extract data from the input dictionary
+        self.obs_data = data.get('obs_data')
+        self.scaled_obs_data = data.get('scaled_obs_data')
+        self.obs_scale = data.get('obs_scale')
+        # self.param_names = [r'$\alpha$', r'$\delta$']
+
+    def on_validation_epoch_end(self, trainer, pl_module):
+        if trainer.current_epoch % 5 == 0:
+            pl_module.eval()  # Set the model to evaluation mode
+            with torch.no_grad():
+                # Prepare the input data
+                torch_data = torch.from_numpy(self.scaled_obs_data).double().to(pl_module.device).unsqueeze(0)
+                _, _, _, param_est, reconstruction = pl_module(torch_data)
+
+                # Convert reconstruction to numpy
+                reconstruction_np = reconstruction.cpu().numpy().squeeze(0)
+
+                # Plotting
+                channel_names = ['MZB', 'Donor Ki67', 'Host Ki67', 'Nfd']
+                fig, ax = plt.subplots(1, 4, figsize=(12, 10))
+
+                for i in range(4):  # Loop through 4 columns
+                    # Scaled data plots
+                    ax[i].plot(reconstruction_np[:, i], label='Reconstructed')
+                    ax[i].plot(self.scaled_obs_data[:, i], label='Observed')
+                    ax[i].set_title(f'Scaled {channel_names[i]}')
+                    ax[i].grid(True)
+                    ax[i].set_xlabel('Time Steps')
+                    ax[i].set_ylabel('Population')
+                    ax[i].legend()
+
+                plt.tight_layout()
+
+                # Log the figure to Neptune
+                current_epoch = trainer.current_epoch
+                log_key = f"validation/reconstructed_image"
+                try:
+                    trainer.logger.experiment[log_key].append(File.as_image(fig))
+                except Exception as e:
+                    print(f"Failed to log image to Neptune: {e}")
+
+                plt.close(fig)  # Close the figure to free memory
+
+    def on_train_end(self, trainer, pl_module):
+        self.on_validation_epoch_end(trainer, pl_module)  # Log the last epoch's data
+
 
 class FineTuneLightning(L.LightningModule):
     def __init__(self, pl_module, lr: float = 1e-4, num_parameters: int = 6, linear_probe: bool = False):

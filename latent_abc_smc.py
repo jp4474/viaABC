@@ -224,9 +224,7 @@ class LatentABCSMC:
     
     @torch.inference_mode()
     def encode_observational_data(self):
-        mean = np.abs(self.raw_observational_data).mean(0)
-        scaled_data = self.raw_observational_data/mean
-
+        scaled_data = self.preprocess(self.raw_observational_data)
         tensor = torch.tensor(scaled_data, dtype=torch.float32).unsqueeze(0).to(self.model.device) # [1, T, d]
         self.encoded_observational_data = self.model.get_latent(tensor, pooling_method=self.pooling_method).cpu().numpy().squeeze(0)
     
@@ -300,7 +298,7 @@ class LatentABCSMC:
                 if status != 0:
                     continue
 
-                y_scaled = y / np.abs(y).mean(0)
+                y_scaled = self.preprocess(y)
                 y_tensor = torch.tensor(y_scaled, dtype=torch.float32).unsqueeze(0).to(self.model.device)
                 y_latent_np = self.model.get_latent(y_tensor, pooling_method=self.pooling_method).cpu().numpy().squeeze(0)
                 dist = self.calculate_distance(y_latent_np)
@@ -611,3 +609,7 @@ class LatentABCSMC:
             x = x.cpu().numpy()
         
         return x
+    
+    def preprocess(self, x):
+        raise NotImplementedError
+        
