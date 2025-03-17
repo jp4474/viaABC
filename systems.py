@@ -48,7 +48,7 @@ class LotkaVolterra(LatentABCSMC):
         return priors
     
     def calculate_prior_prob(self, parameters):
-        probabilities = uniform.pdf(parameters, loc=self.lower_bounds, scale=self.upper_bounds)
+        probabilities = uniform.pdf(parameters, loc=self.lower_bounds, scale=self.upper_bounds - self.lower_bounds) 
         return np.prod(probabilities)
     
     def perturb_parameters(self, parameters, previous_particles, sigma = 0.1):
@@ -56,55 +56,41 @@ class LotkaVolterra(LatentABCSMC):
         perturbations = sigma * np.random.uniform(-1, 1, self.num_parameters)
         parameters += perturbations
         return parameters
-        
+    
+    def preprocess(self, x):
+        mean = np.mean(np.abs(x), 0)
+        x = x / mean
+        return x
 
 class MZB(LatentABCSMC):
     def __init__(self,
-        #num_particles = 1000, 
-        #num_generations = 5, 
         num_parameters = 6, 
-        lower_bounds = np.array([0.5, 14, 0.1, -5, 3.5, -4]), # mean
-        upper_bounds = np.array([0.25, 2, 0.15, 1.2, 0.8, 1.2]),  # std
-        perturbation_kernels = np.array([0.1, 0.1, 0.1, 0.1, 0.1, 0.1]), 
-        tolerance_levels = np.array([30, 20, 10, 5, 1]), 
+        lower_bounds = np.array( [0, 10, -0.2, -7.4, 1.9, -6.4]), # mean
+        upper_bounds = np.array([1, 18, 0.4, -2.6, 5.1, -1.6]),  # std
         model = None, 
         observational_data = None,
         state0 = None,
         t0 = 40,
         tmax = 732,
-        time_space = np.array([59, 69, 76, 88, 95, 102, 108, 109, 113, 119, 122, 123, 124, 141, 156, 158, 183, 212, 217, 219, 235, 261, 270, 289, 291, 306, 442, 524, 563, 566, 731])):
-        super().__init__(num_parameters, lower_bounds, upper_bounds, perturbation_kernels, observational_data, tolerance_levels, model, state0, t0, tmax, time_space)
+        time_space = np.array([59, 69, 76, 88, 95, 102, 108, 109, 113, 119, 122, 124, 141, 156, 158, 183, 212, 217, 219, 235, 261, 270, 289, 291, 306, 442, 524, 563, 566, 731]),
+        pooling_method = "cls",
+        metric = "cosine"):
+        super().__init__(num_parameters, lower_bounds, upper_bounds, observational_data, model, state0, t0, tmax, time_space, pooling_method, metric)
 
     def sample_priors(self):
-        while True:
-            # Sample from the prior distribution
-            priors = np.random.normal(self.lower_bounds, self.upper_bounds, self.num_parameters)
-            
-            # Extract individual parameters
-            phi, y0_Log, kappa_0, rho_Log, beta, delta_Log = priors
-            
-            # Apply constraints
-            if (0 < phi < 1 and 
-                0 < kappa_0 < 1 and 
-                beta > 0):
-                # If all constraints are satisfied, return the priors
-                return priors
-            # If any constraint is violated, the loop will continue and resample
+        # Sample from the prior distribution
+        priors = np.random.uniform(self.lower_bounds, self.upper_bounds, self.num_parameters)
+        return priors
     
-    def perturb_parameters(self, parameters, previous_particles):
-        loc = parameters
-        scale = np.sqrt(2 * np.var(previous_particles, axis=0))
-        assert loc.shape == scale.shape, "loc and scale must have the same shape"
+    def calculate_prior_prob(self, parameters):
+        probabilities = uniform.pdf(parameters, loc=self.lower_bounds, scale=self.upper_bounds - self.lower_bounds)
+        return np.prod(probabilities)
 
-        while True:
-            perturbed_parameters = np.random.normal(loc, scale)
-            # Apply constraints
-            phi, y0_Log, kappa_0, rho_Log, beta, delta_Log = perturbed_parameters
-            if (0 < phi < 1 and
-                0 < kappa_0 < 1 and 
-                beta > 0):
-                # If all constraints are satisfied, return the perturbed parameters
-                return perturbed_parameters
+    def perturb_parameters(self, parameters, previous_particles, sigma = 0.1):
+        # Perturb the parameters
+        perturbations = sigma * np.random.uniform(-1, 1, self.num_parameters)
+        parameters += perturbations
+        return parameters
     
     # Define the ODE system
     def ode_system(self, t, state, parameters):
@@ -141,168 +127,65 @@ class MZB(LatentABCSMC):
         y0 = [0.0, 0.0, y0 * kappa_0_value, y0 * (1 - kappa_0_value)]
         parameters = [phi, rho, delta, beta]
 
-        with warnings.catch_warnings():
-            warnings.filterwarnings('error')
+        solution = solve_ivp(self.ode_system, [self.t0, self.tmax], y0=y0, t_eval=self.time_space, args=(parameters,))
+        status = solution.status
 
-            try:
-                solution = solve_ivp(self.ode_system, [self.t0, self.tmax], y0=y0, t_eval=self.time_space, args=(parameters,), method="BDF")
-                status = solution.status
-
-                if status != 0:
-                    return np.zeros((self.time_space.shape[0], 4)), status
+        if status != 0:
+            return np.zeros((self.time_space.shape[0], 4)), status
                 
-                k_hat = solution.y.T
-                # Check if all values in k_hat are positive
-                if np.any(k_hat < 0):
-                    raise RuntimeWarning("All values in k_hat must be positive.")
-                
-                if np.any(k_hat > 1e8):
-                    raise RuntimeWarning("All values in k_hat must be less than 1e8.")
+        k_hat = solution.y.T
 
-                numsolve = len(k_hat)
-                MZ_counts_mean = np.zeros(numsolve)
-                donor_fractions_mean = np.zeros(numsolve)
-                donor_ki_mean = np.zeros(numsolve)
-                host_ki_mean = np.zeros(numsolve)
-                Nfd_mean = np.zeros(numsolve)
+        numsolve = len(k_hat)
+        MZ_counts_mean = np.zeros(numsolve)
+        donor_fractions_mean = np.zeros(numsolve)
+        donor_ki_mean = np.zeros(numsolve)
+        host_ki_mean = np.zeros(numsolve)
+        Nfd_mean = np.zeros(numsolve)
 
-                # Vectorized computation for efficiency
-                MZ_counts_mean = k_hat[:, 0] + k_hat[:, 1] + k_hat[:, 2] + k_hat[:, 3]
-                donor_fractions_mean = (k_hat[:, 0] + k_hat[:, 1]) / MZ_counts_mean
+        # Vectorized computation for efficiency
+        MZ_counts_mean = k_hat[:, 0] + k_hat[:, 1] + k_hat[:, 2] + k_hat[:, 3]
+        donor_fractions_mean = (k_hat[:, 0] + k_hat[:, 1]) / MZ_counts_mean
 
-                # Calculate donor_ki_mean
-                donor_ki_mean = np.where(
-                    k_hat[:, 0] <= 1e-8,  # Condition: if k_hat[:, 0] <= 1e-8
-                    0,  # Value if condition is True
-                    np.divide(  # Value if condition is False
-                        k_hat[:, 0],
-                        (k_hat[:, 0] + k_hat[:, 1]),
-                        out=np.zeros_like(k_hat[:, 0]),
-                        where=((k_hat[:, 0] + k_hat[:, 1]) > 0)
-                    )
-                )
+        # Calculate donor_ki_mean
+        donor_ki_mean = np.where(
+            k_hat[:, 0] <= 1e-8,  # Condition: if k_hat[:, 0] <= 1e-8
+            0,  # Value if condition is True
+            np.divide(  # Value if condition is False
+                k_hat[:, 0],
+                (k_hat[:, 0] + k_hat[:, 1]),
+                out=np.zeros_like(k_hat[:, 0]),
+                where=((k_hat[:, 0] + k_hat[:, 1]) > 0)
+            )
+        )
 
-                # Calculate host_ki_mean
-                host_ki_mean = np.where(
-                    k_hat[:, 2] <= 1e-8,  # Condition: if k_hat[:, 2] <= 1e-8
-                    0,  # Value if condition is True
-                    np.divide(  # Value if condition is False
-                        k_hat[:, 2],
-                        (k_hat[:, 2] + k_hat[:, 3]),
-                        out=np.zeros_like(k_hat[:, 2]),
-                        where=((k_hat[:, 2] + k_hat[:, 3]) > 0)  # Fixed: Use k_hat[:, 2] + k_hat[:, 3] instead of k_hat[:, 0] + k_hat[:, 1]
-                    )
-                )
-                Nfd_mean = donor_fractions_mean / 0.78
+        # Calculate host_ki_mean
+        host_ki_mean = np.where(
+            k_hat[:, 2] <= 1e-8,  # Condition: if k_hat[:, 2] <= 1e-8
+            0,  # Value if condition is True
+            np.divide(  # Value if condition is False
+                k_hat[:, 2],
+                (k_hat[:, 2] + k_hat[:, 3]),
+                out=np.zeros_like(k_hat[:, 2]),
+                where=((k_hat[:, 2] + k_hat[:, 3]) > 0)  # Fixed: Use k_hat[:, 2] + k_hat[:, 3] instead of k_hat[:, 0] + k_hat[:, 1]
+            )
+        )
+        Nfd_mean = donor_fractions_mean / 0.78
 
-                data = np.array([MZ_counts_mean, donor_ki_mean, host_ki_mean, Nfd_mean]).T
-                # scale = np.mean(np.abs(data), axis=0)
-                return data, status
-            except RuntimeWarning:
-                return np.zeros((self.time_space.shape[0], 4)), -1
-    
-    def __sample_priors(self, n: int = 1):
-        valid_samples = []
+        data = np.array([MZ_counts_mean, donor_ki_mean, host_ki_mean, Nfd_mean]).T
 
-        sampler = qmc.LatinHypercube(d=6, seed=0)
-        while len(valid_samples) < n:
-            samples = sampler.random(n=n)
-            lower_bound = [0, 8, 0, -9, 1, -6]
-            upper_bound = [1, 20, 0.6, -1, 6.5, 0.5]
-            scaled_samples = qmc.scale(samples, lower_bound, upper_bound)
-            # priors = np.random.normal(self.lower_bounds, self.upper_bounds, (n, self.num_parameters))
-            priors = scaled_samples
-            for sample in priors:
-                phi, y0_Log, kappa_0, rho_Log, beta, delta_Log = sample
-                if (0 < phi < 1 and 
-                    0 < kappa_0 < 1 and 
-                    beta > 0):
-                    valid_samples.append(sample)
-            if len(valid_samples) >= n:
-                break
-        return np.array(valid_samples[:n])
+        return data, status
 
-    def __batch_simulations(self, num_simulations: int, prefix: str = "train", num_threads: int = 2):
-        """ This method should never be called directly; it is only used by the generate_training_data method. """
-        parameters = self.__sample_priors(n=num_simulations)
-        valid_params = []
-        valid_simulations = []
 
-        os.makedirs("data", exist_ok=True)  # Create directory if it doesn't exist
+    def preprocess(self, x):
+        means =  np.mean(np.abs(x), 0)
+        mzb_mean = means[0]
 
-        def run_simulation(i, param):
-            try:
-                simulation, status = self.simulate(param)
-                if status == 0:
-                    return i, simulation, param
-                else:
-                    self.logger.error(f"Simulation {i} failed with status: {status}")
-            except Exception as e:
-                self.logger.error(f"Simulation {i} failed with error: {e}")
-            return None
+        # Create a 4xN array of ones with the same shape as mzb_mean
+        scales = np.ones((4, *mzb_mean.shape))
 
-        with ThreadPoolExecutor(max_workers=num_threads) as executor:
-            futures = [executor.submit(run_simulation, i, param) for i, param in enumerate(parameters)]
-            
-            for future in as_completed(futures):
-                result = future.result()
-                if result is not None:
-                    i, simulation, param = result
-                    valid_simulations.append(simulation)
-                    valid_params.append(param)
-
-        if valid_simulations:
-            valid_simulations = np.array(valid_simulations)
-            valid_params = np.array(valid_params)
-
-            self.logger.info(f"Saving {len(valid_simulations)} simulations to data.")
-            np.savez(f"data/{prefix}_data.npz", params=valid_params, simulations=valid_simulations)
-        else:
-            self.logger.warning("No valid simulations to save.")
-
-    def generate_training_data(self, num_simulations: list = [50000, 10000, 10000], seed: int = 1234):
-        np.random.seed(seed)
-        self.logger.info(f"Generating training data for training with seed {seed}")
-
-        prefix = ["train", "val", "test"]
-        total_time = 0  # Initialize the total time counter
+        # Replace the first row of scales with mzb_mean
+        scales[0] = mzb_mean
         
-        for i, num_simulation in enumerate(num_simulations):
-            self.logger.info(f"Generating {num_simulation} simulations for training data")
-            start = time.time()
-            self.__batch_simulations(num_simulation, prefix=prefix[i])
-            end = time.time()
-            elapsed = end - start
-            total_time += elapsed
-            self.logger.info(f"Generated {num_simulation} simulations for training data in {elapsed:.2f} seconds")
+        x = x/scales
 
-        self.logger.info(f"Training data generation completed and saved. Total time taken: {total_time:.2f} seconds")
-
-    def calculate_distance(self, y: np.ndarray) -> float:
-        """
-        Calculate distance between encoded observational data and input vector y.
-        
-        Args:
-            y: Input vector to compare against
-            norm: Type of norm to use (1=Manhattan, 2=Euclidean, inf=Chebyshev)
-        
-        Returns:
-            float: Distance measure between 0 and 2
-        """
-        x = self.encoded_observational_data.flatten()
-        y = y.flatten()
-        
-        cos_sim_value = cosine_similarity(x, y)
-
-        return 1 - cos_sim_value
-    
-    def calculate_prior_prob(self, parameters):
-        # Calculate the prior probability using log-sum-exp trick for numerical stability
-        # Calculate log probabilities
-        log_probs = norm.logpdf(parameters, loc=self.lower_bounds, scale=self.upper_bounds)
-        
-        # Sum the log probabilities (equivalent to multiplying in normal space)  
-        log_sum = np.sum(log_probs)
-        
-        # Convert back to probability space
-        return np.exp(log_sum)
+        return x

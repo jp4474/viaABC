@@ -33,12 +33,12 @@ def main(train_sizes: List[int], seed: int, num_workers: int) -> None:
     """
     
     # Initialize and run simulation
-    lotka_abc = LotkaVolterra()
-    lotka_abc.generate_training_data(train_sizes, seed=seed, num_workers=num_workers)
+    # lotka_abc = LotkaVolterra()
+    # lotka_abc.generate_training_data(train_sizes, seed=seed, num_workers=num_workers)
 
-    # raw_data = np.load("data/mzb_data.npy")
-    # mzb_abc = MZB(observational_data=raw_data)
-    # mzb_abc.generate_training_data(train_sizes, seed=seed)
+    raw_data = np.load("data/mzb_data.npz")['obs_data']
+    mzb_abc = MZB(observational_data=raw_data)
+    mzb_abc.generate_training_data(train_sizes, seed=seed)
 
 if __name__ == "__main__":
     args = parse_arguments()

@@ -10,7 +10,7 @@ from lightning.pytorch.callbacks import ModelCheckpoint, LearningRateMonitor, Ca
 from lightning.pytorch.callbacks.early_stopping import EarlyStopping
 
 from models import TSMVAE
-from lightning_module import PreTrainLightning, PlotReconstruction
+from lightning_module import PreTrainLightning, PlotReconstructionLotka, PlotReconstructionMZB
 from dataset import NumpyDataset, create_dataloaders
 import neptune
 import numpy as np
@@ -130,7 +130,6 @@ def main():
         checkpoint_callback = ModelCheckpoint(
             dirpath=args.dirpath,
             filename='TSMVAE-{epoch:02d}-{val_loss:.4f}',
-            #filename='LSTMVAE_LINEAR_ENCODE-{epoch:02d}-{val_loss:.4f}',
             save_top_k=1,
             monitor='val_loss',
             mode='min'
@@ -146,7 +145,7 @@ def main():
         logger = NeptuneLogger(
             project="RaneLab/LatentABCSMC",
             api_token=api_token,
-            tags=["pretraining", "Lotka"],
+            tags=["pretraining", "MZB"],
         )
 
         logger.log_hyperparams({
@@ -155,14 +154,14 @@ def main():
             "in_chans": in_chans
         })
 
-        data_for_reconstruction = np.load(os.path.join(args.data_dir, 'lotka_data.npz'))
-
+        # data_for_reconstruction = np.load(os.path.join(args.data_dir, 'lotka_data.npz')) #TODO: replace this with MZB
+        data_for_reconstruction = np.load(os.path.join(args.data_dir, 'mzb_data.npz'))
         torch.set_float32_matmul_precision('high')
         trainer = Trainer(
             max_epochs=args.max_epochs,
             accelerator='auto',
             devices=1,
-            callbacks=[checkpoint_callback, lr_monitor, early_stop_callback, PlotReconstruction(data_for_reconstruction)],
+            callbacks=[checkpoint_callback, lr_monitor, early_stop_callback, PlotReconstructionMZB(data_for_reconstruction)],
             logger=logger,
             log_every_n_steps=10,
             enable_progress_bar=False,
