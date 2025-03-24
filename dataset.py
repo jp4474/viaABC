@@ -31,8 +31,47 @@ class NumpyDataset(Dataset):
 
         return x, y
 
-
 class MZBDataset(Dataset):
+    def __init__(self, data_dir, prefix='train'):
+        self.data_dir = data_dir
+        
+        # Load data
+        data_path = os.path.join(data_dir, f'{prefix}_data.npz')
+        if not os.path.exists(data_path):
+            raise FileNotFoundError(f"Data file not found: {data_path}")
+        
+        self.data = np.load(data_path, allow_pickle=True)
+        self.simulations = self.data['simulations']
+        self.params = self.data['params']
+
+        # Precompute scales for normalization
+        self.scales = np.mean(np.abs(self.simulations), axis=1)[:, 0]
+
+    def __len__(self):
+        return len(self.simulations)
+
+    def __getitem__(self, idx):
+        # Retrieve data
+        x = self.params[idx]
+        y = self.simulations[idx]
+
+        # Apply transformations
+        mzb, donor_ki67, host_ki67, nfd = y[:, 0], y[:, 1], y[:, 2], y[:, 3]
+        mzb = mzb/3e6
+        donor_ki67 = np.arcsin(np.sqrt(donor_ki67))  # Transform donor_ki67
+        host_ki67 = np.arcsin(np.sqrt(host_ki67))  # Transform host_ki67
+        nfd = nfd  # No transformation for nfd
+
+        # Stack the transformed data
+        y = np.array([mzb, donor_ki67, host_ki67, nfd]).T
+        
+        # Convert to PyTorch tensors
+        x = torch.from_numpy(x).float()  # Use float32 for efficiency
+        y = torch.from_numpy(y).float()
+
+        return x, y
+
+class MZBDatasetV2(Dataset):
     def __init__(self, data_dir, prefix='train'):
         self.data_dir = data_dir
         self.files = [f for f in os.listdir(data_dir) if f.endswith('.npy')]
@@ -42,12 +81,7 @@ class MZBDataset(Dataset):
         self.simulations = self.data['simulations']
         self.params = self.data['params']
 
-        mzb_means = np.mean(self.simulations, axis=1)[:, 0]
-        donor_ki67_means = np.ones_like(mzb_means)
-        host_ki67_means = np.ones_like(mzb_means)
-        nfd_means = np.ones_like(mzb_means)
-        means = np.array([mzb_means, donor_ki67_means, host_ki67_means, nfd_means]).T
-        self.scales = np.expand_dims(means, axis=1)  # Use np.expand_dims to add a new dimension
+        self.scales = np.mean(np.abs(self.simulations), axis = 1, keepdims=True)
 
     def __len__(self):
         return len(self.simulations)
@@ -56,13 +90,43 @@ class MZBDataset(Dataset):
         x = self.params[idx]
         y = self.simulations[idx]
 
-        x = x / 10 # TODO: fix this accordingly, probaly use minmax scaler from sklearn?
+        x = x
         y = y / self.scales[idx]
 
         x = torch.from_numpy(x).to(torch.float64)
         y = torch.from_numpy(y).to(torch.float64)
 
         return x, y
+    
+class MZBDatasetV3(Dataset):
+    def __init__(self, data_dir, prefix='train'):
+        self.data_dir = data_dir
+        self.files = [f for f in os.listdir(data_dir) if f.endswith('.npy')]
+        
+        # Load data
+        self.data = np.load(os.path.join(data_dir, f'{prefix}_data.npz'), allow_pickle=True)
+        self.simulations = self.data['simulations']
+        self.params = self.data['params']
+
+        self.means = np.mean(self.simulations, axis=1, keepdims=True)
+        self.stds = np.std(self.simulations, axis=1, keepdims=True)
+
+
+    def __len__(self):
+        return len(self.simulations)
+
+    def __getitem__(self, idx):
+        x = self.params[idx]
+        y = self.simulations[idx]
+
+        x = x
+        y = y / 100000
+
+        x = torch.from_numpy(x).to(torch.float64)
+        y = torch.from_numpy(y).to(torch.float64)
+
+        return x, y
+
 
 def create_dataloaders(data_dir: str, batch_size: int) -> Tuple[DataLoader, DataLoader]:
     # Check data directory existence

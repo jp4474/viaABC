@@ -86,11 +86,8 @@ class MZB(LatentABCSMC):
         probabilities = uniform.pdf(parameters, loc=self.lower_bounds, scale=self.upper_bounds - self.lower_bounds)
         return np.prod(probabilities)
 
-    def perturb_parameters(self, theta, sigma = 0.1):
-        # Perturb the parameters
-        perturbations = sigma * np.random.uniform(-1, 1, self.num_parameters)
-        theta += perturbations
-        return theta
+    def perturb_parameters(self, theta, sigma):
+        return multivariate_normal(theta, sigma)
     
     # Define the ODE system
     def ode_system(self, t, state, parameters):

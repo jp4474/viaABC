@@ -12,6 +12,7 @@ import torch.nn.functional as F
 from torch.autograd import Variable
 from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts, LambdaLR
 from pytorch_lightning.callbacks.finetuning import BaseFinetuning
+from systems import MZB
 
 class loss_fn(nn.Module):
     def __init__(self, alpha):
@@ -166,8 +167,8 @@ class PlotReconstructionMZB(L.Callback):
 
         # Extract data from the input dictionary
         self.obs_data = data.get('obs_data')
-        self.scaled_obs_data = data.get('scaled_obs_data')
-        self.obs_scale = data.get('obs_scale')
+        self.mzb_abc = MZB(observational_data = self.obs_data)
+        self.scaled_obs_data = self.mzb_abc.preprocess(self.obs_data)
         # self.param_names = [r'$\alpha$', r'$\delta$']
 
     def on_validation_epoch_end(self, trainer, pl_module):
@@ -183,7 +184,7 @@ class PlotReconstructionMZB(L.Callback):
 
                 # Plotting
                 channel_names = ['MZB', 'Donor Ki67', 'Host Ki67', 'Nfd']
-                fig, ax = plt.subplots(1, 4, figsize=(12, 10))
+                fig, ax = plt.subplots(1, 4, figsize=(20, 5))
 
                 for i in range(4):  # Loop through 4 columns
                     # Scaled data plots
