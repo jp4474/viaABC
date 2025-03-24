@@ -2,7 +2,9 @@
 latent_abc_smc.py
 
 This script implements the Sequential Monte Carlo (SMC) algorithm for Approximate Bayesian Computation (ABC).
+
 Some code is referenced from https://github.com/Pat-Laub/approxbayescomp/blob/master/src/approxbayescomp/smc.py#L73
+Some code is referenced from https://github.com/jakeret/abcpmc/blob/master/abcpmc/sampler.py
 """
 
 # Standard library imports
@@ -18,7 +20,8 @@ from metrics import *
 import numpy as np
 import pandas as pd
 from scipy.integrate import solve_ivp
-from scipy.stats import gaussian_kde, qmc
+from scipy.stats import gaussian_kde, qmc, uniform, multivariate_normal, norm
+from densratio import densratio
 
 # Machine learning and visualization
 import torch
@@ -30,12 +33,71 @@ import matplotlib.pyplot as plt
 
 from tqdm import tqdm
 
-class LatentABCSMC:
+class GaussianPrior(object):
+    """
+    Normal gaussian prior
+     
+    :param mu: scalar or vector of means
+    :param sigma: scalar variance or covariance matrix
+    """
+    
+    def __init__(self, mu, sigma):
+        self.mu = mu
+        self.sigma = sigma
+        self._random = np.random.mtrand.RandomState()
+        
+    def __call__(self, theta=None):
+        if theta is None:
+            return self._random.multivariate_normal(self.mu, self.sigma)
+        else:
+            return multivariate_normal.pdf(theta, self.mu, self.sigma)
+        
+class TophatPrior(object):
+    """
+    Tophat prior
+    
+    :param min: scalar or array of min values
+    :param max: scalar or array of max values
+    """
+    
+    def __init__(self, min, max):
+        self.min = np.atleast_1d(min)
+        self.max = np.atleast_1d(max)
+        self._random = np.random.mtrand.RandomState()
+        assert self.min.shape == self.max.shape
+        assert np.all(self.min < self.max)
+        
+    def __call__(self, theta=None):
+        if theta is None:
+            return np.array([self._random.uniform(mi, ma) for (mi, ma) in zip(self.min, self.max)])
+        else:
+            return 1 if np.all(theta < self.max) and np.all(theta >= self.min) else 0
+        
+class _WeightWrapper(object):  # @DontTrace
+    """
+    Wraps the computation of new particle weights.
+    Allows for pickling the functionality.
+    """
+    
+    def __init__(self, prior, sigma, ws, thetas):
+        self.prior = prior
+        self.sigma = sigma
+        self.ws = ws
+        self.thetas = thetas
+    
+    def __call__(self, theta):
+        kernel = multivariate_normal(theta, self.sigma).pdf
+        w = self.prior(theta) / np.sum(self.ws * kernel(self.thetas))
+        return w
+
+class viaABC:
     @torch.inference_mode()
     def __init__(self,
                 num_parameters: int, 
-                lower_bounds: np.ndarray, 
-                upper_bounds: np.ndarray, 
+                #lower_bounds: np.ndarray, 
+                #upper_bounds: np.ndarray, 
+                mu: np.ndarray,
+                sigma: np.ndarray,
                 observational_data: np.ndarray, 
                 model: Union[torch.nn.Module, None],
                 state0: Union[np.ndarray, None],
@@ -47,7 +109,7 @@ class LatentABCSMC:
                 # batch_effect: bool = False,
                 ):
         """
-        Initialize the Latent-ABC algorithm.
+        Initialize the viaABC algorithm.
 
         Parameters:
         model: The latent encoding model to be used in the algorithm.
@@ -66,7 +128,7 @@ class LatentABCSMC:
         """
         self.logger = logging.getLogger(__name__)
         logging.basicConfig(level=logging.INFO)
-        self.logger.info("Initializing LatentABCSMC class")
+        self.logger.info("Initializing viaABC class")
         
         self.model = model
         if model is not None:
@@ -107,11 +169,11 @@ class LatentABCSMC:
             self.encoded_observational_data = self.model(torch.tensor(self.raw_observational_data, dtype=torch.float32).unsqueeze(0))[1].cpu().numpy()
 
         self.num_parameters = num_parameters
-        self.lower_bounds = lower_bounds
-        self.upper_bounds = upper_bounds
+        self.mu = mu
+        self.sigma = sigma
 
         # Ensure lower and upper bounds match the number of parameters
-        assert len(lower_bounds) == len(upper_bounds) == num_parameters, "Lower and upper bounds must match the number of parameters"
+        assert len(mu) == len(sigma) == num_parameters, "Length of mu and sigma must match the number of parameters"
 
         if pooling_method is None:
             raise ValueError("Pooling method must be provided.")
@@ -127,8 +189,8 @@ class LatentABCSMC:
         self.logger.info("Initialization complete")
         self.logger.info("LatentABCSMC class initialized with the following parameters:")
         self.logger.info(f"num_parameters: {num_parameters}")
-        self.logger.info(f"lower_bounds: {lower_bounds}")
-        self.logger.info(f"upper_bounds: {upper_bounds}")
+        self.logger.info(f"Mu: {mu}")
+        self.logger.info(f"Sigma: {sigma}")
         self.logger.info(f"t0: {t0}")
         self.logger.info(f"tmax: {tmax}")
         self.logger.info(f"time_space: {time_space}")
@@ -162,9 +224,11 @@ class LatentABCSMC:
         Returns:
             np.ndarray: Sampled parameters from the prior distributions.
         """
-        raise NotImplementedError
 
-    def calculate_prior_prob(self, parameters: np.ndarray) -> float:
+        # Sample from the prior distribution
+        return np.random.multivariate_normal(self.mu, self.sigma)
+
+    def calculate_prior_prob(self, theta: np.ndarray) -> float:
         """
         Calculate the prior probability of the given parameters.
 
@@ -174,15 +238,13 @@ class LatentABCSMC:
         Returns:
             np.ndarray: Prior probability of the parameters.
         """
-        raise NotImplementedError
 
-    def perturb_parameters(self, parameters: np.ndarray) -> np.ndarray:
+        return multivariate_normal.pdf(theta, self.mu, self.sigma)
+
+
+    def perturb_parameters(self, theta: np.ndarray, cov: np.ndarray) -> np.ndarray:
         """
-        Perturb the given parameters.
-
-        This method should be implemented to perturb the given parameters according to
-        the perturbation kernel used in the model. The specific implementation will depend
-        on the perturbation kernel used.
+        Perturb the given parameters, following (Beaumont et al. 2009)
 
         Args:
             parameters (np.ndarray): Parameters to perturb.
@@ -190,7 +252,9 @@ class LatentABCSMC:
         Returns:
             np.ndarray: Perturbed parameters.
         """
-        raise NotImplementedError
+
+        proposed_theta = multivariate_normal.rvs(mean=theta, cov=cov)
+        return proposed_theta
 
     def calculate_distance(self, y: np.ndarray) -> np.ndarray:
         """
@@ -230,9 +294,10 @@ class LatentABCSMC:
         tensor = torch.tensor(scaled_data, dtype=torch.float32).unsqueeze(0).to(self.model.device) # [1, T, d]
         self.encoded_observational_data = self.model.get_latent(tensor, pooling_method=self.pooling_method).cpu().numpy().squeeze(0)
     
-    def _log_generation_stats(self, t: int, particles: np.ndarray, weights: np.ndarray, start_time: float, num_simulations: int):
+    def _log_generation_stats(self, t: int, particles: np.ndarray, weights: np.ndarray, start_time: float, num_simulations: int, epsilon: float):
         duration = time.time() - start_time
         self.logger.info(f"Generation {t + 1} Completed. Accepted {self.num_particles} particles in {duration:.2f} seconds with {num_simulations} total simulations.")
+        self.logger.info(f"Epsilon: {epsilon}")
 
         mean = np.average(particles, weights=weights, axis=0)
         var = np.average((particles - mean) ** 2, weights=weights, axis=0)
@@ -243,89 +308,208 @@ class LatentABCSMC:
         self.logger.info(f"Variance: {var}")
 
     @torch.inference_mode()
-    def run(self, num_particles: int, tolerance_levels: List[float], sigma: float = 0.1):
+    def run_init(self, num_particles: int, k: int):
         if self.model is None:
             raise ValueError("Model must be provided to encode the data and run the algorithm.")
-        
-        if not tolerance_levels:
-            raise ValueError("Tolerance levels must be provided.")
+    
+        num_particles
+        total_num_simulations = 0
+        accepted = 0
 
-        self.num_generations = len(tolerance_levels)
+        self.encode_observational_data()
+        particles = np.ones((k * num_particles, self.num_parameters))
+        weights = np.ones((k * self.num_particles))
+        dists = np.zeros((k * num_particles))
+
+        while accepted < self.num_particles:
+            perturbed_params = self.sample_priors()
+            prior_probability = 1.0
+            new_weight = 1.0
+        
+            prior_probability = self.calculate_prior_prob(perturbed_params)
+
+            if prior_probability <= 0:
+                continue
+
+            y, status = self.simulate(perturbed_params)
+            running_num_simulations += 1
+
+            if status != 0:
+                continue
+
+            y_scaled = self.preprocess(y)
+            y_tensor = torch.tensor(y_scaled, dtype=torch.float32).unsqueeze(0).to(self.model.device)
+            y_latent_np = self.model.get_latent(y_tensor, pooling_method=self.pooling_method).cpu().numpy().squeeze(0)
+            dist = self.calculate_distance(y_latent_np)
+
+            particles[accepted] = perturbed_params
+            weights[accepted] = new_weight
+            dists[accepted] = dist
+            accepted += 1
+
+        # Sort by distance
+        sorted_indices = np.argsort(dists)
+        particles = particles[sorted_indices]
+        weights = weights[sorted_indices]
+        dists = dists[sorted_indices]
+
+        # Select the top particles
+        particles = particles[:num_particles]
+        weights = weights[:num_particles]
+
+        # Normalize weights
+        weights /= np.sum(weights)
+        epsilon = dists[:num_particles][-1] # initial epsilon
+        
+        return particles, weights, epsilon, total_num_simulations
+    
+    def _get_sigma(self, theta, weights):
+        """
+        Computes a weighted covariance matrix
+        
+        :param theta: the array of values
+        :param weights: array of weights for each entry of the values
+        
+        :returns sigma: the weighted covariance matrix
+        """
+        n = theta.shape[1]
+        sigma = np.empty((n, n))
+        w = weights.sum() / (weights.sum()**2 - (weights**2).sum()) 
+        average = np.average(theta, axis=0, weights=weights)
+        for j in range(n):
+            for k in range(n):
+                sigma[j, k] = w * np.sum(weights * ((theta[:, j] - average[j]) * (theta[:, k] - average[k])))
+        return sigma
+
+    @torch.inference_mode()
+    def run(self, num_particles: int, q_threshold=0.99):
+        if self.model is None:
+            raise ValueError("Model must be provided to encode the data and run the algorithm.")
+
         self.num_particles = num_particles
         total_num_simulations = 0
 
         self.encode_observational_data()
-        particles = np.ones((self.num_generations, self.num_particles, self.num_parameters))
-        weights = np.ones((self.num_generations, self.num_particles))
+        
+        # Use lists for dynamic growth during the run
+        all_particles = []
+        all_weights = []
+        epsilons = []
 
-        self.logger.info(f"Tolerance levels: {tolerance_levels}")
+        self.logger.info(f"Q Threshold: {q_threshold}")
         start_time = time.time()
         self.logger.info("Starting ABC SMC run")
 
-        for t in range(self.num_generations):
-            self.logger.info(f"Generation {t + 1} started")
+        # Initial generation
+        init_start_time = time.time()
+        generation_particles, generation_weights, init_epsilon, running_num_simulations = self.run_init(num_particles, k=5)
+        init_end_time = time.time()
+        self.logger.info(f"Initialization completed in {init_end_time - init_start_time:.2f} seconds")
+
+        # Store first generation
+        all_particles.append(np.array(generation_particles))
+        normalized_weights = np.array(generation_weights).reshape(num_particles) / np.sum(generation_weights)
+        all_weights.append(normalized_weights)
+        epsilons.append(init_epsilon)
+
+        self._log_generation_stats(0, all_particles[0], all_weights[0], start_time, running_num_simulations, init_epsilon)
+
+        t = 1  # Start from generation 1 (0 was initialization)
+        while True:
+            self.logger.info(f"Generation {t} started")
             start_time_generation = time.time()
 
             generation_particles = []
             generation_weights = []
+            generation_dists = []
             accepted = 0
             running_num_simulations = 0
-            epsilon = tolerance_levels[t]
-            if t > 0:
-                previous_particles = particles[t - 1]
-                previous_weights = weights[t - 1]
 
-            with tqdm(total=self.num_particles) as pbar:
-                while accepted < self.num_particles:
-                    if t == 0:
-                        perturbed_params = self.sample_priors()
-                        prior_probability = 1.0
-                        new_weight = 1.0
-                    else:
-                        idx = np.random.choice(len(previous_particles), p=previous_weights)
-                        perturbed_params = self.perturb_parameters(previous_particles[idx], previous_particles, sigma = sigma)
-                        prior_probability = self.calculate_prior_prob(perturbed_params)
+            previous_particles = all_particles[t - 1]
+            previous_weights = all_weights[t - 1]
 
-                        if prior_probability <= 0:
-                            continue
+            while accepted < self.num_particles:
+                idx = np.random.choice(len(previous_particles), p=previous_weights)
+                theta = previous_particles[idx]
+                sigma = self._get_sigma(theta, previous_weights)
+                sigma = np.atleast_2d(sigma)
 
-                        theta_log_weight = np.log(prior_probability) - gaussian_kde(previous_particles.T, weights=previous_weights).logpdf(perturbed_params)
-                        new_weight = np.exp(theta_log_weight)
+                # Perturb the parameters
+                perturbed_params = self.perturb_parameters(theta, sigma)
+                prior_probability = self.calculate_prior_prob(perturbed_params)
 
-                    if new_weight <= 0:
-                        continue
+                if prior_probability <= 0:
+                    continue
+                
+                # TODO: FIX THIS
+                # theta_log_weight = np.log(prior_probability) - gaussian_kde(previous_particles.T, weights=previous_weights).logpdf(perturbed_params)
+                # new_weight = np.exp(theta_log_weight)
 
-                    y, status = self.simulate(perturbed_params)
-                    running_num_simulations += 1  # Increment for every simulation attempt
+                phi = np.array([np.sum(norm.logpdf(x, loc=perturbed_params, scale=sigma)) for x in previous_particles])
+                log_weights = np.log(previous_weights) + phi
+                lse = np.log(np.sum(np.exp(log_weights)))
+                new_weight = np.exp(prior_probability - lse)
 
-                    if status != 0:
-                        continue
+                if new_weight <= 0:
+                    continue
 
-                    y_scaled = self.preprocess(y)
-                    y_tensor = torch.tensor(y_scaled, dtype=torch.float32).unsqueeze(0).to(self.model.device)
-                    y_latent_np = self.model.get_latent(y_tensor, pooling_method=self.pooling_method).cpu().numpy().squeeze(0)
-                    dist = self.calculate_distance(y_latent_np)
-                    if dist >= epsilon:
-                        continue
+                y, status = self.simulate(perturbed_params)
+                running_num_simulations += 1
 
-                    accepted += 1
-                    pbar.update(1)
-                    generation_particles.append(perturbed_params)
-                    generation_weights.append(new_weight)
+                if status != 0:
+                    continue
 
-                total_num_simulations += running_num_simulations
-                particles[t] = np.array(generation_particles)
-                weights[t] = np.array(generation_weights).reshape(num_particles) / np.sum(generation_weights)
+                y_scaled = self.preprocess(y)
+                y_tensor = torch.tensor(y_scaled, dtype=torch.float32).unsqueeze(0).to(self.model.device)
+                y_latent_np = self.model.get_latent(y_tensor, pooling_method=self.pooling_method).cpu().numpy().squeeze(0)
+                dist = self.calculate_distance(y_latent_np)
+                if dist >= epsilons[t-1]:
+                    continue
 
-                self._log_generation_stats(t, particles[t], weights[t], start_time_generation, running_num_simulations)
+                accepted += 1
+                generation_particles.append(perturbed_params)
+                generation_weights.append(new_weight)
+                generation_dists.append(dist)
 
-        self.particles = particles
-        self.weights = weights
+            total_num_simulations += running_num_simulations
+            
+            # Store current generation
+            current_particles = np.array(generation_particles)
+            current_weights = np.array(generation_weights).reshape(num_particles) / np.sum(generation_weights)
+            all_particles.append(current_particles)
+            all_weights.append(current_weights)
+
+            # Calculate qt and new epsilon
+            dens = densratio(generation_particles, previous_particles, kernel_num=100, verbose=False)
+            density_ratios = dens.compute_density_ratio(generation_particles)
+            ct = max(np.max(density_ratios), 1.0)
+            qt = 1.0 / ct
+            eps = np.quantile(generation_dists, qt)
+            epsilons.append(eps)
+
+            self._log_generation_stats(t, current_particles, current_weights, start_time_generation, running_num_simulations, eps)
+
+            # Check stop condition
+            if qt >= q_threshold:
+                self.logger.info(f"Stopping criterion met (qt = {qt:.3f} >= {q_threshold})")
+                break
+                
+            # Optional: Add other stopping criteria (e.g., minimum epsilon reached)
+            if t >= 100:  # Absolute maximum generations
+                self.logger.warning(f"Reached maximum generations (100) without meeting stop criterion")
+                break
+                
+            t += 1
+
+        # Convert lists to numpy arrays at the end
+        self.particles = np.array(all_particles)
+        self.weights = np.array(all_weights)
 
         duration = time.time() - start_time
-        self.logger.info(f"ABC SMC run completed in {duration:.2f} seconds with {total_num_simulations} total simulations.")
+        num_generations = t + 1  # +1 because we count generation 0
+        self.logger.info(f"ABC SMC run completed in {duration:.2f} seconds with {total_num_simulations} total simulations over {num_generations} generations.")
 
-        return particles, weights
+        return self.particles, self.weights
 
     def compute_statistics(self, generation: int = 0):
         """ Compute statistics of the particles at the given generation.
