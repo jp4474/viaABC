@@ -1,4 +1,5 @@
 from latent_abc_smc import LatentABCSMC
+from latent_abc_pmc import viaABC
 from scipy.integrate import solve_ivp
 from scipy.stats import gaussian_kde, norm, uniform, multivariate_normal
 import numpy as np
@@ -56,6 +57,45 @@ class LotkaVolterra(LatentABCSMC):
         perturbations = sigma * np.random.uniform(-1, 1, self.num_parameters)
         parameters += perturbations
         return parameters
+    
+    def preprocess(self, x):
+        mean = np.mean(np.abs(x), 0)
+        x = x / mean
+        return x
+    
+class LotkaVolterra2(viaABC):
+    def __init__(self,
+        num_parameters = 2, 
+        mu = np.array([0, 0]), 
+        sigma = np.array([10, 10]), 
+        model = None, 
+        observational_data = np.array([[1.87, 0.65, 0.22, 0.31, 1.64, 1.15, 0.24, 2.91],
+                                        [0.49, 2.62, 1.54, 0.02, 1.14, 1.68, 1.07, 0.88]]).T, 
+        state0 = np.array([1, 0.5]),
+        t0 = 0,
+        tmax = 15, 
+        time_space = np.array([1.1, 2.4, 3.9, 5.6, 7.5, 9.6, 11.9, 14.4]),
+        pooling_method = "cls",
+        metric = "cosine"):
+        super().__init__(num_parameters, mu, sigma, observational_data, model, state0, t0, tmax, time_space, pooling_method, metric)
+
+    def ode_system(self, t, state, parameters):
+        # Lotka-Volterra equations
+        alpha, delta = parameters
+        beta, gamma = 1, 1
+        prey, predator = state
+        dprey = prey * (alpha - beta * predator)
+        dpredator = predator * (-gamma + delta * prey)
+        return [dprey, dpredator]
+        
+    def sample_priors(self):
+        # Sample from the prior distribution
+        priors = np.random.uniform(self.mu, self.sigma, self.num_parameters)
+        return priors
+    
+    def calculate_prior_prob(self, parameters):
+        probabilities = uniform.pdf(parameters, loc=self.mu, scale=self.sigma - self.mu) 
+        return np.prod(probabilities)
     
     def preprocess(self, x):
         mean = np.mean(np.abs(x), 0)

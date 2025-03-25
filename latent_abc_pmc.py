@@ -5,6 +5,7 @@ This script implements the Sequential Monte Carlo (SMC) algorithm for Approximat
 
 Some code is referenced from https://github.com/Pat-Laub/approxbayescomp/blob/master/src/approxbayescomp/smc.py#L73
 Some code is referenced from https://github.com/jakeret/abcpmc/blob/master/abcpmc/sampler.py
+Some code is referenced from https://rdrr.io/github/TimeWz667/odin2data/src/R/abcpmc.R
 """
 
 # Standard library imports
@@ -294,10 +295,13 @@ class viaABC:
         tensor = torch.tensor(scaled_data, dtype=torch.float32).unsqueeze(0).to(self.model.device) # [1, T, d]
         self.encoded_observational_data = self.model.get_latent(tensor, pooling_method=self.pooling_method).cpu().numpy().squeeze(0)
     
-    def _log_generation_stats(self, t: int, particles: np.ndarray, weights: np.ndarray, start_time: float, num_simulations: int, epsilon: float):
+    def _log_generation_stats(self, t: int, particles: np.ndarray, weights: np.ndarray, start_time: float, num_simulations: int, epsilon: float, quantile: Union[float, None]):
         duration = time.time() - start_time
-        self.logger.info(f"Generation {t + 1} Completed. Accepted {self.num_particles} particles in {duration:.2f} seconds with {num_simulations} total simulations.")
+        self.logger.info(f"Generation {t} Completed. Accepted {self.num_particles} particles in {duration:.2f} seconds with {num_simulations} total simulations.")
         self.logger.info(f"Epsilon: {epsilon}")
+
+        if quantile is not None:
+            self.logger.info(f"Quantile: {quantile}")
 
         mean = np.average(particles, weights=weights, axis=0)
         var = np.average((particles - mean) ** 2, weights=weights, axis=0)
@@ -308,7 +312,7 @@ class viaABC:
         self.logger.info(f"Variance: {var}")
 
     @torch.inference_mode()
-    def run_init(self, num_particles: int, k: int):
+    def _run_init(self, num_particles: int, k: int):
         if self.model is None:
             raise ValueError("Model must be provided to encode the data and run the algorithm.")
     
@@ -321,7 +325,7 @@ class viaABC:
         weights = np.ones((k * self.num_particles))
         dists = np.zeros((k * num_particles))
 
-        while accepted < self.num_particles:
+        while accepted < (k * self.num_particles):
             perturbed_params = self.sample_priors()
             prior_probability = 1.0
             new_weight = 1.0
@@ -332,7 +336,7 @@ class viaABC:
                 continue
 
             y, status = self.simulate(perturbed_params)
-            running_num_simulations += 1
+            total_num_simulations += 1
 
             if status != 0:
                 continue
@@ -388,8 +392,6 @@ class viaABC:
 
         self.num_particles = num_particles
         total_num_simulations = 0
-
-        self.encode_observational_data()
         
         # Use lists for dynamic growth during the run
         all_particles = []
@@ -398,11 +400,11 @@ class viaABC:
 
         self.logger.info(f"Q Threshold: {q_threshold}")
         start_time = time.time()
-        self.logger.info("Starting ABC SMC run")
+        self.logger.info("Starting ABC PMC run")
 
         # Initial generation
         init_start_time = time.time()
-        generation_particles, generation_weights, init_epsilon, running_num_simulations = self.run_init(num_particles, k=5)
+        generation_particles, generation_weights, init_epsilon, running_num_simulations = self._run_init(num_particles, k=5)
         init_end_time = time.time()
         self.logger.info(f"Initialization completed in {init_end_time - init_start_time:.2f} seconds")
 
@@ -412,11 +414,11 @@ class viaABC:
         all_weights.append(normalized_weights)
         epsilons.append(init_epsilon)
 
-        self._log_generation_stats(0, all_particles[0], all_weights[0], start_time, running_num_simulations, init_epsilon)
+        self._log_generation_stats(1, all_particles[0], all_weights[0], start_time, running_num_simulations, init_epsilon)
 
         t = 1  # Start from generation 1 (0 was initialization)
         while True:
-            self.logger.info(f"Generation {t} started")
+            self.logger.info(f"Generation {t+1} started")
             start_time_generation = time.time()
 
             generation_particles = []
@@ -427,15 +429,19 @@ class viaABC:
 
             previous_particles = all_particles[t - 1]
             previous_weights = all_weights[t - 1]
+            epsilon = epsilons[t - 1]
 
             while accepted < self.num_particles:
                 idx = np.random.choice(len(previous_particles), p=previous_weights)
                 theta = previous_particles[idx]
-                sigma = self._get_sigma(theta, previous_weights)
+                sigma = self._get_sigma(previous_particles, previous_weights)
+                
+                # TODO: FIX THIS
+                theta = np.atleast_2d(theta)
                 sigma = np.atleast_2d(sigma)
 
                 # Perturb the parameters
-                perturbed_params = self.perturb_parameters(theta, sigma)
+                perturbed_params = self.perturb_parameters(theta[0], sigma)
                 prior_probability = self.calculate_prior_prob(perturbed_params)
 
                 if prior_probability <= 0:
@@ -445,7 +451,7 @@ class viaABC:
                 # theta_log_weight = np.log(prior_probability) - gaussian_kde(previous_particles.T, weights=previous_weights).logpdf(perturbed_params)
                 # new_weight = np.exp(theta_log_weight)
 
-                phi = np.array([np.sum(norm.logpdf(x, loc=perturbed_params, scale=sigma)) for x in previous_particles])
+                phi = np.array([np.sum(multivariate_normal.logpdf(perturbed_params, mean=x, cov=sigma)) for x in previous_particles])
                 log_weights = np.log(previous_weights) + phi
                 lse = np.log(np.sum(np.exp(log_weights)))
                 new_weight = np.exp(prior_probability - lse)
@@ -463,7 +469,7 @@ class viaABC:
                 y_tensor = torch.tensor(y_scaled, dtype=torch.float32).unsqueeze(0).to(self.model.device)
                 y_latent_np = self.model.get_latent(y_tensor, pooling_method=self.pooling_method).cpu().numpy().squeeze(0)
                 dist = self.calculate_distance(y_latent_np)
-                if dist >= epsilons[t-1]:
+                if dist >= epsilon:
                     continue
 
                 accepted += 1
@@ -487,7 +493,7 @@ class viaABC:
             eps = np.quantile(generation_dists, qt)
             epsilons.append(eps)
 
-            self._log_generation_stats(t, current_particles, current_weights, start_time_generation, running_num_simulations, eps)
+            self._log_generation_stats(t+1, current_particles, current_weights, start_time_generation, running_num_simulations, eps, qt)
 
             # Check stop condition
             if qt >= q_threshold:
