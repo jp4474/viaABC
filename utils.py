@@ -1,4 +1,5 @@
 import numpy as np
+from functools import partial
 
 class DensityRatioEstimation:
     """A density ratio estimation class."""

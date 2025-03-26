@@ -455,6 +455,15 @@ class viaABC:
             }
         })
 
+    def _initialize_first_generation(self) -> None:
+        """Initialize the first generation of particles."""
+        init_start_time = time.time()
+        self._run_init_v2(self.num_particles)
+        init_end_time = time.time()
+        self.logger.info(
+            f"Initialization completed in {init_end_time - init_start_time:.2f} seconds"
+        )
+
     @torch.inference_mode()
     def run(
         self,
@@ -482,28 +491,44 @@ class viaABC:
 
         # Initial generation
         self._initialize_first_generation()
+        self._compute_statistics(0)
         
         # Run subsequent generations
         for generation_num in range(1, max_generations + 1):
             generation_start_time = time.time()
-            self.logger.info(f"Generation {generation_num+1} started")
+            self.logger.info(f"Generation {generation_num} started")
             
-            prev_gen = self.generations[generation_num - 1]
-            particles, weights, distances, simulations = self._run_generation(prev_gen)
+            # Unpack previous generation values
+            prev_particles = self.generations[generation_num - 1]['particles']
+            prev_weights = self.generations[generation_num - 1]['weights']
+            prev_cov = np.atleast_2d(self.generations[generation_num - 1]['cov'])
+            prev_sigma_max = self.generations[generation_num - 1]['sigma_max']
+            prev_epsilon = self.generations[generation_num - 1]['epsilon']
+            
+            # Run generation
+            particles, weights, distances, simulations = self._run_generation(
+                prev_particles=prev_particles,
+                prev_weights=prev_weights,
+                prev_cov=prev_cov,
+                epsilon=prev_epsilon
+            )
             total_num_simulations += simulations
             
-            # Process and store current generation results
+            # Process results
             current_gen = self._process_generation_results(
-                generation_num,
-                particles,
-                weights,
-                distances,
-                prev_gen
+                generation_num=generation_num,
+                particles=particles,
+                weights=weights,
+                distances=distances,
+                prev_particles=prev_particles,
+                prev_weights=prev_weights,
+                prev_sigma_max=prev_sigma_max
             )
             self.generations.append(current_gen)
-            generation_end_time = time.time()
+            self._compute_statistics(generation_num)
 
-            self.logger.info(f"Generation {generation_num+1} completed in {generation_end_time - generation_start_time:.2f} seconds")
+            geneneration_end_time = time.time()
+            self.logger.info(f"Generation {generation_num} completed in {geneneration_end_time - generation_start_time:.2f} seconds")
             
             # Check stopping conditions
             if self._should_stop(generation_num, current_gen['qt'], q_threshold):
@@ -511,20 +536,20 @@ class viaABC:
 
         self._log_final_results(start_time, total_num_simulations)
 
-    def _initialize_first_generation(self) -> None:
-        """Initialize the first generation of particles."""
-        init_start_time = time.time()
-        self._run_init_v2(self.num_particles)
-        init_end_time = time.time()
-        self.logger.info(
-            f"Initialization completed in {init_end_time - init_start_time:.2f} seconds"
-        )
-
-    def _run_generation(self, prev_gen: dict) -> tuple:
+    def _run_generation(
+        self,
+        prev_particles: np.ndarray,
+        prev_weights: np.ndarray,
+        prev_cov: np.ndarray,
+        epsilon: float
+    ) -> tuple:
         """Run a single generation of the ABC PMC algorithm.
         
         Args:
-            prev_gen: Dictionary containing previous generation's data
+            prev_particles: Particles from previous generation
+            prev_weights: Weights from previous generation
+            prev_cov: Covariance matrix from previous generation
+            epsilon: Epsilon threshold from previous generation
             
         Returns:
             Tuple of (particles, weights, distances, num_simulations)
@@ -535,11 +560,13 @@ class viaABC:
         accepted = 0
         running_num_simulations = 0
         
-        prev_cov = np.atleast_2d(prev_gen['cov'])
-        
         with tqdm(total=self.num_particles) as pbar:
             while accepted < self.num_particles:
-                theta, new_weight = self._propose_particle(prev_gen, prev_cov)
+                theta, new_weight = self._propose_particle(
+                    prev_particles=prev_particles,
+                    prev_weights=prev_weights,
+                    prev_cov=prev_cov
+                )
                 if theta is None:
                     continue
                     
@@ -550,7 +577,7 @@ class viaABC:
                     continue
                     
                 dist = self._calculate_particle_distance(y)
-                if dist >= prev_gen['epsilon']:
+                if dist >= epsilon:
                     continue
                     
                 accepted += 1
@@ -561,18 +588,24 @@ class viaABC:
         
         return np.array(particles), np.array(weights), distances, running_num_simulations
 
-    def _propose_particle(self, prev_gen: dict, prev_cov: np.ndarray) -> tuple:
+    def _propose_particle(
+        self,
+        prev_particles: np.ndarray,
+        prev_weights: np.ndarray,
+        prev_cov: np.ndarray
+    ) -> tuple:
         """Propose a new particle and calculate its weight.
         
         Args:
-            prev_gen: Previous generation data
-            prev_cov: Previous covariance matrix
+            prev_particles: Particles from previous generation
+            prev_weights: Weights from previous generation
+            prev_cov: Covariance matrix from previous generation
             
         Returns:
             Tuple of (particle_params, weight) or (None, None) if invalid
         """
-        idx = np.random.choice(self.num_particles, p=prev_gen['weights'])
-        theta = prev_gen['particles'][idx]
+        idx = np.random.choice(self.num_particles, p=prev_weights)
+        theta = prev_particles[idx]
         theta = np.atleast_2d(theta)
         
         # Perturb the parameters
@@ -584,27 +617,13 @@ class viaABC:
             
         phi = np.array([
             np.sum(multivariate_normal.logpdf(perturbed_params, mean=x, cov=prev_cov)) 
-            for x in prev_gen['samples']
+            for x in prev_particles
         ])
-        log_weights = np.log(prev_gen['weights']) + phi
+        log_weights = np.log(prev_weights) + phi
         lse = np.log(np.sum(np.exp(log_weights)))
         new_weight = np.exp(prior_probability - lse)
         
         return (perturbed_params, new_weight) if new_weight > 0 else (None, None)
-
-    def _calculate_particle_distance(self, y: np.ndarray) -> float:
-        """Calculate distance for a simulated particle.
-        
-        Args:
-            y: Simulated observation
-            
-        Returns:
-            Distance metric
-        """
-        y_scaled = self.preprocess(y)
-        y_tensor = torch.tensor(y_scaled, dtype=torch.float32).unsqueeze(0).to(self.model.device)
-        y_latent_np = self.get_latent(y_tensor)
-        return self.calculate_distance(y_latent_np)
 
     def _process_generation_results(
         self,
@@ -612,7 +631,9 @@ class viaABC:
         particles: np.ndarray,
         weights: np.ndarray,
         distances: list,
-        prev_gen: dict
+        prev_particles: np.ndarray,
+        prev_weights: np.ndarray,
+        prev_sigma_max: float
     ) -> dict:
         """Process and package generation results.
         
@@ -621,34 +642,37 @@ class viaABC:
             particles: Array of particle parameters
             weights: Array of particle weights
             distances: List of particle distances
-            prev_gen: Previous generation data
+            prev_particles: Particles from previous generation
+            prev_weights: Weights from previous generation
+            prev_sigma_max: Sigma max from previous generation
             
         Returns:
             Dictionary containing generation results
         """
         # Normalize weights
-        weights_normalized = np.array(weights) / np.sum(weights)
+        weights_normalized = weights / np.sum(weights)
         
         # Calculate statistics
-        sample_cov = np.atleast_2d(weighted_var(particles, weights=weights_normalized))
+        sample_cov = np.atleast_2d(np.diag(weighted_var(particles, weights=weights_normalized)))
         sample_sigma = np.sqrt(np.diag(sample_cov))
         sigma_max = np.min(sample_sigma)
         meta_cov = 2 * np.diag(sample_cov)
         
         # Calculate qt and epsilon
-        sigma = calculate_densratio_basis_sigma(sigma_max, prev_gen['sigma_max'])
+        sigma = calculate_densratio_basis_sigma(sigma_max, prev_sigma_max)
         self.densratio.fit(
-            x=prev_gen['particles'],
+            x=prev_particles,
             y=particles,
-            weights_x=prev_gen['weights'],
+            weights_x=prev_weights,
             weights_y=weights_normalized,
             sigma=sigma
         )
         
         max_value = max(self.densratio.max_ratio(), 1.0)
         qt = max(1 / max_value, 0.05)
-        epsilon = np.quantile(distances, qt)
+        epsilon = np.quantile(distances, qt) # TODO: FIX THIS
         
+        self.logger.info(f'ABC-SMC: Epsilon for generation {generation_num} is {epsilon:.5f}')
         self.logger.info(f'ABC-SMC: Estimated maximum density ratio {1 / max_value:.5f}')
         
         return {
@@ -664,6 +688,20 @@ class viaABC:
                 'cov': meta_cov
             }
         }
+    
+    def _calculate_particle_distance(self, y: np.ndarray) -> float:
+        """Calculate distance for a simulated particle.
+        
+        Args:
+            y: Simulated observation
+            
+        Returns:
+            Distance metric
+        """
+        y_scaled = self.preprocess(y)
+        y_tensor = torch.tensor(y_scaled, dtype=torch.float32).unsqueeze(0).to(self.model.device)
+        y_latent_np = self.get_latent(y_tensor)
+        return self.calculate_distance(y_latent_np)
 
     def _should_stop(self, generation_num: int, qt: float, q_threshold: float) -> bool:
         """Determine if stopping conditions are met.
@@ -695,22 +733,19 @@ class viaABC:
             f"{total_simulations} total simulations over {num_generations} generations."
         )
 
-    def compute_statistics(self, generation: int = 0):
+    def _compute_statistics(self, generation: int = 0):
         """ Compute statistics of the particles at the given generation.
         Args:
             generation (int): Generation to compute statistics for. Defaults to the last generation.
             return_as_dataframe (bool): Whether to return the statistics as a pandas DataFrame. Defaults to False.
         """
 
-        if self.particles is None or self.weights is None:
-            raise ValueError("Particles and weights must be computed before calculating statistics.")
-        
-        if generation > self.num_generations:
+        if generation >= len(self.generations):
             raise ValueError("Generation must be less than or equal to the number of generations.")
         
         # compute statistics of the given generation
-        particles = self.particles[generation-1]
-        weights = self.weights[generation-1]
+        particles = self.generations[generation]['particles']
+        weights = self.generations[generation]['weights']
         mean = np.average(particles, weights=weights, axis=0)
         var = np.average((particles - mean) ** 2, weights=weights, axis=0)
         median = np.median(particles, axis=0)

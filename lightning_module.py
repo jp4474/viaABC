@@ -12,7 +12,7 @@ import torch.nn.functional as F
 from torch.autograd import Variable
 from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts, LambdaLR
 from pytorch_lightning.callbacks.finetuning import BaseFinetuning
-from systems import MZB
+from systems import MZB, LotkaVolterra
 
 class loss_fn(nn.Module):
     def __init__(self, alpha):
@@ -100,11 +100,11 @@ class PlotReconstructionLotka(L.Callback):
 
         # Extract data from the input dictionary
         self.obs_data = data.get('obs_data')
-        self.scaled_obs_data = data.get('scaled_obs_data')
-        self.obs_scale = data.get('obs_scale')
-        self.ground_truth = data.get('ground_truth')
-        self.scaled_ground_truth = data.get('scaled_ground_truth')
-        self.ground_truth_scale = data.get('ground_truth_scale')
+        self.lotka_abc = LotkaVolterra()
+        self.ground_truth = self.lotka_abc.simulate([1.0, 1.0])[0]
+        self.scaled_ground_truth = self.lotka_abc.preprocess(self.ground_truth)
+        self.scaled_obs_data = self.lotka_abc.preprocess(self.obs_data)
+        self.obs_scale = np.mean(np.abs(self.obs_data), axis=0)
 
         # Parameter names for plotting
         self.param_names = [r'$\alpha$', r'$\delta$']
