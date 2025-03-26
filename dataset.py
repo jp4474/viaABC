@@ -23,7 +23,7 @@ class NumpyDataset(Dataset):
         x = self.params[idx]
         y = self.simulations[idx]
 
-        x = x / 10
+        x = x
         y = y / self.scales[idx]
 
         x = torch.from_numpy(x).to(torch.float64)
@@ -133,8 +133,8 @@ def create_dataloaders(data_dir: str, batch_size: int) -> Tuple[DataLoader, Data
     if not os.path.exists(data_dir):
         raise FileNotFoundError(f"Data directory {data_dir} does not exist.")
 
-    train_dataset = MZBDataset(data_dir, prefix='train')
-    val_dataset = MZBDataset(data_dir, prefix='val')
+    train_dataset = NumpyDataset(data_dir, prefix='train')
+    val_dataset = NumpyDataset(data_dir, prefix='val')
 
     # Ensure data type matches precision setting
     train_dataset.simulations = train_dataset.simulations.astype('float64')

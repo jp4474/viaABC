@@ -52,12 +52,6 @@ class LotkaVolterra(LatentABCSMC):
         probabilities = uniform.pdf(parameters, loc=self.lower_bounds, scale=self.upper_bounds - self.lower_bounds) 
         return np.prod(probabilities)
     
-    def perturb_parameters(self, parameters, previous_particles, sigma = 0.1):
-        # Perturb the parameters
-        perturbations = sigma * np.random.uniform(-1, 1, self.num_parameters)
-        parameters += perturbations
-        return parameters
-    
     def preprocess(self, x):
         mean = np.mean(np.abs(x), 0)
         x = x / mean
@@ -94,8 +88,9 @@ class LotkaVolterra2(viaABC):
         return priors
     
     def calculate_prior_prob(self, parameters):
-        probabilities = uniform.pdf(parameters, loc=self.mu, scale=self.sigma - self.mu) 
-        return np.prod(probabilities)
+        probabilities = uniform.logpdf(parameters, loc=self.mu, scale=self.sigma - self.mu) 
+        probabilities = np.exp(np.sum(probabilities))
+        return probabilities
     
     def preprocess(self, x):
         mean = np.mean(np.abs(x), 0)
@@ -105,8 +100,8 @@ class LotkaVolterra2(viaABC):
 class MZB(LatentABCSMC):
     def __init__(self,
         num_parameters = 5, 
-        lower_bounds = np.array( [0, 10, -0.2, -7.4, -6.4]), # mean
-        upper_bounds = np.array([1, 18, 0.4, -2.6, -1.6]),  # std
+        mu = np.array( [0, 10, -0.2, -7.4, -6.4]), # mean
+        sigma = np.array([1, 18, 0.4, -2.6, -1.6]),  # std
         model = None, 
         observational_data = None,
         state0 = None,
@@ -115,22 +110,15 @@ class MZB(LatentABCSMC):
         time_space = np.array([59, 69, 76, 88, 95, 102, 108, 109, 113, 119, 122, 124, 141, 156, 158, 183, 212, 217, 219, 235, 261, 270, 289, 291, 306, 442, 524, 563, 566, 731]),
         pooling_method = "cls",
         metric = "cosine"):
-        super().__init__(num_parameters, lower_bounds, upper_bounds, observational_data, model, state0, t0, tmax, time_space, pooling_method, metric)
+        super().__init__(num_parameters, mu, sigma, observational_data, model, state0, t0, tmax, time_space, pooling_method, metric)
 
     def sample_priors(self):
-        # Sample from the prior distribution
-        priors = np.random.uniform(self.lower_bounds, self.upper_bounds, self.num_parameters)
+        priors = np.random.multivariate_normal(self.mu, np.diag(self.sigma), 1)[0]
         return priors
     
     def calculate_prior_prob(self, parameters):
-        probabilities = uniform.pdf(parameters, loc=self.lower_bounds, scale=self.upper_bounds - self.lower_bounds)
-        return np.prod(probabilities)
-
-    def perturb_parameters(self, theta, sigma = 0.1):
-        # Perturb the parameters
-        perturbations = sigma * np.random.uniform(-1, 1, self.num_parameters)
-        theta += perturbations
-        return theta
+        probabilities = multivariate_normal.pdf(parameters, mean=self.mu, cov=np.diag(self.sigma))
+        return probabilities
     
     # Define the ODE system
     def ode_system(self, t, state, parameters):

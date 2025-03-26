@@ -33,6 +33,7 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 
 from tqdm import tqdm
+from utils import *
 
 class GaussianPrior(object):
     """
@@ -92,100 +93,127 @@ class _WeightWrapper(object):  # @DontTrace
         return w
 
 class viaABC:
-    @torch.inference_mode()
-    def __init__(self,
-                num_parameters: int, 
-                #lower_bounds: np.ndarray, 
-                #upper_bounds: np.ndarray, 
-                mu: np.ndarray,
-                sigma: np.ndarray,
-                observational_data: np.ndarray, 
-                model: Union[torch.nn.Module, None],
-                state0: Union[np.ndarray, None],
-                t0: Union[int, None], 
-                tmax: Union[int, None], 
-                time_space: np.ndarray,
-                pooling_method: str,
-                metric: str = "l2",
-                # batch_effect: bool = False,
-                ):
-        """
-        Initialize the viaABC algorithm.
+    """Implementation of the viaABC algorithm for approximate Bayesian computation."""
 
-        Parameters:
-        model: The latent encoding model to be used in the algorithm.
-        num_parameters (int): Number of parameters in the ODE system.
-        TODO: fix to take in non-uniform priors
-        lower_bounds (np.ndarray): Lower bounds for uniform priors.
-        upper_bounds (np.ndarray): Upper bounds for uniform priors.
-        perturbation_kernels (np.ndarray): Values used to perturb the particles using Uniform distribution.
-        TODO: handle multiple data points at a single time point, possibly Bootstrap Aggregation (Bagging)?
-        observational_data (np.ndarray): Observational/reference data to compare against. 
-            Shape must be T x d where d is the dimension of the data and T is the number of time points.
-        state0 (np.ndarray): Initial state of the system. Can be None if you want to sample the initial state.
-        t0 (int): Initial time. Defaults to the first time point of time_space.
-        tmax (int): Maximum time. Defaults to the last time point + 1 of time_space.
-        time_space (np.ndarray): Evaluation space, must be sorted in ascending order.
+    @torch.inference_mode()
+    def __init__(
+        self,
+        num_parameters: int,
+        mu: np.ndarray,
+        sigma: np.ndarray,
+        observational_data: np.ndarray,
+        model: Union[torch.nn.Module, None],
+        state0: Union[np.ndarray, None],
+        t0: Union[int, None],
+        tmax: Union[int, None],
+        time_space: np.ndarray,
+        pooling_method: str = "cls",
+        metric: str = "cosine",
+    ) -> None:
+        """Initialize the viaABC algorithm.
+
+        Args:
+            num_parameters: Number of parameters in the ODE system.
+            mu: Mean values for normal priors.
+            sigma: Standard deviation values for normal priors.
+            observational_data: Observational/reference data to compare against.
+                Shape must be T x d where d is the dimension of the data and
+                T is the number of time points.
+            model: The latent encoding model to be used in the algorithm.
+            state0: Initial state of the system. Can be None if you want to sample
+                the initial state.
+            t0: Initial time. Must be provided.
+            tmax: Maximum time. Must be provided.
+            time_space: Evaluation space, must be sorted in ascending order.
+            pooling_method: Method for pooling data. Must be provided.
+            metric: Distance metric to use. Defaults to "cosine".
+
+        Raises:
+            ValueError: If required parameters are not provided.
+            AssertionError: If various dimension and value checks fail.
         """
         self.logger = logging.getLogger(__name__)
         logging.basicConfig(level=logging.INFO)
-        self.logger.info("Initializing viaABC class")
-        
+        self.logger.info("Initializing ViaABC class")
+
         self.model = model
         if model is not None:
             self.model.eval()
 
         self.raw_observational_data = observational_data
-
         self.state0 = state0
-        
+
         if state0 is None:
-            self.logger.warning("Initial state is not initialized. You only want to do this if you wish to sample initial condition.")
-            self.logger.warning("You must also define custom `simulate`, and `sample_priors` methods.")
+            self.logger.warning(
+                "Initial state is not initialized. Only do this if you wish to "
+                "sample initial condition."
+            )
+            self.logger.warning(
+                "You must also define custom `simulate` and `sample_priors` methods."
+            )
 
         if t0 is None:
             raise ValueError("t0 must be provided")
-        else:
-            self.t0 = t0
+        self.t0 = t0
 
         if tmax is None:
             raise ValueError("tmax must be provided")
-        else:
-            self.tmax = tmax
+        self.tmax = tmax
 
         self.time_space = time_space
 
+        # Validate time parameters
         assert self.t0 < self.tmax, "t0 must be less than tmax"
-        assert self.tmax >= time_space[-1], "tmax must be less than or equal to the last element of time_space"
-        assert self.t0 <= time_space[0], "t0 must be greater than or equal to the first element of time_space"
+        assert (
+            self.tmax >= time_space[-1]
+        ), "tmax must be greater than or equal to the last element of time_space"
+        assert (
+            self.t0 <= time_space[0]
+        ), "t0 must be less than or equal to the first element of time_space"
 
-        # Ensure observational data and time space match
-        assert observational_data.shape[0] == len(time_space), f"Observational data and time space must match, observational data shape: {observational_data.shape[0]}, time space length: {len(time_space)}"
+        # Validate data dimensions
+        assert observational_data.shape[0] == len(
+            time_space
+        ), (
+            f"Observational data and time space must match. "
+            f"Got {observational_data.shape[0]} time points in data but "
+            f"{len(time_space)} in time space."
+        )
 
         if model is None:
-            # warning
-            self.logger.warning("Model is None. The model must be provided to encode the data and run the algorithm.")
-            self.logger.warning("The class can be initialized without a model, but it will not be able to run the algorithm.")
+            self.logger.warning(
+                "Model is None. The model must be provided to encode the data "
+                "and run the algorithm."
+            )
+            self.logger.warning(
+                "The class can be initialized without a model, but it will not "
+                "be able to run the algorithm."
+            )
         else:
-            self.encoded_observational_data = self.model(torch.tensor(self.raw_observational_data, dtype=torch.float32).unsqueeze(0))[1].cpu().numpy()
+            obs_tensor = torch.tensor(self.raw_observational_data, dtype=torch.float32).unsqueeze(0)
+            self.encoded_observational_data = self.model(obs_tensor)[1].cpu().numpy()
 
         self.num_parameters = num_parameters
         self.mu = mu
         self.sigma = sigma
 
-        # Ensure lower and upper bounds match the number of parameters
-        assert len(mu) == len(sigma) == num_parameters, "Length of mu and sigma must match the number of parameters"
+        # Validate parameter dimensions
+        assert (
+            len(mu) == len(sigma) == num_parameters
+        ), "Length of mu and sigma must match the number of parameters"
 
         if pooling_method is None:
             raise ValueError("Pooling method must be provided.")
-        else:
-            self.pooling_method = pooling_method
+        
+        self.pooling_method = pooling_method
 
         if metric is None:
             raise ValueError("Metric must be provided.")
-        else:
-            #TODO: check if provided metric is a valid metric
-            self.metric = metric
+        # TODO: Validate the provided metric
+        self.metric = metric
+
+        self.densratio = DensityRatioEstimation()
+        self.generations = []
 
         self.logger.info("Initialization complete")
         self.logger.info("LatentABCSMC class initialized with the following parameters:")
@@ -293,9 +321,9 @@ class viaABC:
     def encode_observational_data(self):
         scaled_data = self.preprocess(self.raw_observational_data)
         tensor = torch.tensor(scaled_data, dtype=torch.float32).unsqueeze(0).to(self.model.device) # [1, T, d]
-        self.encoded_observational_data = self.model.get_latent(tensor, pooling_method=self.pooling_method).cpu().numpy().squeeze(0)
+        self.encoded_observational_data = self.get_latent(tensor)
     
-    def _log_generation_stats(self, t: int, particles: np.ndarray, weights: np.ndarray, start_time: float, num_simulations: int, epsilon: float, quantile: Union[float, None]):
+    def _log_generation_stats(self, t: int, particles: np.ndarray, weights: np.ndarray, start_time: float, num_simulations: int, epsilon: float, quantile: Union[float, None] = None):
         duration = time.time() - start_time
         self.logger.info(f"Generation {t} Completed. Accepted {self.num_particles} particles in {duration:.2f} seconds with {num_simulations} total simulations.")
         self.logger.info(f"Epsilon: {epsilon}")
@@ -311,12 +339,19 @@ class viaABC:
         self.logger.info(f"Median: {median}")
         self.logger.info(f"Variance: {var}")
 
+    def update_train_dataset(self, train_dataset):
+        # check if train_dataset is a torch Dataset
+        if not isinstance(train_dataset, torch.utils.data.Dataset):
+            raise ValueError("train_dataset must be a torch Dataset.")
+        
+        self.train_dataset = train_dataset
+        self.logger.info("Training dataset updated.")
+
     @torch.inference_mode()
     def _run_init(self, num_particles: int, k: int):
         if self.model is None:
             raise ValueError("Model must be provided to encode the data and run the algorithm.")
     
-        num_particles
         total_num_simulations = 0
         accepted = 0
 
@@ -343,7 +378,7 @@ class viaABC:
 
             y_scaled = self.preprocess(y)
             y_tensor = torch.tensor(y_scaled, dtype=torch.float32).unsqueeze(0).to(self.model.device)
-            y_latent_np = self.model.get_latent(y_tensor, pooling_method=self.pooling_method).cpu().numpy().squeeze(0)
+            y_latent_np = self.get_latent(y_tensor)
             dist = self.calculate_distance(y_latent_np)
 
             particles[accepted] = perturbed_params
@@ -367,155 +402,298 @@ class viaABC:
         
         return particles, weights, epsilon, total_num_simulations
     
-    def _get_sigma(self, theta, weights):
-        """
-        Computes a weighted covariance matrix
+    @torch.inference_mode()
+    def _run_init_v2(self, num_particles: int):
+        if self.train_dataset is None:
+            raise ValueError("Training dataset must be provided to initialize particles.")
         
-        :param theta: the array of values
-        :param weights: array of weights for each entry of the values
+        train_loader = torch.utils.data.DataLoader(self.train_dataset, batch_size=1000, shuffle=False)
+        candidates = {'parameters': [], 'distances': []}
         
-        :returns sigma: the weighted covariance matrix
-        """
-        n = theta.shape[1]
-        sigma = np.empty((n, n))
-        w = weights.sum() / (weights.sum()**2 - (weights**2).sum()) 
-        average = np.average(theta, axis=0, weights=weights)
-        for j in range(n):
-            for k in range(n):
-                sigma[j, k] = w * np.sum(weights * ((theta[:, j] - average[j]) * (theta[:, k] - average[k])))
-        return sigma
+        # Iterate through the data loader
+        for i, batch in enumerate(train_loader):
+            x, y = batch
+            y = y.to(self.model.device).float()
+            latent = self.get_latent(y)
+            # Ensure the latent is a tensor before appending
+            candidates['parameters'].append(x.numpy())
+            candidates['distances'].append(self.calculate_distance(latent))
+
+        # Concatenate parameters and distances (all are tensors, so use torch.cat and torch.stack)
+        candidates['parameters'] = np.concatenate(candidates['parameters'], axis=0)
+        candidates['distances'] = np.concatenate(candidates['distances'], axis=0)
+
+        # Sort the candidates by distance
+        sorted_indices = np.argsort(candidates['distances'])
+        sorted_candidates = candidates['parameters'][sorted_indices]
+        sorted_distances = candidates['distances'][sorted_indices]
+
+        particles = sorted_candidates[:num_particles]
+        distances = sorted_distances[:num_particles]
+
+        weights = np.ones(num_particles)/num_particles
+        epsilon = distances[-1]
+
+        total_num_simulations = len(train_loader) * 1000
+        
+        sample_cov = np.atleast_2d(np.cov(particles.reshape(self.num_particles, -1), rowvar=False))
+        sigma_max = np.min(np.sqrt(np.diag(sample_cov)))
+        
+        cov = 2 * np.diag(sample_cov)
+
+        # Store first generation
+        self.generations.append({
+            't' : 1,
+            'particles': np.array(particles),
+            'weights': np.array(weights),
+            'epsilon': epsilon,
+            'cov' : sample_cov,
+            'sigma_max': sigma_max,
+            'simulations': total_num_simulations,
+            'meta' :{
+                'cov': cov
+            }
+        })
 
     @torch.inference_mode()
-    def run(self, num_particles: int, q_threshold=0.99):
+    def run(
+        self,
+        num_particles: int,
+        q_threshold: float = 0.99,
+        k: int = 5,
+        max_generations: int = 20
+    ) -> None:
+        """Run the ABC PMC algorithm.
+        
+        Args:
+            num_particles: Number of particles to maintain per generation
+            q_threshold: Threshold for stopping criterion (qt >= q_threshold)
+            k: Number of nearest neighbors for distance calculation
+            max_generations: Maximum number of generations to run
+        """
         if self.model is None:
             raise ValueError("Model must be provided to encode the data and run the algorithm.")
 
         self.num_particles = num_particles
         total_num_simulations = 0
         
-        # Use lists for dynamic growth during the run
-        all_particles = []
-        all_weights = []
-        epsilons = []
-
-        self.logger.info(f"Q Threshold: {q_threshold}")
+        self.logger.info(f"Starting ABC PMC run with Q Threshold: {q_threshold}")
         start_time = time.time()
-        self.logger.info("Starting ABC PMC run")
 
         # Initial generation
+        self._initialize_first_generation()
+        
+        # Run subsequent generations
+        for generation_num in range(1, max_generations + 1):
+            generation_start_time = time.time()
+            self.logger.info(f"Generation {generation_num+1} started")
+            
+            prev_gen = self.generations[generation_num - 1]
+            particles, weights, distances, simulations = self._run_generation(prev_gen)
+            total_num_simulations += simulations
+            
+            # Process and store current generation results
+            current_gen = self._process_generation_results(
+                generation_num,
+                particles,
+                weights,
+                distances,
+                prev_gen
+            )
+            self.generations.append(current_gen)
+            generation_end_time = time.time()
+
+            self.logger.info(f"Generation {generation_num+1} completed in {generation_end_time - generation_start_time:.2f} seconds")
+            
+            # Check stopping conditions
+            if self._should_stop(generation_num, current_gen['qt'], q_threshold):
+                break
+
+        self._log_final_results(start_time, total_num_simulations)
+
+    def _initialize_first_generation(self) -> None:
+        """Initialize the first generation of particles."""
         init_start_time = time.time()
-        generation_particles, generation_weights, init_epsilon, running_num_simulations = self._run_init(num_particles, k=5)
+        self._run_init_v2(self.num_particles)
         init_end_time = time.time()
-        self.logger.info(f"Initialization completed in {init_end_time - init_start_time:.2f} seconds")
+        self.logger.info(
+            f"Initialization completed in {init_end_time - init_start_time:.2f} seconds"
+        )
 
-        # Store first generation
-        all_particles.append(np.array(generation_particles))
-        normalized_weights = np.array(generation_weights).reshape(num_particles) / np.sum(generation_weights)
-        all_weights.append(normalized_weights)
-        epsilons.append(init_epsilon)
-
-        self._log_generation_stats(1, all_particles[0], all_weights[0], start_time, running_num_simulations, init_epsilon)
-
-        t = 1  # Start from generation 1 (0 was initialization)
-        while True:
-            self.logger.info(f"Generation {t+1} started")
-            start_time_generation = time.time()
-
-            generation_particles = []
-            generation_weights = []
-            generation_dists = []
-            accepted = 0
-            running_num_simulations = 0
-
-            previous_particles = all_particles[t - 1]
-            previous_weights = all_weights[t - 1]
-            epsilon = epsilons[t - 1]
-
+    def _run_generation(self, prev_gen: dict) -> tuple:
+        """Run a single generation of the ABC PMC algorithm.
+        
+        Args:
+            prev_gen: Dictionary containing previous generation's data
+            
+        Returns:
+            Tuple of (particles, weights, distances, num_simulations)
+        """
+        particles = []
+        weights = []
+        distances = []
+        accepted = 0
+        running_num_simulations = 0
+        
+        prev_cov = np.atleast_2d(prev_gen['cov'])
+        
+        with tqdm(total=self.num_particles) as pbar:
             while accepted < self.num_particles:
-                idx = np.random.choice(len(previous_particles), p=previous_weights)
-                theta = previous_particles[idx]
-                sigma = self._get_sigma(previous_particles, previous_weights)
-                
-                # TODO: FIX THIS
-                theta = np.atleast_2d(theta)
-                sigma = np.atleast_2d(sigma)
-
-                # Perturb the parameters
-                perturbed_params = self.perturb_parameters(theta[0], sigma)
-                prior_probability = self.calculate_prior_prob(perturbed_params)
-
-                if prior_probability <= 0:
+                theta, new_weight = self._propose_particle(prev_gen, prev_cov)
+                if theta is None:
                     continue
-                
-                # TODO: FIX THIS
-                # theta_log_weight = np.log(prior_probability) - gaussian_kde(previous_particles.T, weights=previous_weights).logpdf(perturbed_params)
-                # new_weight = np.exp(theta_log_weight)
-
-                phi = np.array([np.sum(multivariate_normal.logpdf(perturbed_params, mean=x, cov=sigma)) for x in previous_particles])
-                log_weights = np.log(previous_weights) + phi
-                lse = np.log(np.sum(np.exp(log_weights)))
-                new_weight = np.exp(prior_probability - lse)
-
-                if new_weight <= 0:
-                    continue
-
-                y, status = self.simulate(perturbed_params)
+                    
+                y, status = self.simulate(theta)
                 running_num_simulations += 1
-
+                
                 if status != 0:
                     continue
-
-                y_scaled = self.preprocess(y)
-                y_tensor = torch.tensor(y_scaled, dtype=torch.float32).unsqueeze(0).to(self.model.device)
-                y_latent_np = self.model.get_latent(y_tensor, pooling_method=self.pooling_method).cpu().numpy().squeeze(0)
-                dist = self.calculate_distance(y_latent_np)
-                if dist >= epsilon:
+                    
+                dist = self._calculate_particle_distance(y)
+                if dist >= prev_gen['epsilon']:
                     continue
-
+                    
                 accepted += 1
-                generation_particles.append(perturbed_params)
-                generation_weights.append(new_weight)
-                generation_dists.append(dist)
+                pbar.update(1)
+                particles.append(theta)
+                weights.append(new_weight)
+                distances.append(dist)
+        
+        return np.array(particles), np.array(weights), distances, running_num_simulations
 
-            total_num_simulations += running_num_simulations
+    def _propose_particle(self, prev_gen: dict, prev_cov: np.ndarray) -> tuple:
+        """Propose a new particle and calculate its weight.
+        
+        Args:
+            prev_gen: Previous generation data
+            prev_cov: Previous covariance matrix
             
-            # Store current generation
-            current_particles = np.array(generation_particles)
-            current_weights = np.array(generation_weights).reshape(num_particles) / np.sum(generation_weights)
-            all_particles.append(current_particles)
-            all_weights.append(current_weights)
+        Returns:
+            Tuple of (particle_params, weight) or (None, None) if invalid
+        """
+        idx = np.random.choice(self.num_particles, p=prev_gen['weights'])
+        theta = prev_gen['particles'][idx]
+        theta = np.atleast_2d(theta)
+        
+        # Perturb the parameters
+        perturbed_params = self.perturb_parameters(theta[0], prev_cov)
+        prior_probability = self.calculate_prior_prob(perturbed_params)
+        
+        if prior_probability <= 0:
+            return None, None
+            
+        phi = np.array([
+            np.sum(multivariate_normal.logpdf(perturbed_params, mean=x, cov=prev_cov)) 
+            for x in prev_gen['samples']
+        ])
+        log_weights = np.log(prev_gen['weights']) + phi
+        lse = np.log(np.sum(np.exp(log_weights)))
+        new_weight = np.exp(prior_probability - lse)
+        
+        return (perturbed_params, new_weight) if new_weight > 0 else (None, None)
 
-            # Calculate qt and new epsilon
-            dens = densratio(generation_particles, previous_particles, kernel_num=100, verbose=False)
-            density_ratios = dens.compute_density_ratio(generation_particles)
-            ct = max(np.max(density_ratios), 1.0)
-            qt = 1.0 / ct
-            eps = np.quantile(generation_dists, qt)
-            epsilons.append(eps)
+    def _calculate_particle_distance(self, y: np.ndarray) -> float:
+        """Calculate distance for a simulated particle.
+        
+        Args:
+            y: Simulated observation
+            
+        Returns:
+            Distance metric
+        """
+        y_scaled = self.preprocess(y)
+        y_tensor = torch.tensor(y_scaled, dtype=torch.float32).unsqueeze(0).to(self.model.device)
+        y_latent_np = self.get_latent(y_tensor)
+        return self.calculate_distance(y_latent_np)
 
-            self._log_generation_stats(t+1, current_particles, current_weights, start_time_generation, running_num_simulations, eps, qt)
+    def _process_generation_results(
+        self,
+        generation_num: int,
+        particles: np.ndarray,
+        weights: np.ndarray,
+        distances: list,
+        prev_gen: dict
+    ) -> dict:
+        """Process and package generation results.
+        
+        Args:
+            generation_num: Current generation number
+            particles: Array of particle parameters
+            weights: Array of particle weights
+            distances: List of particle distances
+            prev_gen: Previous generation data
+            
+        Returns:
+            Dictionary containing generation results
+        """
+        # Normalize weights
+        weights_normalized = np.array(weights) / np.sum(weights)
+        
+        # Calculate statistics
+        sample_cov = np.atleast_2d(weighted_var(particles, weights=weights_normalized))
+        sample_sigma = np.sqrt(np.diag(sample_cov))
+        sigma_max = np.min(sample_sigma)
+        meta_cov = 2 * np.diag(sample_cov)
+        
+        # Calculate qt and epsilon
+        sigma = calculate_densratio_basis_sigma(sigma_max, prev_gen['sigma_max'])
+        self.densratio.fit(
+            x=prev_gen['particles'],
+            y=particles,
+            weights_x=prev_gen['weights'],
+            weights_y=weights_normalized,
+            sigma=sigma
+        )
+        
+        max_value = max(self.densratio.max_ratio(), 1.0)
+        qt = max(1 / max_value, 0.05)
+        epsilon = np.quantile(distances, qt)
+        
+        self.logger.info(f'ABC-SMC: Estimated maximum density ratio {1 / max_value:.5f}')
+        
+        return {
+            't': generation_num,
+            'particles': particles,
+            'weights': weights_normalized,
+            'epsilon': epsilon,
+            'cov': sample_cov,
+            'sigma_max': sigma_max,
+            'simulations': len(distances),
+            'qt': qt,
+            'meta': {
+                'cov': meta_cov
+            }
+        }
 
-            # Check stop condition
-            if qt >= q_threshold:
-                self.logger.info(f"Stopping criterion met (qt = {qt:.3f} >= {q_threshold})")
-                break
-                
-            # Optional: Add other stopping criteria (e.g., minimum epsilon reached)
-            if t >= 100:  # Absolute maximum generations
-                self.logger.warning(f"Reached maximum generations (100) without meeting stop criterion")
-                break
-                
-            t += 1
+    def _should_stop(self, generation_num: int, qt: float, q_threshold: float) -> bool:
+        """Determine if stopping conditions are met.
+        
+        Args:
+            generation_num: Current generation number
+            qt: Current qt value
+            q_threshold: Threshold for qt
+            
+        Returns:
+            True if should stop, False otherwise
+        """
+        if qt >= q_threshold and generation_num >= 3:
+            self.logger.info(f"Stopping criterion met (qt = {qt:.3f} >= {q_threshold})")
+            return True
+        return False
 
-        # Convert lists to numpy arrays at the end
-        self.particles = np.array(all_particles)
-        self.weights = np.array(all_weights)
-
+    def _log_final_results(self, start_time: float, total_simulations: int) -> None:
+        """Log final results of the ABC PMC run.
+        
+        Args:
+            start_time: Start time of the run
+            total_simulations: Total number of simulations performed
+        """
         duration = time.time() - start_time
-        num_generations = t + 1  # +1 because we count generation 0
-        self.logger.info(f"ABC SMC run completed in {duration:.2f} seconds with {total_num_simulations} total simulations over {num_generations} generations.")
-
-        return self.particles, self.weights
+        num_generations = len(self.generations)
+        self.logger.info(
+            f"ABC SMC run completed in {duration:.2f} seconds with "
+            f"{total_simulations} total simulations over {num_generations} generations."
+        )
 
     def compute_statistics(self, generation: int = 0):
         """ Compute statistics of the particles at the given generation.
@@ -592,7 +770,7 @@ class viaABC:
             x, y = batch 
             y = y.to(self.model.device).float()
             # Get latent representation
-            latent = self.model.get_latent(y)
+            latent = self.get_latent(y)
             latent_representations.append(latent.cpu())  # Move to CPU for UMAP
             # labels.append(y.cpu())  # Optional: store labels for coloring
         
@@ -636,7 +814,7 @@ class viaABC:
             y, status = self.simulate(params)
             if status == 0:
                 y_tensor = torch.tensor(y, dtype=torch.float32).unsqueeze(0).to(self.model.device)
-                latent = self.model.get_latent(y_tensor)
+                latent = self.get_latent(y_tensor)
                 latent_representations.append(latent.cpu().numpy())
 
         latent_representations = np.array(latent_representations)
@@ -751,7 +929,7 @@ class viaABC:
         for i, batch in enumerate(train_loader):
             x, y = batch
             y = y.to(self.model.device).float()
-            latent = self.model.get_latent(y).cpu().numpy()
+            latent = self.get_latent(y)
             
             # Ensure the latent is a tensor before appending
             candidates['parameters'].append(x.numpy() * 10)
@@ -796,7 +974,7 @@ class viaABC:
         if isinstance(x, np.ndarray):
             x = torch.tensor(x, dtype=torch.float32).unsqueeze(0).to(self.model.device)
 
-        x = self.model.get_latent(x, self.pooling_method)
+        x = self.model.get_latent(x, self.pooling_method).squeeze(0)
 
         # if x is tensor convert to numpy, safeguard
         if isinstance(x, torch.Tensor):
