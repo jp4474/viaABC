@@ -320,8 +320,7 @@ class viaABC:
     @torch.inference_mode()
     def encode_observational_data(self):
         scaled_data = self.preprocess(self.raw_observational_data)
-        tensor = torch.tensor(scaled_data, dtype=torch.float32).unsqueeze(0).to(self.model.device) # [1, T, d]
-        self.encoded_observational_data = self.get_latent(tensor)
+        self.encoded_observational_data = self.get_latent(scaled_data)
     
     def _log_generation_stats(self, t: int, particles: np.ndarray, weights: np.ndarray, start_time: float, num_simulations: int, epsilon: float, quantile: Union[float, None] = None):
         duration = time.time() - start_time
@@ -522,7 +521,8 @@ class viaABC:
                 distances=distances,
                 prev_particles=prev_particles,
                 prev_weights=prev_weights,
-                prev_sigma_max=prev_sigma_max
+                prev_sigma_max=prev_sigma_max,
+                simulations=simulations,
             )
             self.generations.append(current_gen)
             self._compute_statistics(generation_num)
@@ -633,7 +633,8 @@ class viaABC:
         distances: list,
         prev_particles: np.ndarray,
         prev_weights: np.ndarray,
-        prev_sigma_max: float
+        prev_sigma_max: float,
+        simulations: int
     ) -> dict:
         """Process and package generation results.
         
@@ -672,8 +673,9 @@ class viaABC:
         qt = max(1 / max_value, 0.05)
         epsilon = np.quantile(distances, qt) # TODO: FIX THIS
         
-        self.logger.info(f'ABC-SMC: Epsilon for generation {generation_num} is {epsilon:.5f}')
-        self.logger.info(f'ABC-SMC: Estimated maximum density ratio {1 / max_value:.5f}')
+        self.logger.info(f'ABC-SMC: Epsilon : {epsilon:.5f}')
+        self.logger.info(f'ABC-SMC: Quantile : {qt:.5f}')
+        self.logger.info(f'ABC-SMC: Simulations : {simulations}')
         
         return {
             't': generation_num,
@@ -682,7 +684,7 @@ class viaABC:
             'epsilon': epsilon,
             'cov': sample_cov,
             'sigma_max': sigma_max,
-            'simulations': len(distances),
+            'simulations': simulations,
             'qt': qt,
             'meta': {
                 'cov': meta_cov
