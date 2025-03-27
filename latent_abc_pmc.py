@@ -4,8 +4,8 @@ latent_abc_smc.py
 This script implements the Sequential Monte Carlo (SMC) algorithm for Approximate Bayesian Computation (ABC).
 
 Some code is referenced from https://github.com/Pat-Laub/approxbayescomp/blob/master/src/approxbayescomp/smc.py#L73
-Some code is referenced from https://github.com/jakeret/abcpmc/blob/master/abcpmc/sampler.py
 Some code is referenced from https://rdrr.io/github/TimeWz667/odin2data/src/R/abcpmc.R
+Some code is referenced from https://github.com/elfi-dev/elfi
 """
 
 # Standard library imports
@@ -34,63 +34,6 @@ import matplotlib.pyplot as plt
 
 from tqdm import tqdm
 from utils import *
-
-class GaussianPrior(object):
-    """
-    Normal gaussian prior
-     
-    :param mu: scalar or vector of means
-    :param sigma: scalar variance or covariance matrix
-    """
-    
-    def __init__(self, mu, sigma):
-        self.mu = mu
-        self.sigma = sigma
-        self._random = np.random.mtrand.RandomState()
-        
-    def __call__(self, theta=None):
-        if theta is None:
-            return self._random.multivariate_normal(self.mu, self.sigma)
-        else:
-            return multivariate_normal.pdf(theta, self.mu, self.sigma)
-        
-class TophatPrior(object):
-    """
-    Tophat prior
-    
-    :param min: scalar or array of min values
-    :param max: scalar or array of max values
-    """
-    
-    def __init__(self, min, max):
-        self.min = np.atleast_1d(min)
-        self.max = np.atleast_1d(max)
-        self._random = np.random.mtrand.RandomState()
-        assert self.min.shape == self.max.shape
-        assert np.all(self.min < self.max)
-        
-    def __call__(self, theta=None):
-        if theta is None:
-            return np.array([self._random.uniform(mi, ma) for (mi, ma) in zip(self.min, self.max)])
-        else:
-            return 1 if np.all(theta < self.max) and np.all(theta >= self.min) else 0
-        
-class _WeightWrapper(object):  # @DontTrace
-    """
-    Wraps the computation of new particle weights.
-    Allows for pickling the functionality.
-    """
-    
-    def __init__(self, prior, sigma, ws, thetas):
-        self.prior = prior
-        self.sigma = sigma
-        self.ws = ws
-        self.thetas = thetas
-    
-    def __call__(self, theta):
-        kernel = multivariate_normal(theta, self.sigma).pdf
-        w = self.prior(theta) / np.sum(self.ws * kernel(self.thetas))
-        return w
 
 class viaABC:
     """Implementation of the viaABC algorithm for approximate Bayesian computation."""
@@ -347,7 +290,7 @@ class viaABC:
         self.logger.info("Training dataset updated.")
 
     @torch.inference_mode()
-    def _run_init(self, num_particles: int, k: int):
+    def _run_init(self, num_particles: int, k: int = 5):
         if self.model is None:
             raise ValueError("Model must be provided to encode the data and run the algorithm.")
     
@@ -398,8 +341,25 @@ class viaABC:
         # Normalize weights
         weights /= np.sum(weights)
         epsilon = dists[:num_particles][-1] # initial epsilon
+
+        sample_cov = np.atleast_2d(np.cov(particles.reshape(self.num_particles, -1), rowvar=False))
+        sigma_max = np.min(np.sqrt(np.diag(sample_cov)))
         
-        return particles, weights, epsilon, total_num_simulations
+        cov = 2 * np.diag(sample_cov)
+
+        # Store first generation
+        self.generations.append({
+            't' : 0,
+            'particles': np.array(particles),
+            'weights': np.array(weights),
+            'epsilon': epsilon,
+            'cov' : sample_cov,
+            'sigma_max': sigma_max,
+            'simulations': total_num_simulations,
+            'meta' :{
+                'cov': cov
+            }
+        })
     
     @torch.inference_mode()
     def _run_init_v2(self, num_particles: int):
@@ -442,9 +402,10 @@ class viaABC:
 
         # Store first generation
         self.generations.append({
-            't' : 1,
+            't' : 0,
             'particles': np.array(particles),
             'weights': np.array(weights),
+            'distances' : distances,
             'epsilon': epsilon,
             'cov' : sample_cov,
             'sigma_max': sigma_max,
@@ -456,6 +417,7 @@ class viaABC:
 
     def _initialize_first_generation(self) -> None:
         """Initialize the first generation of particles."""
+        self.logger.info("Initialization (generation 0) started")
         init_start_time = time.time()
         self._run_init_v2(self.num_particles)
         init_end_time = time.time()
@@ -481,8 +443,11 @@ class viaABC:
         """
         if self.model is None:
             raise ValueError("Model must be provided to encode the data and run the algorithm.")
+        
+        self.generations = []
 
         self.num_particles = num_particles
+        self.max_generations = max_generations - 1
         total_num_simulations = 0
         
         self.logger.info(f"Starting ABC PMC run with Q Threshold: {q_threshold}")
@@ -503,12 +468,13 @@ class viaABC:
             prev_cov = np.atleast_2d(self.generations[generation_num - 1]['cov'])
             prev_sigma_max = self.generations[generation_num - 1]['sigma_max']
             prev_epsilon = self.generations[generation_num - 1]['epsilon']
+            prev_meta_cov = self.generations[generation_num - 1]['meta']['cov']
             
             # Run generation
             particles, weights, distances, simulations = self._run_generation(
                 prev_particles=prev_particles,
                 prev_weights=prev_weights,
-                prev_cov=prev_cov,
+                prev_cov=prev_meta_cov,
                 epsilon=prev_epsilon
             )
             total_num_simulations += simulations
@@ -586,7 +552,7 @@ class viaABC:
                 weights.append(new_weight)
                 distances.append(dist)
         
-        return np.array(particles), np.array(weights), distances, running_num_simulations
+        return np.array(particles), np.array(weights), np.array(distances), running_num_simulations
 
     def _propose_particle(
         self,
@@ -630,7 +596,7 @@ class viaABC:
         generation_num: int,
         particles: np.ndarray,
         weights: np.ndarray,
-        distances: list,
+        distances: np.ndarray,
         prev_particles: np.ndarray,
         prev_weights: np.ndarray,
         prev_sigma_max: float,
@@ -671,8 +637,9 @@ class viaABC:
         
         max_value = max(self.densratio.max_ratio(), 1.0)
         qt = max(1 / max_value, 0.05)
-        epsilon = np.quantile(distances, qt) # TODO: FIX THIS
-        
+        #epsilon = np.quantile(distances, qt) # TODO: FIX THIS
+        epsilon = weighted_sample_quantile(distances, qt, weights=weights_normalized)
+
         self.logger.info(f'ABC-SMC: Epsilon : {epsilon:.5f}')
         self.logger.info(f'ABC-SMC: Quantile : {qt:.5f}')
         self.logger.info(f'ABC-SMC: Simulations : {simulations}')
@@ -682,6 +649,7 @@ class viaABC:
             'particles': particles,
             'weights': weights_normalized,
             'epsilon': epsilon,
+            'distances' : distances,
             'cov': sample_cov,
             'sigma_max': sigma_max,
             'simulations': simulations,
@@ -719,6 +687,11 @@ class viaABC:
         if qt >= q_threshold and generation_num >= 3:
             self.logger.info(f"Stopping criterion met (qt = {qt:.3f} >= {q_threshold})")
             return True
+        
+        if generation_num >= self.max_generations:
+            self.logger.info("Stopping criterion met (max generations reached)")
+            return True
+        
         return False
 
     def _log_final_results(self, start_time: float, total_simulations: int) -> None:

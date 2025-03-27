@@ -1,3 +1,7 @@
+"""
+    This module contains utility functions for the latent-abc-smc package.
+    Some code is referenced from https://github.com/elfi-dev/elfi
+"""
 import numpy as np
 from functools import partial
 
