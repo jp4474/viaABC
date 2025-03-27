@@ -2,11 +2,12 @@ import numpy as np
 
 def l1_distance(x, y):
     """Compute the Manhattan Distance (L1) between two vectors."""
-    return np.linalg.norm(x - y, ord=1)
+    #return np.linalg.norm(y - x, ord=1)
+    return np.sum(np.abs(y - x), axis=-1)
 
 def l2_distance(x, y):
     """Compute the Euclidean Distance (L2) between two vectors."""
-    return np.linalg.norm(x - y, ord=2)
+    return np.linalg.norm(y - x, ord=2, axis=-1)
 
 def cosine_similarity(x, y):
     """Compute the Cosine Similarity between two vectors."""

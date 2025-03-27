@@ -9,6 +9,7 @@ umap-learn>=0.5.3  # Dimensionality reduction and visualization
 
 # Data handling
 matplotlib>=3.4.0
+densratio
 
 # Logging & Experiment tracking 
 neptune>=1.0.0
