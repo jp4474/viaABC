@@ -155,7 +155,7 @@ class viaABC:
         # TODO: Validate the provided metric
         self.metric = metric
 
-        self.densratio = DensityRatioEstimation()
+        self.densratio = DensityRatioEstimation(n=100, epsilon=0.001,max_iter=200,abs_tol=0.01, fold=5, optimize=False)
         self.generations = []
 
         self.logger.info("Initialization complete")
@@ -626,7 +626,11 @@ class viaABC:
         meta_cov = 2 * np.diag(sample_cov)
         
         # Calculate qt and epsilon
-        sigma = calculate_densratio_basis_sigma(sigma_max, prev_sigma_max)
+        if self.densratio.optimize:
+            sigma = list(10.0 ** np.arange(-1, 6))
+        else:
+            sigma = calculate_densratio_basis_sigma(sigma_max, prev_sigma_max)
+        
         self.densratio.fit(
             x=prev_particles,
             y=particles,
@@ -740,9 +744,9 @@ class viaABC:
 
         # Plot histograms for Beta and Alpha
         for i in range(self.num_parameters):
-            ax[i].hist(self.particles[generation][:, i], bins=20, alpha=0.7, label="Posterior")
+            ax[i].hist(self.generations['particles'][generation][:, i], bins=20, alpha=0.7, label="Posterior")
             ax[i].set_title(f'Parameter {i+1}')
-            ax[i].axvline(x=self.particles[generation][:, i].mean(), color='g', linestyle='--', label='Mean')
+            ax[i].axvline(x=self.generations['particles'][generation][:, i].mean(), color='g', linestyle='--', label='Mean')
             ax[i].legend()
 
         # Set a title for the entire figure
