@@ -17,7 +17,7 @@ import numpy as np
 from lightning.pytorch.loggers import NeptuneLogger
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description='Train MZB Cell Analysis model')
+    parser = argparse.ArgumentParser(description='Train TSMVAE model.')
     parser.add_argument('--batch_size', type=int, default=256, help='Batch size for training and validation.')
     parser.add_argument('--max_epochs', type=int, default=500, help='Maximum number of epochs to train.')
     parser.add_argument('--seed', type=int, default=42, help='Random seed for reproducibility.')
@@ -154,14 +154,14 @@ def main():
             "in_chans": in_chans
         })
 
-        # data_for_reconstruction = np.load(os.path.join(args.data_dir, 'lotka_data.npz')) #TODO: replace this with MZB
-        data_for_reconstruction = np.load(os.path.join(args.data_dir, 'mzb_data.npz'))
+        data_for_reconstruction = np.load(os.path.join(args.data_dir, 'lotka_data.npz')) #TODO: replace this with MZB
+        # data_for_reconstruction = np.load(os.path.join(args.data_dir, 'mzb_data.npz'))
         torch.set_float32_matmul_precision('high')
         trainer = Trainer(
             max_epochs=args.max_epochs,
             accelerator='auto',
             devices=1,
-            callbacks=[checkpoint_callback, lr_monitor, early_stop_callback, PlotReconstructionMZB(data_for_reconstruction)],
+            callbacks=[checkpoint_callback, lr_monitor, early_stop_callback, PlotReconstructionLotka(data_for_reconstruction)], #PlotReconstructionMZB(data_for_reconstruction)],
             logger=logger,
             log_every_n_steps=10,
             enable_progress_bar=False,

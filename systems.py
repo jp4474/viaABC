@@ -56,16 +56,16 @@ class LotkaVolterra(LatentABCSMC):
         mean = np.mean(np.abs(x), 0)
         x = x / mean
         return x
-    
+
 class LotkaVolterra2(viaABC):
     def __init__(self,
         num_parameters = 2, 
-        mu = np.array([0, 0]), 
-        sigma = np.array([10, 10]), 
+        mu = np.array([0, 0]), # <- normal distribution
+        sigma = np.array([10, 10]), # <- normal distribution
         model = None, 
         observational_data = np.array([[1.87, 0.65, 0.22, 0.31, 1.64, 1.15, 0.24, 2.91],
                                         [0.49, 2.62, 1.54, 0.02, 1.14, 1.68, 1.07, 0.88]]).T, 
-        state0 = np.array([1, 0.5]),
+        state0 = np.array([1, 0.5]), 
         t0 = 0,
         tmax = 15, 
         time_space = np.array([1.1, 2.4, 3.9, 5.6, 7.5, 9.6, 11.9, 14.4]),
@@ -77,7 +77,7 @@ class LotkaVolterra2(viaABC):
         # Lotka-Volterra equations
         alpha, delta = parameters
         beta, gamma = 1, 1
-        prey, predator = state
+        prey, predator = state # x, y
         dprey = prey * (alpha - beta * predator)
         dpredator = predator * (-gamma + delta * prey)
         return [dprey, dpredator]

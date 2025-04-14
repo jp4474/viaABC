@@ -22,13 +22,13 @@ import numpy as np
 import pandas as pd
 from scipy.integrate import solve_ivp
 from scipy.stats import gaussian_kde, qmc, uniform, multivariate_normal, norm
-from densratio import densratio
 
 # Machine learning and visualization
 import torch
 import umap
 
 #from cuml.manifold.umap import UMAP as cuUMAP
+from cuml.manifold.umap import UMAP
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 
@@ -152,10 +152,15 @@ class viaABC:
 
         if metric is None:
             raise ValueError("Metric must be provided.")
-        # TODO: Validate the provided metric
-        self.metric = metric
+        
+        valid_metrics = ['cosine', 'l1', 'l2', 'bertscore']
 
-        self.densratio = DensityRatioEstimation(n=100, epsilon=0.001,max_iter=200,abs_tol=0.01, fold=5, optimize=False)
+        if metric in valid_metrics:
+            self.metric = metric
+        else:
+            raise ValueError(f"Metric must be one of {valid_metrics}")
+
+        self.densratio = DensityRatioEstimation(n=100, epsilon=0.001, max_iter=200, abs_tol=0.01, fold=5, optimize=False)
         self.generations = []
 
         self.logger.info("Initialization complete")
@@ -246,8 +251,11 @@ class viaABC:
         
         if self.metric == "cosine":
             # Compute cosine similarity for all items in the batch
-            cos_sim_values = cosine_similarity(x, y)
-            distances = 1-cos_sim_values
+            cos_sim_values = cosine_similarity(x, y) # calculating the cosine similarity between z_sim and z_obs, -1 and 1 
+            distances = 1-cos_sim_values # 
+        elif self.metric == "l1":
+            # Compute L1 distance for all items in the batch
+            distances = l1_distance(x, y)
         elif self.metric == "l2":
             # Compute L2 distance for all items in the batch
             distances = l2_distance(x, y)
@@ -415,10 +423,11 @@ class viaABC:
             }
         })
 
-    def _initialize_first_generation(self) -> None:
+    def _initialize_first_generation(self, k: int) -> None:
         """Initialize the first generation of particles."""
         self.logger.info("Initialization (generation 0) started")
         init_start_time = time.time()
+        #self._run_init(self.num_particles, k)
         self._run_init_v2(self.num_particles)
         init_end_time = time.time()
         self.logger.info(
@@ -430,8 +439,8 @@ class viaABC:
         self,
         num_particles: int,
         q_threshold: float = 0.99,
+        max_generations: int = 40,
         k: int = 5,
-        max_generations: int = 20
     ) -> None:
         """Run the ABC PMC algorithm.
         
@@ -454,7 +463,7 @@ class viaABC:
         start_time = time.time()
 
         # Initial generation
-        self._initialize_first_generation()
+        self._initialize_first_generation(k = k)
         self._compute_statistics(0)
         
         # Run subsequent generations
@@ -465,7 +474,6 @@ class viaABC:
             # Unpack previous generation values
             prev_particles = self.generations[generation_num - 1]['particles']
             prev_weights = self.generations[generation_num - 1]['weights']
-            prev_cov = np.atleast_2d(self.generations[generation_num - 1]['cov'])
             prev_sigma_max = self.generations[generation_num - 1]['sigma_max']
             prev_epsilon = self.generations[generation_num - 1]['epsilon']
             prev_meta_cov = self.generations[generation_num - 1]['meta']['cov']
@@ -497,7 +505,7 @@ class viaABC:
             self.logger.info(f"Generation {generation_num} completed in {geneneration_end_time - generation_start_time:.2f} seconds")
             
             # Check stopping conditions
-            if self._should_stop(generation_num, current_gen['qt'], q_threshold):
+            if self._should_stop(generation_num, current_gen['qt'], q_threshold, current_gen['epsilon']):
                 break
 
         self._log_final_results(start_time, total_num_simulations)
@@ -528,6 +536,7 @@ class viaABC:
         
         with tqdm(total=self.num_particles) as pbar:
             while accepted < self.num_particles:
+
                 theta, new_weight = self._propose_particle(
                     prev_particles=prev_particles,
                     prev_weights=prev_weights,
@@ -641,7 +650,6 @@ class viaABC:
         
         max_value = max(self.densratio.max_ratio(), 1.0)
         qt = max(1 / max_value, 0.05)
-        #epsilon = np.quantile(distances, qt) # TODO: FIX THIS
         epsilon = weighted_sample_quantile(distances, qt, weights=weights_normalized)
 
         self.logger.info(f'ABC-SMC: Epsilon : {epsilon:.5f}')
@@ -672,12 +680,12 @@ class viaABC:
         Returns:
             Distance metric
         """
-        y_scaled = self.preprocess(y)
+        y_scaled = self.preprocess(y) 
         y_tensor = torch.tensor(y_scaled, dtype=torch.float32).unsqueeze(0).to(self.model.device)
-        y_latent_np = self.get_latent(y_tensor)
+        y_latent_np = self.get_latent(y_tensor) # z_sim
         return self.calculate_distance(y_latent_np)
 
-    def _should_stop(self, generation_num: int, qt: float, q_threshold: float) -> bool:
+    def _should_stop(self, generation_num: int, qt: float, q_threshold: float, epsilon: float) -> bool:
         """Determine if stopping conditions are met.
         
         Args:
@@ -688,8 +696,12 @@ class viaABC:
         Returns:
             True if should stop, False otherwise
         """
-        if qt >= q_threshold and generation_num >= 3:
-            self.logger.info(f"Stopping criterion met (qt = {qt:.3f} >= {q_threshold})")
+        # if qt >= q_threshold and generation_num >= 3:
+        #     self.logger.info(f"Stopping criterion met (qt = {qt:.3f} >= {q_threshold})")
+        #     return True
+        
+        if epsilon <= 0.01 and generation_num >= 3:
+            self.logger.info(f"Stopping criterion met (epsilon = {epsilon:.3f})")
             return True
         
         if generation_num >= self.max_generations:
@@ -737,6 +749,10 @@ class viaABC:
         self.logger.info(f"Median: {median}")
         self.logger.info(f"Variance: {var}")
 
+        # TODO: calculate 95% HDI
+        # hdi = hdi_of_grid(particles, weights, 0.95)
+        # self.logger.info(f"95% HDI: {hdi}")
+
         return mean, median, var
     
     def visualize_generation(self, generation: int = -1, save: bool = False):
@@ -744,9 +760,9 @@ class viaABC:
 
         # Plot histograms for Beta and Alpha
         for i in range(self.num_parameters):
-            ax[i].hist(self.generations['particles'][generation][:, i], bins=20, alpha=0.7, label="Posterior")
+            ax[i].hist(self.generations[generation]['particles'][:, i], bins=20, alpha=0.7, label="Posterior")
             ax[i].set_title(f'Parameter {i+1}')
-            ax[i].axvline(x=self.generations['particles'][generation][:, i].mean(), color='g', linestyle='--', label='Mean')
+            ax[i].axvline(x=self.generations[generation]['particles'][:, i].mean(), color='g', linestyle='--', label='Mean')
             ax[i].legend()
 
         # Set a title for the entire figure
@@ -766,11 +782,16 @@ class viaABC:
         plt.close()
 
     @torch.inference_mode()
-    def visualize_latent_space(self, dataloader, accelerator="cpu"):
+    def visualize_latent_space(self, batch_size=1000, accelerator="cpu"):
         """Implement UMAP to visualize the latent space with support for GPU (cuML) or CPU (UMAP)."""
         if self.model is None:
             raise ValueError("Model must be provided to encode the data and run the algorithm.")
         
+        if self.train_dataset is None:
+            raise ValueError("Training dataset must be provided to visualize the latent space.")
+        
+        # Create a DataLoader for the training dataset
+        dataloader = torch.utils.data.DataLoader(self.train_dataset, batch_size=batch_size, shuffle=False)
         # Set the model to evaluation mode
         self.model.eval()
         
@@ -785,11 +806,11 @@ class viaABC:
             y = y.to(self.model.device).float()
             # Get latent representation
             latent = self.get_latent(y)
-            latent_representations.append(latent.cpu())  # Move to CPU for UMAP
+            latent_representations.append(latent)  # Move to CPU for UMAP
             # labels.append(y.cpu())  # Optional: store labels for coloring
         
         # Concatenate all latent representations and labels
-        latent_representations = torch.cat(latent_representations, dim=0).numpy()
+        latent_representations = np.concatenate(latent_representations, axis=0)
         # labels = torch.cat(labels, dim=0).numpy()  # Optional: concatenate labels
         
         # Apply UMAP based on the accelerator parameter
@@ -797,7 +818,8 @@ class viaABC:
             print("Using cuML's UMAP (GPU accelerated)...")
             # TODO: implement cuML UMAP
             # reducer = cuUMAP(n_components=2, random_state=42)
-            raise NotImplementedError("cuML UMAP is not implemented yet.")
+            reducer = UMAP(n_neighbors=16, build_algo="nn_descent")
+            #raise NotImplementedError("cuML UMAP is not implemented yet.")
         elif accelerator == "cpu":
             print("Using original UMAP (CPU)...")
             reducer = umap.UMAP(n_components=2, random_state=42)

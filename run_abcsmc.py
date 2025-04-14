@@ -13,8 +13,9 @@ from matplotlib import pyplot as plt
 
 from models import TSMVAE
 from lightning_module import PreTrainLightning, FineTuneLightning
-from systems import LotkaVolterra
+from systems import LotkaVolterra2
 from dataset import NumpyDataset
+from latent_abc_pmc import viaABC
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -92,7 +93,7 @@ def load_model(path: Path, finetune: bool = False, num_parameters: int = 2) -> P
     return finetune_model
 
 
-def load_system(name: str = "lotka_volterra", data_dir: str = "data") -> LotkaVolterra:
+def load_system(name: str = "lotka_volterra", data_dir: str = "data") -> viaABC:
     """
     Load the system from the given name.
 
@@ -107,8 +108,8 @@ def load_system(name: str = "lotka_volterra", data_dir: str = "data") -> LotkaVo
     """
     name = name.lower()
     if name == "lotka_volterra":
-        system = LotkaVolterra()
-        train_ds = NumpyDataset("data", "train")
+        system = LotkaVolterra2()
+        train_ds = NumpyDataset(data_dir, "train")
         system.update_train_dataset(train_ds)
     elif name == "sir":
         raise NotImplementedError("SIR system is not implemented yet.")
@@ -119,7 +120,7 @@ def load_system(name: str = "lotka_volterra", data_dir: str = "data") -> LotkaVo
     return system
 
 
-def load_observational_data(path: Path, system: str = "lotka_volterra") -> Tuple[np.ndarray, np.ndarray]:
+def load_observational_data(path: Path, system: viaABC) -> Tuple[np.ndarray, np.ndarray]:
     """
     Load observational data for the specified system.
 
@@ -144,10 +145,11 @@ def load_observational_data(path: Path, system: str = "lotka_volterra") -> Tuple
     data = np.load(data_path, allow_pickle=True)
     obs_data = data.get('obs_data')
     scaled_obs_data = data.get('scaled_obs_data')
-    obs_scale = data.get('obs_scale')
-    ground_truth = data.get('ground_truth')
-    scaled_ground_truth = data.get('scaled_ground_truth')
-    ground_truth_scale = data.get('ground_truth_scale')
+    # scaled_obs_data = data.get('scaled_obs_data')
+    # obs_scale = data.get('obs_scale')
+    # ground_truth = data.get('ground_truth')
+    # scaled_ground_truth = data.get('scaled_ground_truth')
+    # ground_truth_scale = data.get('ground_truth_scale')
 
     raw_np = obs_data
     raw_np_scaled = scaled_obs_data
@@ -211,7 +213,7 @@ def plot_reconstructions(
 
 
 def run_abc(
-    system: LotkaVolterra,
+    system: viaABC,
     model: PreTrainLightning,
     tolerance_levels: List[float],
     num_particles: int,
@@ -233,7 +235,7 @@ def run_abc(
         Tuple[np.ndarray, np.ndarray]: Particles and weights from the ABC-SMC algorithm.
     """
     system.update_model(model)
-    particles, weights = system.run(tolerance_levels=tolerance_levels, num_particles=num_particles)
+    system.run(num_particles=num_particles)
     system.compute_statistics()
 
     output_dir.mkdir(exist_ok=True)

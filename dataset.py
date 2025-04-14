@@ -14,7 +14,6 @@ class NumpyDataset(Dataset):
         self.data = np.load(os.path.join(data_dir, f'{prefix}_data.npz'), allow_pickle=True)
         self.simulations = self.data['simulations']
         self.params = self.data['params']
-        self.scales = np.mean(np.abs(self.simulations), axis = 1, keepdims=True)
 
     def __len__(self):
         return len(self.simulations)
@@ -23,8 +22,24 @@ class NumpyDataset(Dataset):
         x = self.params[idx]
         y = self.simulations[idx]
 
-        x = x
-        y = y / self.scales[idx]
+        x = torch.from_numpy(x).to(torch.float64)
+        y = torch.from_numpy(y).to(torch.float64)
+
+        return x, y
+    
+
+class LotkaVolterraDataset(NumpyDataset):
+    def __init__(self, data_dir, prefix='train'):
+        super().__init__(data_dir, prefix)
+
+        # Calculate mean and std across all simulations and time steps
+        self.s = np.mean(np.abs(self.simulations), axis=1, keepdims=True)
+        # Normalize the data
+        self.y_normalized = (self.simulations) / self.s
+
+    def __getitem__(self, idx):
+        x = self.params[idx]
+        y = self.y_normalized[idx]
 
         x = torch.from_numpy(x).to(torch.float64)
         y = torch.from_numpy(y).to(torch.float64)
@@ -71,70 +86,14 @@ class MZBDataset(Dataset):
 
         return x, y
 
-class MZBDatasetV2(Dataset):
-    def __init__(self, data_dir, prefix='train'):
-        self.data_dir = data_dir
-        self.files = [f for f in os.listdir(data_dir) if f.endswith('.npy')]
-        
-        # Load data
-        self.data = np.load(os.path.join(data_dir, f'{prefix}_data.npz'), allow_pickle=True)
-        self.simulations = self.data['simulations']
-        self.params = self.data['params']
-
-        self.scales = np.mean(np.abs(self.simulations), axis = 1, keepdims=True)
-
-    def __len__(self):
-        return len(self.simulations)
-
-    def __getitem__(self, idx):
-        x = self.params[idx]
-        y = self.simulations[idx]
-
-        x = x
-        y = y / self.scales[idx]
-
-        x = torch.from_numpy(x).to(torch.float64)
-        y = torch.from_numpy(y).to(torch.float64)
-
-        return x, y
-    
-class MZBDatasetV3(Dataset):
-    def __init__(self, data_dir, prefix='train'):
-        self.data_dir = data_dir
-        self.files = [f for f in os.listdir(data_dir) if f.endswith('.npy')]
-        
-        # Load data
-        self.data = np.load(os.path.join(data_dir, f'{prefix}_data.npz'), allow_pickle=True)
-        self.simulations = self.data['simulations']
-        self.params = self.data['params']
-
-        self.means = np.mean(self.simulations, axis=1, keepdims=True)
-        self.stds = np.std(self.simulations, axis=1, keepdims=True)
-
-
-    def __len__(self):
-        return len(self.simulations)
-
-    def __getitem__(self, idx):
-        x = self.params[idx]
-        y = self.simulations[idx]
-
-        x = x
-        y = y / 100000
-
-        x = torch.from_numpy(x).to(torch.float64)
-        y = torch.from_numpy(y).to(torch.float64)
-
-        return x, y
-
 
 def create_dataloaders(data_dir: str, batch_size: int) -> Tuple[DataLoader, DataLoader]:
     # Check data directory existence
     if not os.path.exists(data_dir):
         raise FileNotFoundError(f"Data directory {data_dir} does not exist.")
 
-    train_dataset = NumpyDataset(data_dir, prefix='train')
-    val_dataset = NumpyDataset(data_dir, prefix='val')
+    train_dataset = LotkaVolterraDataset(data_dir, prefix='train')
+    val_dataset = LotkaVolterraDataset(data_dir, prefix='val')
 
     # Ensure data type matches precision setting
     train_dataset.simulations = train_dataset.simulations.astype('float64')
