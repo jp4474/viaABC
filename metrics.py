@@ -44,3 +44,33 @@ def bert_score(x, y):
     f1 = 2 * (precision * recall) / (precision + recall)
 
     return precision, recall, f1
+
+# def pairwise_cosine(x, y):
+#     """Compute pairwise cosine similarity between two sets of embeddings."""
+#     # Normalize the embeddings across the feature dimension (columns)
+#     x_norm = x / np.linalg.norm(x, axis=-1, keepdims=True)
+
+#     y_norm = y / np.linalg.norm(y, axis=-1, keepdims=True)
+
+#     # # Normalize y
+#     # if y.ndim == 3:
+#     #     y_norm = y / np.linalg.norm(y, axis=2, keepdims=True)
+#     # else:
+#     #     y_norm = y / np.linalg.norm(y, axis=1, keepdims=True)
+
+#     cosine_sim = (x_norm * y_norm).sum(-1).mean(-1).mean()
+
+#     return cosine_sim
+
+def pairwise_cosine(x, y):
+    x_norm = x / np.linalg.norm(x, axis=-1, keepdims=True)
+    y_norm = y / np.linalg.norm(y, axis=-1, keepdims=True)
+
+    scores = []
+    for a, b in zip(x_norm, y_norm):
+        scores.append(bert_score(a, b)[-1])
+    
+    scores = np.array(scores)
+
+    return scores.mean()
+    

@@ -24,11 +24,13 @@ def get_2d_sincos_pos_embed(embed_dim, grid_size, cls_token=False):
     pos_embed: [grid_size*grid_size, embed_dim] or [1+grid_size*grid_size, embed_dim] (w/ or w/o cls_token)
     """
     grid_h = np.arange(grid_size, dtype=np.float32)
-    grid_w = np.arange(2, dtype=np.float32)
+    # grid_w = np.arange(2, dtype=np.float32) #################### CHANGE THIS LINE FOR TSMVAE
+    grid_w = np.arange(grid_size, dtype=np.float32)
     grid = np.meshgrid(grid_w, grid_h)  # here w goes first
     grid = np.stack(grid, axis=0)
 
-    grid = grid.reshape([2, 1, grid_size, 2])
+    # grid = grid.reshape([2, 1, grid_size, 2]) #################### CHANGE THIS LINE FOR TSMVAE
+    grid = grid.reshape([2, 1, grid_size, grid_size])
     pos_embed = get_2d_sincos_pos_embed_from_grid(embed_dim, grid)
     if cls_token:
         pos_embed = np.concatenate([np.zeros([1, embed_dim]), pos_embed], axis=0)
@@ -53,7 +55,7 @@ def get_1d_sincos_pos_embed_from_grid(embed_dim, pos):
     out: (M, D)
     """
     assert embed_dim % 2 == 0
-    omega = np.arange(embed_dim // 2, dtype=np.float)
+    omega = np.arange(embed_dim // 2, dtype=np.float32)
     omega /= embed_dim / 2.
     omega = 1. / 10000**omega  # (D/2,)
 
@@ -93,3 +95,6 @@ def interpolate_pos_embed(model, checkpoint_model):
             pos_tokens = pos_tokens.permute(0, 2, 3, 1).flatten(1, 2)
             new_pos_embed = torch.cat((extra_tokens, pos_tokens), dim=1)
             checkpoint_model['pos_embed'] = new_pos_embed
+
+
+# --------------------------------------------------------

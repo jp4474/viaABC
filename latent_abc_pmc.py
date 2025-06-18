@@ -79,10 +79,6 @@ class viaABC:
         logging.basicConfig(level=logging.INFO)
         self.logger.info("Initializing ViaABC class")
 
-        self.model = model
-        if model is not None:
-            self.model.eval()
-
         self.raw_observational_data = observational_data
         self.state0 = state0
 
@@ -133,8 +129,10 @@ class viaABC:
                 "be able to run the algorithm."
             )
         else:
-            obs_tensor = torch.tensor(self.raw_observational_data, dtype=torch.float32).unsqueeze(0)
-            self.encoded_observational_data = self.model(obs_tensor)[1].cpu().numpy()
+            self.model = model
+            self.model.eval()
+            obs_tensor = torch.tensor(self.raw_observational_data, dtype=torch.float32)
+            self.encoded_observational_data = self.model.get_latent(obs_tensor, pooling_method=pooling_method)
 
         self.num_parameters = num_parameters
         self.mu = mu
@@ -153,7 +151,7 @@ class viaABC:
         if metric is None:
             raise ValueError("Metric must be provided.")
         
-        valid_metrics = ['cosine', 'l1', 'l2', 'bertscore']
+        valid_metrics = ['cosine', 'l1', 'l2', 'bertscore', 'pairwise_cosine']
 
         if metric in valid_metrics:
             self.metric = metric
@@ -265,6 +263,9 @@ class viaABC:
             
             # Calculate distances for all items in the batch
             distances = 1-f1_scores
+
+        elif self.metric == "pairwise_cosine":
+            distances = 1 - pairwise_cosine(x, y)
             
         return distances
     
@@ -327,10 +328,9 @@ class viaABC:
                 continue
 
             y_scaled = self.preprocess(y)
-            y_tensor = torch.tensor(y_scaled, dtype=torch.float32).unsqueeze(0).to(self.model.device)
+            y_tensor = torch.tensor(y_scaled, dtype=torch.float32).to(self.model.device)
             y_latent_np = self.get_latent(y_tensor)
             dist = self.calculate_distance(y_latent_np)
-
             particles[accepted] = perturbed_params
             weights[accepted] = new_weight
             dists[accepted] = dist
@@ -427,8 +427,8 @@ class viaABC:
         """Initialize the first generation of particles."""
         self.logger.info("Initialization (generation 0) started")
         init_start_time = time.time()
-        #self._run_init(self.num_particles, k)
-        self._run_init_v2(self.num_particles)
+        self._run_init(self.num_particles, k)
+        #self._run_init_v2(self.num_particles)
         init_end_time = time.time()
         self.logger.info(
             f"Initialization completed in {init_end_time - init_start_time:.2f} seconds"
@@ -439,7 +439,7 @@ class viaABC:
         self,
         num_particles: int,
         q_threshold: float = 0.99,
-        max_generations: int = 40,
+        max_generations: int = 20,
         k: int = 5,
     ) -> None:
         """Run the ABC PMC algorithm.
@@ -681,7 +681,7 @@ class viaABC:
             Distance metric
         """
         y_scaled = self.preprocess(y) 
-        y_tensor = torch.tensor(y_scaled, dtype=torch.float32).unsqueeze(0).to(self.model.device)
+        y_tensor = torch.tensor(y_scaled, dtype=torch.float32).to(self.model.device)
         y_latent_np = self.get_latent(y_tensor) # z_sim
         return self.calculate_distance(y_latent_np)
 
@@ -700,12 +700,16 @@ class viaABC:
         #     self.logger.info(f"Stopping criterion met (qt = {qt:.3f} >= {q_threshold})")
         #     return True
         
-        if epsilon <= 0.01 and generation_num >= 3:
-            self.logger.info(f"Stopping criterion met (epsilon = {epsilon:.3f})")
-            return True
+        # if epsilon <= 0.01 and generation_num >= 3:
+        #     self.logger.info(f"Stopping criterion met (epsilon = {epsilon:.3f})")
+        #     return True
         
         if generation_num >= self.max_generations:
             self.logger.info("Stopping criterion met (max generations reached)")
+            return True
+        
+        if qt >= q_threshold and generation_num >= 3:
+            self.logger.info(f"Stopping criterion met (qt = {qt:.3f} >= {q_threshold})")
             return True
         
         return False
@@ -1008,9 +1012,9 @@ class viaABC:
         
         # if x is numpy convert to tensor
         if isinstance(x, np.ndarray):
-            x = torch.tensor(x, dtype=torch.float32).unsqueeze(0).to(self.model.device)
+            x = torch.tensor(x, dtype=torch.float32).to(self.model.device)
 
-        x = self.model.get_latent(x, self.pooling_method).squeeze(0)
+        x = self.model.get_latent(x, self.pooling_method)
 
         # if x is tensor convert to numpy, safeguard
         if isinstance(x, torch.Tensor):

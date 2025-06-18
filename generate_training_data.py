@@ -21,9 +21,15 @@ def parse_arguments() -> argparse.Namespace:
                         default=1,
                         help='Number of workers for parallel processing')
     
+    # Number of trajectories for each parameter sampling
+    parser.add_argument('--num_repeats',
+                        type=int,
+                        default=3,
+                        help='Number of trajectories for each parameter sampling')
+    
     return parser.parse_args()
 
-def main(train_sizes: List[int], seed: int, num_workers: int) -> None:
+def main(train_sizes: List[int], seed: int, num_workers: int, num_repeats: int) -> None:
     """
     Run the simulation with specified parameters.
     
@@ -33,8 +39,8 @@ def main(train_sizes: List[int], seed: int, num_workers: int) -> None:
     """
     
     # Initialize and run simulation
-    lotka_abc = LotkaVolterra()
-    lotka_abc.generate_training_data(train_sizes, seed=seed, num_workers=num_workers)
+    model = SpatialSIR()
+    model.generate_training_data(train_sizes, seed=seed, num_workers=num_workers)
 
     # raw_data = np.load("data/mzb_data.npz")['obs_data']
     # mzb_abc = MZB(observational_data=raw_data)
@@ -42,4 +48,4 @@ def main(train_sizes: List[int], seed: int, num_workers: int) -> None:
 
 if __name__ == "__main__":
     args = parse_arguments()
-    main(args.train_sizes, args.seed, args.num_workers)
+    main(args.train_sizes, args.seed, args.num_workers, args.num_repeats)

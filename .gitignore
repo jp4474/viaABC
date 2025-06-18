@@ -17,3 +17,7 @@ penv
 *.npz
 *.npy
 *.png
+*.pdf
+*.jpg
+*.jpeg
+*.gz

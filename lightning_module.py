@@ -9,10 +9,11 @@ import pandas as pd
 import numpy as np
 import lightning as L
 import torch.nn.functional as F
+import math
 from torch.autograd import Variable
 from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts, LambdaLR
 from pytorch_lightning.callbacks.finetuning import BaseFinetuning
-from systems import MZB, LotkaVolterra
+from systems import LotkaVolterra
 
 class loss_fn(nn.Module):
     def __init__(self, alpha):
@@ -90,6 +91,7 @@ class PreTrainLightning(L.LightningModule):
             }
         }
 
+
     def get_latent(self, x, pooling_method = None):
         return self.model.get_latent(x, pooling_method)
     
@@ -160,60 +162,8 @@ class PlotReconstructionLotka(L.Callback):
     def on_train_end(self, trainer, pl_module):
         self.on_validation_epoch_end(trainer, pl_module)  # Log the last epoch's data
 
-class PlotReconstructionMZB(L.Callback):
-    def __init__(self, data):
-        super().__init__()
-        self.data = data
-
-        # Extract data from the input dictionary
-        self.obs_data = data.get('obs_data')
-        self.mzb_abc = MZB(observational_data = self.obs_data)
-        self.scaled_obs_data = self.mzb_abc.preprocess(self.obs_data)
-        # self.param_names = [r'$\alpha$', r'$\delta$']
-
-    def on_validation_epoch_end(self, trainer, pl_module):
-        if trainer.current_epoch % 5 == 0:
-            pl_module.eval()  # Set the model to evaluation mode
-            with torch.no_grad():
-                # Prepare the input data
-                torch_data = torch.from_numpy(self.scaled_obs_data).double().to(pl_module.device).unsqueeze(0)
-                _, _, _, param_est, reconstruction = pl_module(torch_data)
-
-                # Convert reconstruction to numpy
-                reconstruction_np = reconstruction.cpu().numpy().squeeze(0)
-
-                # Plotting
-                channel_names = ['MZB', 'Donor Ki67', 'Host Ki67', 'Nfd']
-                fig, ax = plt.subplots(1, 4, figsize=(20, 5))
-
-                for i in range(4):  # Loop through 4 columns
-                    # Scaled data plots
-                    ax[i].plot(reconstruction_np[:, i], label='Reconstructed')
-                    ax[i].plot(self.scaled_obs_data[:, i], label='Observed')
-                    ax[i].set_title(f'Scaled {channel_names[i]}')
-                    ax[i].grid(True)
-                    ax[i].set_xlabel('Time Steps')
-                    ax[i].set_ylabel('Population')
-                    ax[i].legend()
-
-                plt.tight_layout()
-
-                # Log the figure to Neptune
-                current_epoch = trainer.current_epoch
-                log_key = f"validation/reconstructed_image"
-                try:
-                    trainer.logger.experiment[log_key].append(File.as_image(fig))
-                except Exception as e:
-                    print(f"Failed to log image to Neptune: {e}")
-
-                plt.close(fig)  # Close the figure to free memory
-
-    def on_train_end(self, trainer, pl_module):
-        self.on_validation_epoch_end(trainer, pl_module)  # Log the last epoch's data
-
-
 class FineTuneLightning(L.LightningModule):
-    def __init__(self, pl_module, lr: float = 1e-4, num_parameters: int = 6, linear_probe: bool = False):
+    def __init__(self, pl_module, lr: float = 1e-4, num_parameters: int = 2, linear_probe: bool = False):
         super().__init__()
         # self.save_hyperparameters()
         self.pl_module = pl_module
@@ -255,88 +205,36 @@ class FineTuneLightning(L.LightningModule):
         logits = self.get_latent(inputs)
         return self.linear_layer(logits)
     
-    def get_latent(self, x):
-        return self.pl_module.get_latent(x).mean(dim=1)
+    def get_latent(self, x, pooling_method = None):
+        return self.pl_module.get_latent(x = x, pooling_method=pooling_method)
     
 
-class PreTrainLightningTriplet(L.LightningModule):
-    def __init__(self, model, multi_tasks = False, lr=1e-3, warmup_steps=1000, total_steps=52000):
+class PreTrainLightningSpatial(L.LightningModule):
+    def __init__(self, model, lr=1e-3, warmup_steps=500, total_steps=80000):
         super().__init__()
         self.model = model
         self.lr = lr
-        self.multi_tasks = True if multi_tasks else False
         self.warmup_steps = warmup_steps
         self.total_steps = total_steps
-        self.criterion = torch.nn.MarginRankingLoss(margin=1.0)
 
-    def forward(self, simulations):
-        return self.model(simulations)
+    def forward(self, simulations, mask_ratio = 0.75):
+        return self.model(simulations, mask_ratio = mask_ratio)
 
     def training_step(self, batch):
-        anchors, positives, negatives = batch
-
-        loss_anchor, reg_loss_anchor, space_loss_anchor, _, _, latent_mean_anchor = self(anchors)
-        loss_positive, reg_loss_positive, space_loss_positive, _, _, latent_mean_positive = self(positives)
-        loss_negative, reg_loss_negative, space_loss_negative, _, _, latent_mean_negative = self(negatives)
-
-        loss = (loss_anchor + loss_positive + loss_negative) / 3
-        reg_loss = (reg_loss_anchor + reg_loss_positive + reg_loss_negative) / 3
-        space_loss = (space_loss_anchor + space_loss_positive + space_loss_negative) / 3
-
-        pooled_anchor = latent_mean_anchor.mean(dim=1)
-        pooled_positive = latent_mean_positive.mean(dim=1)
-        pooled_negative = latent_mean_negative.mean(dim=1)
-
-        dist_a = F.pairwise_distance(pooled_anchor, pooled_positive, 2)
-        dist_b = F.pairwise_distance(pooled_anchor, pooled_negative, 2)
-
-        target = torch.FloatTensor(dist_a.size()).fill_(1).to(self.device)
-        target = Variable(target)
-
-        loss_triplet = self.criterion(dist_a, dist_b, target)
-        loss_embedd = pooled_anchor.norm(2) + pooled_positive.norm(2) + pooled_negative.norm(2)
-
+        _, simulations = batch
+        loss, space_loss, _, _ = self(simulations)
         self.log("train_recon_loss", loss, prog_bar=False, on_step=False, on_epoch=True)
-        self.log("train_reg_loss", reg_loss, prog_bar=False, on_step=False, on_epoch=True)
         self.log("train_space_loss", space_loss, prog_bar=False, on_step=False, on_epoch=True)
-        self.log("train_triplet_loss", loss_triplet, prog_bar=False, on_step=False, on_epoch=True)
-        self.log("train_embedd_loss", loss_embedd, prog_bar=False, on_step=False, on_epoch=True)
-
-        total_loss = loss + space_loss + reg_loss + loss_triplet + 5e-3 * loss_embedd
+        total_loss = loss + space_loss
         self.log("train_loss", total_loss, prog_bar=True, on_step=False, on_epoch=True)
         return total_loss
-    
+
     def validation_step(self, batch):
-        anchors, positives, negatives = batch
-
-        loss_anchor, reg_loss_anchor, space_loss_anchor, _, _, latent_mean_anchor = self(anchors)
-        loss_positive, reg_loss_positive, space_loss_positive, _, _, latent_mean_positive = self(positives)
-        loss_negative, reg_loss_negative, space_loss_negative, _, _, latent_mean_negative = self(negatives)
-
-        loss = (loss_anchor + loss_positive + loss_negative) / 3
-        reg_loss = (reg_loss_anchor + reg_loss_positive + reg_loss_negative) / 3
-        space_loss = (space_loss_anchor + space_loss_positive + space_loss_negative) / 3
-
-        pooled_anchor = latent_mean_anchor.mean(dim=1)
-        pooled_positive = latent_mean_positive.mean(dim=1)
-        pooled_negative = latent_mean_negative.mean(dim=1)
-
-        dist_a = F.pairwise_distance(pooled_anchor, pooled_positive, 2)
-        dist_b = F.pairwise_distance(pooled_anchor, pooled_negative, 2)
-
-        target = torch.FloatTensor(dist_a.size()).fill_(1).to(self.device)
-        target = Variable(target)
-
-        loss_triplet = self.criterion(dist_a, dist_b, target)
-        loss_embedd = latent_mean_anchor.norm(2) + latent_mean_positive.norm(2) + latent_mean_negative.norm(2)
-
+        _, simulations = batch
+        loss, space_loss, _, _ = self(simulations)
         self.log("val_recon_loss", loss, prog_bar=False, on_step=False, on_epoch=True)
-        self.log("val_reg_loss", reg_loss, prog_bar=False, on_step=False, on_epoch=True)
         self.log("val_space_loss", space_loss, prog_bar=False, on_step=False, on_epoch=True)
-        self.log("val_triplet_loss", loss_triplet, prog_bar=False, on_step=False, on_epoch=True)
-        self.log("val_embedd_loss", loss_embedd, prog_bar=False, on_step=False, on_epoch=True)
-
-        total_loss = loss + reg_loss + space_loss + loss_triplet + 5e-3 * loss_embedd
+        total_loss = loss + space_loss
         self.log("val_loss", total_loss, prog_bar=True, on_step=False, on_epoch=True)
         return total_loss
     
@@ -369,85 +267,46 @@ class PreTrainLightningTriplet(L.LightningModule):
             }
         }
 
-    def get_latent(self, x):
-        # return self.model.get_latent(x).mean(dim=1)
-        return self.model.get_latent(x) #.mean(dim=1)
+    def get_latent(self, x, pooling_method = None):
+        return self.model.get_latent(x, pooling_method)
     
 
-
-class FineTuningTriplet(L.LightningModule):
-    def __init__(self, model, multi_tasks = False, lr=1e-3, warmup_steps=1000, total_steps=52000):
+class PreTrainLightningSpatial2D(L.LightningModule):
+    def __init__(self, model, lr=1e-3, mask_ratio = 0.5, warmup_steps=500, total_steps=80000):
         super().__init__()
         self.model = model
         self.lr = lr
-        self.multi_tasks = True if multi_tasks else False
+        self.mask_ratio = mask_ratio
         self.warmup_steps = warmup_steps
         self.total_steps = total_steps
-        self.criterion = torch.nn.MarginRankingLoss(margin=0.2)
 
-    def forward(self, simulations):
-        return self.model(simulations)
-
-    def training_step(self, batch):
-        anchors, positives, negatives = batch
-
-        loss_anchor, reg_loss_anchor, space_loss_anchor, _, _, latent_mean_anchor = self(anchors)
-        loss_positive, reg_loss_positive, space_loss_positive, _, _, latent_mean_positive = self(positives)
-        loss_negative, reg_loss_negative, space_loss_negative, _, _, latent_mean_negative = self(negatives)
-
-        loss = (loss_anchor + loss_positive + loss_negative) / 3
-        reg_loss = (reg_loss_anchor + reg_loss_positive + reg_loss_negative) / 3
-        space_loss = (space_loss_anchor + space_loss_positive + space_loss_negative) / 3
-
-        dist_a = F.pairwise_distance(latent_mean_anchor, latent_mean_positive, 2)
-        dist_b = F.pairwise_distance(latent_mean_anchor, latent_mean_negative, 2)
-
-        target = torch.FloatTensor(dist_a.size()).fill_(1).to(self.device)
-        target = Variable(target)
-
-        loss_triplet = self.criterion(dist_a, dist_b, target)
-
-        loss_embedd = latent_mean_anchor.norm(2) + latent_mean_positive.norm(2) + latent_mean_negative.norm(2)
-
-        self.log("train_recon_loss", loss, prog_bar=False, on_step=False, on_epoch=True)
-        self.log("train_reg_loss", reg_loss, prog_bar=False, on_step=False, on_epoch=True)
-        self.log("train_space_loss", space_loss, prog_bar=False, on_step=False, on_epoch=True)
-        self.log("train_triplet_loss", loss_triplet, prog_bar=False, on_step=False, on_epoch=True)
-        self.log("train_embedd_loss", loss_embedd, prog_bar=False, on_step=False, on_epoch=True)
-
-        total_loss = loss + space_loss + reg_loss + loss_triplet + loss_embedd
-        self.log("train_loss", total_loss, prog_bar=True, on_step=False, on_epoch=True)
-        return total_loss
+    def forward(self, x, mask_ratio = None):
+        if mask_ratio is not None:
+            return self.model(x, mask_ratio)
+        else:
+            return self.model(x, self.mask_ratio)
     
+    def training_step(self, batch):
+        loss, pred, mask = self(batch)
+        self.log("train_loss", loss, prog_bar=False, on_step=False, on_epoch=True)
+        return loss
+
     def validation_step(self, batch):
-        anchors, positives, negatives = batch
-
-        loss_anchor, reg_loss_anchor, space_loss_anchor, _, _, latent_mean_anchor = self(anchors)
-        loss_positive, reg_loss_positive, space_loss_positive, _, _, latent_mean_positive = self(positives)
-        loss_negative, reg_loss_negative, space_loss_negative, _, _, latent_mean_negative = self(negatives)
-
-        loss = (loss_anchor + loss_positive + loss_negative) / 3
-        reg_loss = (reg_loss_anchor + reg_loss_positive + reg_loss_negative) / 3
-        space_loss = (space_loss_anchor + space_loss_positive + space_loss_negative) / 3
-
-        dist_a = F.pairwise_distance(latent_mean_anchor, latent_mean_positive, 2)
-        dist_b = F.pairwise_distance(latent_mean_anchor, latent_mean_negative, 2)
-
-        target = torch.FloatTensor(dist_a.size()).fill_(1).to(self.device)
-        target = Variable(target)
-
-        loss_triplet = self.criterion(dist_a, dist_b, target)
-        loss_embedd = latent_mean_anchor.norm(2) + latent_mean_positive.norm(2) + latent_mean_negative.norm(2)
-
-        self.log("val_recon_loss", loss, prog_bar=False, on_step=False, on_epoch=True)
-        self.log("val_reg_loss", reg_loss, prog_bar=False, on_step=False, on_epoch=True)
-        self.log("val_space_loss", space_loss, prog_bar=False, on_step=False, on_epoch=True)
-        self.log("val_triplet_loss", loss_triplet, prog_bar=False, on_step=False, on_epoch=True)
-        self.log("val_embedd_loss", loss_embedd, prog_bar=False, on_step=False, on_epoch=True)
-
-        total_loss = loss + reg_loss + space_loss + loss_triplet + loss_embedd
-        self.log("val_loss", total_loss, prog_bar=True, on_step=False, on_epoch=True)
-        return total_loss
+        loss, pred, mask = self(batch)
+        self.log("val_loss", loss, prog_bar=False, on_step=False, on_epoch=True)
+        return loss
+    
+    
+    # def configure_optimizers(self):
+    #     params = filter(lambda p: p.requires_grad, self.parameters())
+    #     optimizer = torch.optim.AdamW(
+    #         params=params,
+    #         lr=self.lr,
+    #         betas=(0.9, 0.999),
+    #         eps=1e-6,
+    #         weight_decay=0.01,
+    #     )
+    #     return optimizer
     
     def configure_optimizers(self):
         params = filter(lambda p: p.requires_grad, self.parameters())
@@ -478,8 +337,5 @@ class FineTuningTriplet(L.LightningModule):
             }
         }
 
-    def get_latent(self, x):
-        # return self.model.get_latent(x).mean(dim=1)
-        return self.model.get_latent(x)
-    
-
+    def get_latent(self, x, pooling_method = None):
+        return self.model.get_latent(x, pooling_method)
