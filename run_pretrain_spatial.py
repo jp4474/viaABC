@@ -9,7 +9,7 @@ from lightning.pytorch import Trainer, seed_everything
 from lightning.pytorch.callbacks import ModelCheckpoint, LearningRateMonitor, Callback
 from lightning.pytorch.callbacks.early_stopping import EarlyStopping
 
-from models import MaskedAutoencoderViT
+from models import MaskedAutoencoderViT3D
 from lightning_module import PreTrainLightningSpatial2D
 from dataset import NumpyDataset, create_dataloaders
 import neptune
@@ -17,12 +17,12 @@ import numpy as np
 from lightning.pytorch.loggers import NeptuneLogger
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description='Train SpatialSIR2D model.')
-    parser.add_argument('--batch_size', type=int, default=128, help='Batch size for training and validation.')
+    parser = argparse.ArgumentParser(description='Train SpatialSIR3D model.')
+    parser.add_argument('--batch_size', type=int, default=64, help='Batch size for training and validation.')
     parser.add_argument('--max_epochs', type=int, default=500, help='Maximum number of epochs to train.')
     parser.add_argument('--seed', type=int, default=42, help='Random seed for reproducibility.')
-    parser.add_argument('--learning_rate', type=float, default=1e-4, help='Learning rate for the optimizer.')
-    parser.add_argument('--data_dir', type=str, default='data', help='Directory containing the dataset.')
+    parser.add_argument('--learning_rate', type=float, default=5e-5, help='Learning rate for the optimizer.')
+    parser.add_argument('--data_dir', type=str, default='data/SPATIAL', help='Directory containing the dataset.')
     parser.add_argument('--embed_dim', type=int, default=64, help='Embedding dimension for the model.')
     parser.add_argument('--num_heads', type=int, default=8, help='Number of attention heads.')
     parser.add_argument('--depth', type=int, default=2, help='Depth of the encoder.')
@@ -35,17 +35,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--type', type=str, default='vanilla', help='Type of model to use.')
     parser.add_argument('--dirpath', type=str, default='checkpoints', help='Directory to save checkpoints.')
     parser.add_argument('--debug', action='store_true', help='Debug mode in Trainer.')    
-    parser.add_argument('--patch_size', type=int, default=16, help='Patch size for the input.')
-
+    parser.add_argument('--patch_size', type=int, default=8, help='Patch size for the input.')
+    parser.add_argument('--t_patch_size', type=int, default=5, help='Temporal patch size.')
     return parser.parse_args()
 
-def save_model_config(args, img_size: int):
+def save_model_config(args, img_size: int, num_frames: int):
     config = {
         'model': {
-            'name': 'SPATIAL2D',
+            'name': 'SpatialSIR3D',
             'params': {
                 'img_size': img_size,
                 'patch_size': args.patch_size,
+                'num_frames': num_frames,
+                'pred_t_dim': num_frames,
+                't_patch_size': args.t_patch_size,
                 'embed_dim': args.embed_dim,
                 'num_heads': args.num_heads,
                 'depth': args.depth,
@@ -75,17 +78,18 @@ def main():
         train_dataloader, val_dataloader = create_dataloaders(args.data_dir, args.batch_size)
 
         # Get data shape from the dataset
-        sample_data = train_dataloader.dataset[0]  # Assumes dataset returns (seq_len, in_chans)
+        sample_data = train_dataloader.dataset[0] #[1]  # Assumes dataset returns (seq_len, in_chans)
         print(sample_data.shape)
-        C, H, W = sample_data.shape
+        C, T, H, W = sample_data.shape
 
-        save_model_config(args, H)
+        save_model_config(args, H, T)
 
-        #model = UNet(2, 3)
-
-        model = MaskedAutoencoderViT(
+        model = MaskedAutoencoderViT3D(
             img_size=H,
             patch_size=args.patch_size,
+            num_frames=T,
+            pred_t_dim=T,
+            t_patch_size=args.t_patch_size,
             in_chans=C,
             embed_dim=args.embed_dim,
             num_heads=args.num_heads,
@@ -93,17 +97,16 @@ def main():
             decoder_embed_dim=args.decoder_embed_dim,
             decoder_num_heads=args.decoder_num_heads,
             decoder_depth=args.decoder_depth,
-            norm_pix_loss=True,
             z_type=args.type,
             lambda_=args.beta,
-            #dropout=args.dropout,
+            dropout=args.dropout,
         )
 
         pl_model = PreTrainLightningSpatial2D(model=model, lr=args.learning_rate, mask_ratio=args.mask_ratio)
 
         checkpoint_callback = ModelCheckpoint(
             dirpath=args.dirpath,
-            filename='SPATIAL2D-SUM-{epoch:02d}-{val_loss:.4f}',
+            filename='SpatialSIR-{epoch:02d}-{val_loss:.4f}',
             save_top_k=1,
             monitor='val_loss',
             mode='min'

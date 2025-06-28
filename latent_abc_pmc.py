@@ -151,14 +151,14 @@ class viaABC:
         if metric is None:
             raise ValueError("Metric must be provided.")
         
-        valid_metrics = ['cosine', 'l1', 'l2', 'bertscore', 'pairwise_cosine']
+        valid_metrics = ['cosine', 'l1', 'l2', 'bertscore', 'pairwise_cosine', 'bertscore_batch', 'maxSim']
 
         if metric in valid_metrics:
             self.metric = metric
         else:
             raise ValueError(f"Metric must be one of {valid_metrics}")
 
-        self.densratio = DensityRatioEstimation(n=100, epsilon=0.001, max_iter=200, abs_tol=0.01, fold=5, optimize=False)
+        self.densratio = DensityRatioEstimation(n=1000, epsilon=0.01, max_iter=200, abs_tol=0.01, fold=5, optimize=False)
         self.generations = []
 
         self.logger.info("Initialization complete")
@@ -242,10 +242,9 @@ class viaABC:
             np.ndarray: Distance measures between 0 and 2 for each item in the batch
         """
         x = self.encoded_observational_data  # Encoded data (single reference vector)
-
         # safe-guard
-        if y.shape[0] == 1:
-            y = y.squeeze(0)
+        #if y.shape[0] == 1:
+        #    y = y.squeeze(0)
         
         if self.metric == "cosine":
             # Compute cosine similarity for all items in the batch
@@ -266,7 +265,17 @@ class viaABC:
 
         elif self.metric == "pairwise_cosine":
             distances = 1 - pairwise_cosine(x, y)
-            
+        
+        elif self.metric == "bertscore_batch":
+            # Compute bert_score for all items in the batch
+            mean_f1_score = bert_score_batch(x, y)
+
+            distances = 1 - mean_f1_score
+
+        elif self.metric == "maxSim":
+            # Compute maxSim for all items in the batch
+            distances = maxSim(x, y)
+
         return distances
     
     @torch.inference_mode()

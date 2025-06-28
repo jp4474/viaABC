@@ -45,6 +45,14 @@ def bert_score(x, y):
 
     return precision, recall, f1
 
+def bert_score_batch(x, y):
+    scores = []
+    for a, b in zip(x, y):
+        precision, recall, f1 = bert_score(a, b)
+        scores.append(f1)
+    scores = np.array(scores)
+    return scores.mean()
+
 # def pairwise_cosine(x, y):
 #     """Compute pairwise cosine similarity between two sets of embeddings."""
 #     # Normalize the embeddings across the feature dimension (columns)
@@ -73,4 +81,29 @@ def pairwise_cosine(x, y):
     scores = np.array(scores)
 
     return scores.mean()
+
+def maxSim(x, y):
+    """
+    x: [num_query_tokens, dim] - query embeddings (numpy array)
+    y: [num_doc_tokens, dim] - document embeddings (numpy array)
     
+    Returns:
+        scalar maxSim score (float)
+    """
+    # remove 1st dimension
+    if x.ndim == 3:
+        x = x.squeeze(0)  # [Q, D]
+    if y.ndim == 3:
+        y = y.squeeze(0)
+
+    # L2 normalize embeddings
+    x_norm = x / np.linalg.norm(x, axis=1, keepdims=True)  # [Q, D]
+    y_norm = y / np.linalg.norm(y, axis=1, keepdims=True)  # [D, D]
+
+    # Compute cosine similarity matrix [Q, D]
+    sim_matrix = np.dot(x_norm, y_norm.T)
+
+    # Take max over document tokens for each query token, then sum
+    max_sim = np.max(sim_matrix, axis=1).sum()
+    
+    return float(max_sim)

@@ -18,7 +18,7 @@ from lightning.pytorch.loggers import NeptuneLogger
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description='Train TSMVAE model.')
-    parser.add_argument('--batch_size', type=int, default=256, help='Batch size for training and validation.')
+    parser.add_argument('--batch_size', type=int, default=768, help='Batch size for training and validation.')
     parser.add_argument('--max_epochs', type=int, default=500, help='Maximum number of epochs to train.')
     parser.add_argument('--seed', type=int, default=42, help='Random seed for reproducibility.')
     parser.add_argument('--learning_rate', type=float, default=5e-5, help='Learning rate for the optimizer.')

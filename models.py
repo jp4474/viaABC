@@ -559,7 +559,7 @@ class MaskedAutoencoderViT(nn.Module):
                  embed_dim=1024, depth=24, num_heads=16,
                  decoder_embed_dim=512, decoder_depth=8, decoder_num_heads=16,
                  mlp_ratio=4., norm_layer=nn.LayerNorm, norm_pix_loss=False, 
-                 z_type='vanilla', lambda_=0.001, bag_size=1024):
+                 z_type='vanilla', lambda_=0.001, bag_size=64):
         super().__init__()
 
         # --------------------------------------------------------------------------
@@ -765,6 +765,9 @@ class MaskedAutoencoderViT(nn.Module):
         elif self.z_type == 'vq-vae':
             space_loss = self.decoder_embed[1].vq_loss
 
+        elif self.z_type == 'vanilla':
+            space_loss = 0
+
         pred = self.unpatchify(pred)
         target = self.map2labels(imgs)
 
@@ -778,7 +781,7 @@ class MaskedAutoencoderViT(nn.Module):
         
         # loss = torch.mean(torch.sum(loss, dim=-1), dim = -1).mean(0) 
 
-        return loss + 1 * space_loss
+        return loss + space_loss
 
     def map2labels(self, imgs):
         """
@@ -1030,6 +1033,18 @@ class MaskedAutoencoderViT3D(nn.Module):
         x = torch.einsum("nthwupqc->nctuhpwq", x)
         imgs = x.reshape(shape=(N, 3, T, H, W))
         return imgs
+    
+    def map2labels(self, imgs):
+        """
+        Convert binary masks into class labels.
+        Assumes:
+            - imgs is a torch.Tensor of shape B x C x W x H  
+            - Each channel is a binary mask for class 0, 1, 2
+        Returns:
+            - label_map: torch.Tensor of shape (B x W x H), where each pixel is 0, 1, or 2
+        """
+        label_map = torch.argmax(imgs, dim=1)
+        return label_map
 
     def random_masking(self, x, mask_ratio):
         """
@@ -1224,56 +1239,66 @@ class MaskedAutoencoderViT3D(nn.Module):
         )
         target = self.patchify(_imgs)
 
-        if self.norm_pix_loss:
-            mean = target.mean(dim=-1, keepdim=True)
-            var = target.var(dim=-1, keepdim=True)
-            target = (target - mean) / (var + 1.0e-6) ** 0.5
+        # if self.norm_pix_loss:
+        #     mean = target.mean(dim=-1, keepdim=True)
+        #     var = target.var(dim=-1, keepdim=True)
+        #     target = (target - mean) / (var + 1.0e-6) ** 0.5
 
         ################################
 
-        loss = (pred - target) ** 2
-        loss = loss.mean(dim=-1)  # [N, L], mean loss per patch
-        mask = mask.view(loss.shape)
+        pred = self.unpatchify(pred)
+        target = self.map2labels(imgs)
 
-        # print(f"loss shape: {loss.shape}")
-        # print(f"mask shape: {mask.shape}")
-        # pred = pred.view(-1, 3)
-        # target = target.view(-1, 3).argmax(dim=-1).long()
+        loss = nn.CrossEntropyLoss(reduction='mean')(pred, target)  # [N*L]
 
-        # loss = nn.CrossEntropyLoss(reduction='none')(pred, target)
-        # loss = loss.view(mask.shape[0], mask.shape[1], -1)
-        # loss = loss.mean(dim=-1)  # [N, L], mean loss per patch
-        # mask = mask.view(loss.shape)
-
-        loss = (loss * mask).sum() / mask.sum()  # mean loss on removed patches
+        # loss = (loss * mask).sum() / mask.sum()  # mean loss on removed patches
 
         if self.z_type == 'vae':
-            space_loss = torch.mean(-0.5 * torch.sum(1 + self.decoder_embed[1].latent_logvar \
+            space_loss = -0.5 * torch.mean(1 + self.decoder_embed[1].latent_logvar \
                                                      - self.decoder_embed[1].latent_mean ** 2 \
-                                                        - self.decoder_embed[1].latent_logvar.exp(), dim = -1), dim = -1).mean(0)
-            
-        else: 
+                                                        - self.decoder_embed[1].latent_logvar.exp())
+        elif self.z_type == 'vq-vae':
+            space_loss = self.decoder_embed[1].vq_loss
+        elif self.z_type == 'vanilla':
             space_loss = 0
 
-        return loss, self.lambda_ * space_loss
+        return loss + self.lambda_ * space_loss
 
     def forward(self, imgs, mask_ratio=0.75):
         latent, mask, ids_restore = self.forward_encoder(imgs, mask_ratio)
         pred = self.forward_decoder(latent, ids_restore)  # [N, L, p*p*3]
-        loss, space_loss = self.forward_loss(imgs, pred, mask)
-        return loss, space_loss, pred, mask
+        loss = self.forward_loss(imgs, pred, mask)
+        return loss, pred, mask
     
     def get_latent(self, x, pooling_method = None):
+        targets = self.patchify(x)
         x, mask, ids_restore = self.forward_encoder(x, 0)
-        x = self.decoder_embed(x)
 
-        x_ = x[:, 1:, :]
-        x_ = torch.gather(x_, dim=1, index=ids_restore.unsqueeze(-1).repeat(1, 1, x.shape[2]))  # unshuffle
-        x = torch.cat([x[:, :1, :], x_], dim=1)  # append cls token
+        N = x.shape[0]
+        T = self.patch_embed.t_grid_size
+        H = W = self.patch_embed.grid_size
+
+        # embed tokens
+        x = self.decoder_embed(x)
+        C = x.shape[-1]
+
+        # append mask tokens to sequence
+        mask_tokens = self.mask_token.repeat(N, T * H * W + 0 - x.shape[1], 1)
+        x_ = torch.cat([x[:, :, :], mask_tokens], dim=1)  # no cls token
+        x_ = x_.view([N, T * H * W, C])
+        x_ = torch.gather(
+            x_, dim=1, index=ids_restore.unsqueeze(-1).repeat(1, 1, x_.shape[2])
+        )  # unshuffle
+        x = x_.view([N, T * H * W, C])
+        # append cls token
+        if self.cls_embed:
+            decoder_cls_token = self.decoder_cls_token
+            decoder_cls_tokens = decoder_cls_token.expand(x.shape[0], -1, -1)
+            x = torch.cat((decoder_cls_tokens, x), dim=1)
 
         if pooling_method == "cls":
-            return x[:, 0, :]
-        elif pooling_method == "all":
+            raise NotImplementedError("Pooling method 'cls' is not implemented for 3D ViT")
+        elif pooling_method == "all" or pooling_method == "no_cls":
             return x
         elif pooling_method == "mean":
             return torch.mean(x, dim=1)

@@ -54,7 +54,7 @@ class SpatialSIRDataset(Dataset):
         self.files = [f for f in os.listdir(data_dir) if f.endswith('.npy')]
         
         # Load data
-        self.data = np.load(os.path.join(data_dir, f'{prefix}_data_reshaped.npz'), allow_pickle=True)
+        self.data = np.load(os.path.join(data_dir, f'{prefix}_data.npz'), allow_pickle=True)
         #self.params = self.data['params']
         self.simulations = self.data['simulations']
 
@@ -64,7 +64,11 @@ class SpatialSIRDataset(Dataset):
     def __getitem__(self, idx):
         #x = self.params[idx]
         y = self.simulations[idx]
-        y = torch.from_numpy(y).to(torch.float64).permute(2, 0, 1) #.permute(0, 3, 1, 2)
+        #######################################
+        # permute(2, 0, 1) if using 2D
+        # permute(0, 3, 1, 2) if using 3D
+        # 15, 80, 80, 3
+        y = torch.from_numpy(y).to(torch.float64).permute(3, 0, 1, 2)  # Change to (C, T, H, W) format
 
         #return x, y
         return y
