@@ -3,7 +3,7 @@ We combine a generative deep learning framework with ABC to infer the underlying
 
 \textbf{Jun Won Park}, Kangyu Zhao, Sanket Rane. \textit{Spatiodynamic Inference Using Vision-Based Generative Modelling}. ArXiv Preprint, 2025. [arxiv.org/abs/2507.22256]{https://arxiv.org/abs/2507.22256}
 
-'''
+'''bibtex
 @misc{park2025spatiodynamicinferenceusingvisionbased,
       title={Spatiodynamic inference using vision-based generative modelling}, 
       author={Jun Won Park and Kangyu Zhao and Sanket Rane},
