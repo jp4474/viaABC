@@ -1,27 +1,20 @@
 """
 Models module containing neural network implementations.
 """
-# Standard library imports
 from typing import Any, Callable, Dict, Optional, Set, Tuple, Type, Union, List
 from functools import partial
 
-# Scientific computing
-import numpy as np
-import math
-
-# PyTorch imports
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 # Third-party imports
 from einops import rearrange
-from timm.models.vision_transformer import Attention, PatchEmbed, Block
+from timm.models.vision_transformer import Attention, Block
 from timm.layers import Mlp, DropPath, LayerScale
 
 # Local imports
 from pos_embed import get_2d_sincos_pos_embed
-
 import video_vit
 
 def lambda_init(layer_idx):
@@ -151,7 +144,6 @@ class Lambda(nn.Module):
         else:
             return self.latent_mean
 
-
 class TiMAEEmbedding(nn.Module):
     def __init__(
         self, 
@@ -230,7 +222,7 @@ class TSMVAE(nn.Module):
     def __init__(self, seq_len: int, in_chans: int, embed_dim: int, depth: int, num_heads: int, 
                  decoder_embed_dim: int, decoder_depth: int, decoder_num_heads: int, mlp_ratio: float = 4.0, 
                  norm_layer=partial(nn.LayerNorm, eps=1e-6), z_type = 'vanilla',  cls_embed = True, dropout = 0.0, 
-                 mask_ratio = 0.15, lambda_=0.00025, bag_size = 1024, trainable_pos_emb = False, noise_factor = 0.5, diff_attention = False, tokenize = 'linear'):
+                 mask_ratio = 0.15, lambda_=0.00025, trainable_pos_emb = False, noise_factor = 0.5, tokenize = 'linear'):
         super().__init__()
         # --------------------------------------------------------------------------
         # Encoder specifics
@@ -387,12 +379,6 @@ class TSMVAE(nn.Module):
         x_ = torch.gather(x_, dim=1, index=ids_restore.unsqueeze(-1).repeat(1, 1, x.shape[2]))  # unshuffle
         x = torch.cat([x[:, :1, :], x_], dim=1)  # append cls token
 
-        cls_token = torch.mean(x[:, 1:, :], dim=1)
-        # if self.z_type == 'vanilla':
-        #     cls_token = x[:, :1, :]
-        # elif self.z_type == 'vae':
-        #     cls_token = self.decoder_embed[1].latent_mean[:, :1, :]
-
         # add pos embed
         x = x + self.decoder_pos_embed
 
@@ -402,10 +388,14 @@ class TSMVAE(nn.Module):
 
         x = self.decoder_norm(x)
 
-        param_est = self.linear(cls_token.squeeze(1)) # [N, 6]
-        x_pred = self.decoder_pred(x[:, 1:, :]) 
+        x = self.decoder_pred(x)
 
-        return param_est, x_pred
+        if self.cls_embed:
+            x = x[:, 1:, :]
+        else:
+            x = x[:, :, :]
+
+        return x
 
     def forward_loss(self, x, pred, mask):
         """
@@ -451,7 +441,6 @@ class TSMVAE(nn.Module):
         else:
             space_loss = 0
 
-        # kld_weight = x.shape[0]/50000
         kld_weight = 1
         
         return loss, 1 * reg_loss, self.lambda_ * kld_weight * space_loss, param_est, x_pred
