@@ -4,9 +4,6 @@ import torch
 from torch.utils.data import Dataset, DataLoader
 from typing import Tuple, Dict, Any
 import os
-from torchvision.transforms import Compose, ToTensor, Normalize
-import torchvision
-import torchvision.transforms as transforms
 
 class NumpyDataset(Dataset):
     def __init__(self, data_dir, prefix='train'):

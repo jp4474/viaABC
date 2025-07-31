@@ -42,10 +42,6 @@ def main(train_sizes: List[int], seed: int, num_workers: int, num_repeats: int) 
     model = SpatialSIR()
     model.generate_training_data(train_sizes, seed=seed, num_workers=num_workers)
 
-    # raw_data = np.load("data/mzb_data.npz")['obs_data']
-    # mzb_abc = MZB(observational_data=raw_data)
-    # mzb_abc.generate_training_data(train_sizes, seed=seed)
-
 if __name__ == "__main__":
     args = parse_arguments()
     main(args.train_sizes, args.seed, args.num_workers, args.num_repeats)

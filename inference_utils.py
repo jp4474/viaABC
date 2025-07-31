@@ -1,7 +1,5 @@
 import os
 import numpy as np
-from models import MaskedAutoencoderViT
-from lightning_module import PreTrainLightningSpatial2D
 import yaml
 
 def load_pretrained_model(

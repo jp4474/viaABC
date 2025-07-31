@@ -10,7 +10,7 @@ from lightning.pytorch.callbacks import ModelCheckpoint, LearningRateMonitor, Ca
 from lightning.pytorch.callbacks.early_stopping import EarlyStopping
 
 from models import TSMVAE
-from lightning_module import PreTrainLightning, PlotReconstructionLotka, PlotReconstructionMZB
+from lightning_module import PreTrainLightning, PlotReconstructionLotka
 from dataset import NumpyDataset, create_dataloaders
 import neptune
 import numpy as np

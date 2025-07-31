@@ -25,10 +25,7 @@ from scipy.stats import gaussian_kde, qmc, uniform, multivariate_normal, norm
 
 # Machine learning and visualization
 import torch
-import umap
 
-#from cuml.manifold.umap import UMAP as cuUMAP
-from cuml.manifold.umap import UMAP
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 
@@ -111,13 +108,18 @@ class viaABC:
         ), "t0 must be less than or equal to the first element of time_space"
 
         # Validate data dimensions
-        assert observational_data.shape[0] == len(
-            time_space
-        ), (
-            f"Observational data and time space must match. "
-            f"Got {observational_data.shape[0]} time points in data but "
-            f"{len(time_space)} in time space."
-        )
+        # assert observational_data.shape[0] == len(
+        #     time_space
+        # ), (
+        #     f"Observational data and time space must match. "
+        #     f"Got {observational_data.shape[0]} time points in data but "
+        #     f"{len(time_space)} in time space."
+        # )
+        # ***************************************************************************************************************************************
+        #
+        #   UNCOMMENT THIS
+        #
+        # ***************************************************************************************************************************************
 
         if model is None:
             self.logger.warning(
@@ -705,13 +707,6 @@ class viaABC:
         Returns:
             True if should stop, False otherwise
         """
-        # if qt >= q_threshold and generation_num >= 3:
-        #     self.logger.info(f"Stopping criterion met (qt = {qt:.3f} >= {q_threshold})")
-        #     return True
-        
-        # if epsilon <= 0.01 and generation_num >= 3:
-        #     self.logger.info(f"Stopping criterion met (epsilon = {epsilon:.3f})")
-        #     return True
         
         if generation_num >= self.max_generations:
             self.logger.info("Stopping criterion met (max generations reached)")
@@ -794,90 +789,6 @@ class viaABC:
             plt.savefig(f"figures/generation_{generation+1}.png", dpi=100)
         plt.close()
 
-    @torch.inference_mode()
-    def visualize_latent_space(self, batch_size=1000, accelerator="cpu"):
-        """Implement UMAP to visualize the latent space with support for GPU (cuML) or CPU (UMAP)."""
-        if self.model is None:
-            raise ValueError("Model must be provided to encode the data and run the algorithm.")
-        
-        if self.train_dataset is None:
-            raise ValueError("Training dataset must be provided to visualize the latent space.")
-        
-        # Create a DataLoader for the training dataset
-        dataloader = torch.utils.data.DataLoader(self.train_dataset, batch_size=batch_size, shuffle=False)
-        # Set the model to evaluation mode
-        self.model.eval()
-        
-        self.encode_observational_data()
-        # List to store latent representations
-        latent_representations = []
-        # labels = []  # Optional: if you want to color points by class
-        
-        # Iterate over the dataloader to get latent representations
-        for batch in tqdm(dataloader, desc="Extracting latent representations"):
-            x, y = batch 
-            y = y.to(self.model.device).float()
-            # Get latent representation
-            latent = self.get_latent(y)
-            latent_representations.append(latent)  # Move to CPU for UMAP
-            # labels.append(y.cpu())  # Optional: store labels for coloring
-        
-        # Concatenate all latent representations and labels
-        latent_representations = np.concatenate(latent_representations, axis=0)
-        # labels = torch.cat(labels, dim=0).numpy()  # Optional: concatenate labels
-        
-        # Apply UMAP based on the accelerator parameter
-        if accelerator == "gpu":
-            print("Using cuML's UMAP (GPU accelerated)...")
-            # TODO: implement cuML UMAP
-            # reducer = cuUMAP(n_components=2, random_state=42)
-            reducer = UMAP(n_neighbors=16, build_algo="nn_descent")
-            #raise NotImplementedError("cuML UMAP is not implemented yet.")
-        elif accelerator == "cpu":
-            print("Using original UMAP (CPU)...")
-            reducer = umap.UMAP(n_components=2, random_state=42)
-        
-        # Fit and transform the latent representations
-        umap_embedding = reducer.fit_transform(latent_representations)
-        test_embedding = reducer.transform(self.encoded_observational_data.reshape(1, -1))
-
-        # Plot the UMAP embedding
-        plt.figure(figsize=(10, 8))
-        plt.scatter(umap_embedding[:, 0], umap_embedding[:, 1], color='blue', s=5, label='Train Data')
-        plt.scatter(test_embedding[:, 0], test_embedding[:, 1], color='red', s=10, label='Observational Data')
-        plt.title(f'UMAP Visualization of Latent Space ({accelerator.upper()})')
-        plt.xlabel('UMAP Component 1')
-        plt.ylabel('UMAP Component 2')
-        plt.legend()
-        plt.show()
-
-    @torch.inference_mode()
-    def visualize_latent_space_generation(self, generation: int = -1):
-        if generation == -1:
-            generation = self.num_generations - 1
-        
-        particles = self.particles[generation]
-        latent_representations = []
-
-        for params in particles:
-            y, status = self.simulate(params)
-            if status == 0:
-                y_tensor = torch.tensor(y, dtype=torch.float32).unsqueeze(0).to(self.model.device)
-                latent = self.get_latent(y_tensor)
-                latent_representations.append(latent.cpu().numpy())
-
-        latent_representations = np.array(latent_representations)
-        reducer = umap.UMAP(n_components=2, random_state=42)
-        umap_embedding = reducer.fit_transform(latent_representations)
-        
-        plt.figure(figsize=(10, 8))
-        scatter = plt.scatter(umap_embedding[:, 0], umap_embedding[:, 1], cmap='Spectral', s=5)
-        plt.colorbar(scatter, label='Class')
-        plt.title(f'UMAP Visualization of Latent Space for Generation {generation + 1}')
-        plt.xlabel('UMAP Component 1')
-        plt.ylabel('UMAP Component 2')
-        plt.show()
-
     def __sample_priors(self, n: int = 1):
         """Sample from prior distribution using Latin Hypercube Sampling"""
         # Create LHS sampler
@@ -888,7 +799,6 @@ class viaABC:
         
         # Scale samples to parameter bounds
         scaled_samples = qmc.scale(samples, self.lower_bounds, self.upper_bounds)
-        print(scaled_samples.shape)
         return scaled_samples
 
     def __batch_simulations(self, num_simulations: int, prefix: str = "train", num_threads: int = 2):

@@ -1,32 +1,16 @@
-from latent_abc_smc import LatentABCSMC
 from latent_abc_pmc import viaABC
-from scipy.integrate import solve_ivp
-from scipy.stats import gaussian_kde, norm, uniform, multivariate_normal, mode
-
+from scipy.stats import uniform
 import numpy as np
-from numpy.lib.stride_tricks import as_strided
-
-import torch
-import logging
 from typing import Union, List
-import pandas as pd
-import time
-import math
-import os
-import warnings
 from systems import *
-from tempfile import TemporaryFile
 from metrics import *
-
-from scipy.stats import qmc
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from scipy.ndimage import convolve
 
 class LotkaVolterra(viaABC):
     def __init__(self,
         num_parameters = 2, 
-        mu = np.array([0, 0]), # Lower Bound
-        sigma = np.array([10, 10]), # Upper Bound [0, 10], [0, 3]
+        mu = np.array([0, 0]),
+        sigma = np.array([10, 10]),
         model = None, 
         observational_data = np.array([[1.87, 0.65, 0.22, 0.31, 1.64, 1.15, 0.24, 2.91],
                                         [0.49, 2.62, 1.54, 0.02, 1.14, 1.68, 1.07, 0.88]]).T, 
@@ -34,8 +18,8 @@ class LotkaVolterra(viaABC):
         t0 = 0,
         tmax = 15, 
         time_space = np.array([1.1, 2.4, 3.9, 5.6, 7.5, 9.6, 11.9, 14.4]),
-        pooling_method = "cls",
-        metric = "cosine"):
+        pooling_method = "no_cls",
+        metric = "pairwise_cosine"):
         super().__init__(num_parameters, mu, sigma, observational_data, model, state0, t0, tmax, time_space, pooling_method, metric)
         self.lower_bounds = mu 
         self.upper_bounds = sigma
@@ -65,11 +49,10 @@ class LotkaVolterra(viaABC):
         return x
 
 
-
 class SpatialSIR(viaABC):
     def __init__(self,
         num_parameters = 2, 
-        mu = np.array( [0.2, 0.2]), # Lower Bound
+        mu = np.array([0.2, 0.2]),
         sigma = np.array([4.5, 4.5]),
         model = None, 
         observational_data = None,
@@ -95,44 +78,6 @@ class SpatialSIR(viaABC):
         self.time_steps = int((tmax - t0)/interval)
         self.lower_bounds = mu
         self.upper_bounds = sigma
-
-    # def simulate(self, parameters: np.ndarray, k: int = 5):
-    #     """
-    #     Run the simulation multiple times with the same parameters.
-    #     This is useful for parallel processing or repeated evaluations.
-    #     """
-    #     results = []
-    #     for _ in range(k):
-    #         result, _ = self._simulate(parameters)
-    #         results.append(result)
-
-    #     # Convert to numpy array: shape (k, time_steps, 3, grid_size, grid_size)
-    #     results = np.array(results)
-
-    #     # Take the mode across the first axis (k simulations)
-    #     mode_result, _ = mode(results, axis=0)
-
-    #     # Remove the extra dimension added by mode
-    #   return mode_result, 0
-    # def simulate(self, parameters: np.ndarray, repetitions: int = 5):
-    #     """
-    #     Run the simulation multiple times with the same parameters.
-    #     This is useful for parallel processing or repeated evaluations.
-    #     """
-    #     results = []
-    #     with ThreadPoolExecutor() as executor:
-    #         futures = [executor.submit(self._simulate, parameters) for _ in range(repetitions)]
-    #         for future in as_completed(futures):
-    #             result, _ = future.result()
-    #             results.append(result)
-
-    #     results = np.array(results)
-
-    #     # concatenate results along the first axis (repetitions)
-
-    #     results = np.concatenate(results, axis=0)
-
-    #     return results, 0
 
     def simulate(self, parameters: np.ndarray):
         SUSCEPTIBLE, INFECTED, RECOVERED = 0, 1, 2
@@ -227,6 +172,8 @@ class SpatialSIR(viaABC):
         return priors
             
     def calculate_prior_prob(self, parameters):
+        # Calculate the prior probability of the parameters
+        # This must match the prior distribution used in sampling
         probabilities = uniform.logpdf(parameters, loc=self.mu, scale=self.sigma - self.mu) 
         probabilities = np.exp(np.sum(probabilities))
         return probabilities
@@ -358,6 +305,8 @@ class SpatialSIR3D(viaABC):
         return priors
             
     def calculate_prior_prob(self, parameters):
+        # Calculate the prior probability of the parameters
+        # This must match the prior distribution used in sampling
         probabilities = uniform.logpdf(parameters, loc=self.mu, scale=self.sigma - self.mu) 
         probabilities = np.exp(np.sum(probabilities))
         return probabilities
