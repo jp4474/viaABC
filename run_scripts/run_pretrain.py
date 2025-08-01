@@ -8,7 +8,7 @@ from lightning.pytorch.callbacks import ModelCheckpoint, LearningRateMonitor
 from lightning.pytorch.callbacks.early_stopping import EarlyStopping
 
 from models import TSMVAE
-from lightning_module import PreTrainLightning, PlotReconstructionLotka
+from lightning_module import PreTrainLightning
 from dataset import create_dataloaders
 import numpy as np
 
@@ -52,9 +52,7 @@ def save_model_config(args, seq_len: int, in_chans: int):
                 'z_type': args.type,
                 'lambda_': args.beta,
                 'mask_ratio': args.mask_ratio,
-                'bag_size': 1024,
                 'dropout': args.dropout,
-                'diff_attention': args.diff_attn,
                 'noise_factor': args.noise_factor
             }
         }
@@ -92,9 +90,7 @@ def main():
             z_type=args.type, 
             lambda_=args.beta, 
             mask_ratio=args.mask_ratio,
-            bag_size=1024, 
             dropout=args.dropout,
-            diff_attention=args.diff_attn,
             noise_factor=args.noise_factor,
         )
 

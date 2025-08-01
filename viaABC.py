@@ -1,7 +1,7 @@
 """
-latent_abc_smc.py
+viaABC.py
 
-This script implements the Sequential Monte Carlo (SMC) algorithm for Approximate Bayesian Computation (ABC).
+This script implements the Adaptive Population Monte Carlo (APMC) algorithm for Approximate Bayesian Computation (ABC) [Simola et al.].
 
 Some code is referenced from https://github.com/Pat-Laub/approxbayescomp/blob/master/src/approxbayescomp/smc.py#L73
 Some code is referenced from https://rdrr.io/github/TimeWz667/odin2data/src/R/abcpmc.R
@@ -14,14 +14,13 @@ import os
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from typing import Union, List
+from typing import Union
 
 from metrics import *
 # Third-party scientific computing
 import numpy as np
-import pandas as pd
 from scipy.integrate import solve_ivp
-from scipy.stats import gaussian_kde, qmc, uniform, multivariate_normal, norm
+from scipy.stats import qmc, multivariate_normal
 
 # Machine learning and visualization
 import torch
@@ -108,27 +107,18 @@ class viaABC:
         ), "t0 must be less than or equal to the first element of time_space"
 
         # Validate data dimensions
-        # assert observational_data.shape[0] == len(
-        #     time_space
-        # ), (
-        #     f"Observational data and time space must match. "
-        #     f"Got {observational_data.shape[0]} time points in data but "
-        #     f"{len(time_space)} in time space."
-        # )
-        # ***************************************************************************************************************************************
-        #
-        #   UNCOMMENT THIS
-        #
-        # ***************************************************************************************************************************************
+        assert observational_data.shape[0] == len(
+            time_space
+        ), (
+            f"Observational data and time space must match. "
+            f"Got {observational_data.shape[0]} time points in data but "
+            f"{len(time_space)} in time space."
+        )
 
         if model is None:
             self.logger.warning(
-                "Model is None. The model must be provided to encode the data "
-                "and run the algorithm."
-            )
-            self.logger.warning(
-                "The class can be initialized without a model, but it will not "
-                "be able to run the algorithm."
+                "Model is None. The model must be provided to encode the data and run the algorithm.\n" \
+                "The class can be initialized without a model, but it will not\nbe able to run the algorithm."
             )
         else:
             self.model = model
@@ -160,7 +150,7 @@ class viaABC:
         else:
             raise ValueError(f"Metric must be one of {valid_metrics}")
 
-        self.densratio = DensityRatioEstimation(n=1000, epsilon=0.01, max_iter=200, abs_tol=0.01, fold=5, optimize=False)
+        self.densratio = DensityRatioEstimation(n=self.num_particles, epsilon=0.01, max_iter=200, abs_tol=0.01, fold=5, optimize=False)
         self.generations = []
 
         self.logger.info("Initialization complete")
@@ -178,13 +168,12 @@ class viaABC:
         self.model = model
         self.model.eval()
         self.logger.info("Model updated")
-        self.encode_observational_data()
+        self._encode_observational_data()
 
     def ode_system(self, t: int, state: np.ndarray, parameters: np.ndarray):
         raise NotImplementedError
 
     def simulate(self, parameters: np.ndarray):
-        # TODO: implement batch effect
         if self.state0 is not None:
             solution = solve_ivp(self.ode_system, [self.t0, self.tmax], y0=self.state0, t_eval=self.time_space, args=(parameters,))
                         
@@ -201,9 +190,7 @@ class viaABC:
         Returns:
             np.ndarray: Sampled parameters from the prior distributions.
         """
-
-        # Sample from the prior distribution
-        return np.random.multivariate_normal(self.mu, self.sigma)
+        raise NotImplementedError
 
     def calculate_prior_prob(self, theta: np.ndarray) -> float:
         """
@@ -215,9 +202,7 @@ class viaABC:
         Returns:
             np.ndarray: Prior probability of the parameters.
         """
-
-        return multivariate_normal.pdf(theta, self.mu, self.sigma)
-
+        raise NotImplementedError
 
     def perturb_parameters(self, theta: np.ndarray, cov: np.ndarray) -> np.ndarray:
         """
@@ -281,7 +266,7 @@ class viaABC:
         return distances
     
     @torch.inference_mode()
-    def encode_observational_data(self):
+    def _encode_observational_data(self):
         scaled_data = self.preprocess(self.raw_observational_data)
         self.encoded_observational_data = self.get_latent(scaled_data)
     
@@ -763,32 +748,6 @@ class viaABC:
 
         return mean, median, var
     
-    def visualize_generation(self, generation: int = -1, save: bool = False):
-        fig, ax = plt.subplots(1, self.num_parameters, figsize=(6, 4))
-
-        # Plot histograms for Beta and Alpha
-        for i in range(self.num_parameters):
-            ax[i].hist(self.generations[generation]['particles'][:, i], bins=20, alpha=0.7, label="Posterior")
-            ax[i].set_title(f'Parameter {i+1}')
-            ax[i].axvline(x=self.generations[generation]['particles'][:, i].mean(), color='g', linestyle='--', label='Mean')
-            ax[i].legend()
-
-        # Set a title for the entire figure
-        fig.suptitle(f"Generation {generation+1}")
-        
-        # Adjust layout to prevent overlap
-        plt.tight_layout()
-        plt.show()
-        
-        # Save the figure as a PNG file
-        if save:
-            if generation == -1:
-                generation = self.num_generations-1
- 
-            os.makedirs("figures", exist_ok=True)
-            plt.savefig(f"figures/generation_{generation+1}.png", dpi=100)
-        plt.close()
-
     def __sample_priors(self, n: int = 1):
         """Sample from prior distribution using Latin Hypercube Sampling"""
         # Create LHS sampler
@@ -801,7 +760,7 @@ class viaABC:
         scaled_samples = qmc.scale(samples, self.lower_bounds, self.upper_bounds)
         return scaled_samples
 
-    def __batch_simulations(self, num_simulations: int, prefix: str = "train", num_threads: int = 2):
+    def __batch_simulations(self, num_simulations: int, save_dir: str = "data", prefix: str = "train", num_threads: int = 2):
         """ This method should never be called directly; it is only used by the generate_training_data method. """
         parameters = self.__sample_priors(n=num_simulations)
         valid_params = []
@@ -837,12 +796,12 @@ class viaABC:
             valid_simulations = np.array(valid_simulations)
             valid_params = np.array(valid_params)
 
-            self.logger.info(f"Saving {len(valid_simulations)} simulations to data.")
-            np.savez(f"data/{prefix}_data.npz", params=valid_params, simulations=valid_simulations)
+            self.logger.info(f"Saving {len(valid_simulations)} simulations to {save_dir}.")
+            np.savez(f"{os.path.join(os.getcwd(), save_dir)}/{prefix}_data.npz", params=valid_params, simulations=valid_simulations)
         else:
             self.logger.warning("No valid simulations to save.")
 
-    def generate_training_data(self, num_simulations: list = [50000, 10000, 10000], seed: int = 1234, num_workers: int = 1):
+    def generate_training_data(self, num_simulations: list = [50000, 10000, 10000], save_dir: str = "data", seed: int = 1234, num_workers: int = 1):
         np.random.seed(seed)
         self.logger.info(f"Generating training data for training with seed {seed}")
 
@@ -852,21 +811,13 @@ class viaABC:
         for i, num_simulation in enumerate(num_simulations):
             self.logger.info(f"Generating {num_simulation} simulations for training data")
             start = time.time()
-            self.__batch_simulations(num_simulation, prefix=prefix[i], num_threads=num_workers * 2)
+            self.__batch_simulations(num_simulation, save_dir, prefix=prefix[i], num_threads=num_workers * 2)
             end = time.time()
             elapsed = end - start
             total_time += elapsed
             self.logger.info(f"Generated {num_simulation} simulations for training data in {elapsed:.2f} seconds")
 
         self.logger.info(f"Training data generation completed and saved. Total time taken: {total_time:.2f} seconds")
-
-    def load_particles_weights(self, particles_path: str, weights_path: str):
-        try:
-            self.particles = np.load(particles_path)
-            self.weights = np.load(weights_path)
-            self.logger.info("Particles and weights loaded successfully.")
-        except Exception as e:
-            self.logger.error(f"Error loading particles and weights: {e}")
 
     def update_train_dataset(self, train_dataset):
         # check if train_dataset is a torch Dataset

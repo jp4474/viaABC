@@ -1,4 +1,4 @@
-from latent_abc_pmc import viaABC
+from viaABC import viaABC
 from scipy.stats import uniform
 import numpy as np
 from typing import Union, List
@@ -47,7 +47,6 @@ class LotkaVolterra(viaABC):
         mean = np.mean(np.abs(x), 0)
         x = x / mean
         return x
-
 
 class SpatialSIR(viaABC):
     def __init__(self,

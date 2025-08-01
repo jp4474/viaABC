@@ -14,32 +14,33 @@ class loss_fn(nn.Module):
         return RECON, self.alpha * KLD
 
 class PreTrainLightning(L.LightningModule):
-    def __init__(self, model, lr=1e-3, warmup_steps=500, total_steps=80000):
+    def __init__(self, model, lr=1e-3, warmup_steps=500, total_steps=80000, prog_bar = False):
         super().__init__()
         self.model = model
         self.lr = lr
         self.warmup_steps = warmup_steps
         self.total_steps = total_steps
+        self.prog_bar = prog_bar
 
     def forward(self, simulations, mask_ratio = None):
         return self.model(x = simulations, mask_ratio = mask_ratio)
 
     def training_step(self, batch):
-        parameters, simulations = batch
-        loss, space_loss, _, _ = self(simulations, parameters)
-        self.log("train_recon_loss", loss, prog_bar=False, on_step=False, on_epoch=True)
-        self.log("train_space_loss", space_loss, prog_bar=False, on_step=False, on_epoch=True)
+        simulations = batch
+        loss, space_loss, _ = self(simulations)
+        self.log("train_recon_loss", loss, prog_bar=self.prog_bar, on_step=False, on_epoch=True)
+        self.log("train_space_loss", space_loss, prog_bar=self.prog_bar, on_step=False, on_epoch=True)
         total_loss = loss + space_loss
-        self.log("train_loss", total_loss, prog_bar=True, on_step=False, on_epoch=True)
+        self.log("train_loss", total_loss, prog_bar=self.prog_bar, on_step=False, on_epoch=True)
         return total_loss
 
     def validation_step(self, batch):
-        parameters, simulations = batch
-        loss, space_loss, _, _ = self(simulations, parameters)
-        self.log("val_recon_loss", loss, prog_bar=False, on_step=False, on_epoch=True)
-        self.log("val_space_loss", space_loss, prog_bar=False, on_step=False, on_epoch=True)
+        simulations = batch
+        loss, space_loss, _ = self(simulations)
+        self.log("val_recon_loss", loss, prog_bar=self.prog_bar, on_step=False, on_epoch=True)
+        self.log("val_space_loss", space_loss, prog_bar=self.prog_bar, on_step=False, on_epoch=True)
         total_loss = loss + space_loss
-        self.log("val_loss", total_loss, prog_bar=True, on_step=False, on_epoch=True)
+        self.log("val_loss", total_loss, prog_bar=self.prog_bar, on_step=False, on_epoch=True)
         return total_loss
     
     def configure_optimizers(self):

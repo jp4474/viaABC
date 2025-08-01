@@ -424,13 +424,8 @@ class TSMVAE(nn.Module):
             x_ = x_
             
         latent, mask, ids_restore = self.forward_encoder(x_, mask_ratio)
-        param_est, x_pred = self.forward_decoder(latent, ids_restore)  # [N, L, p*p*3]
+        x_pred = self.forward_decoder(latent, ids_restore)  # [N, L, p*p*3]
         loss = self.forward_loss(x, x_pred, mask)
-
-        if y is not None:
-            reg_loss = F.mse_loss(param_est, y)
-        else:
-            reg_loss = 0
 
         if self.z_type == 'vae':
             space_loss = torch.mean(-0.5 * torch.sum(1 + self.decoder_embed[1].latent_logvar \
@@ -442,9 +437,9 @@ class TSMVAE(nn.Module):
             space_loss = 0
 
         kld_weight = 1
-        
-        return loss, 1 * reg_loss, self.lambda_ * kld_weight * space_loss, param_est, x_pred
-    
+
+        return loss, self.lambda_ * kld_weight * space_loss, x_pred
+
     def get_latent(self, x, pooling_method = None):
         x, mask, ids_restore = self.forward_encoder(x, 0)
         x = self.decoder_embed(x)
@@ -469,7 +464,7 @@ class TSMVAE(nn.Module):
         # x[mask_index] = 0
 
         latent, mask, ids_restore = self.forward_encoder(x, self.mask_ratio)
-        param_est, x_pred = self.forward_decoder(latent, ids_restore)  # [N, L, p*p*3]
+        x_pred = self.forward_decoder(latent, ids_restore)  # [N, L, p*p*3]
 
         return x_pred, mask, ids_restore
 
