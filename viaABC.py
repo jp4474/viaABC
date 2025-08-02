@@ -149,8 +149,7 @@ class viaABC:
 
         self.generations = []
 
-        self.logger.info("Initialization complete")
-        self.logger.info("LatentABCSMC class initialized with the following parameters:")
+        self.logger.info("viaABC class initialized with the following parameters:")
         self.logger.info(f"num_parameters: {num_parameters}")
         self.logger.info(f"Mu: {mu}")
         self.logger.info(f"Sigma: {sigma}")
@@ -309,13 +308,13 @@ class viaABC:
             perturbed_params = self.sample_priors()
             prior_probability = 1.0
             new_weight = 1.0
-        
-            prior_probability = self.calculate_prior_prob(perturbed_params)
 
+            prior_probability = self.calculate_prior_prob(perturbed_params)
             if prior_probability <= 0:
                 continue
 
             y, status = self.simulate(perturbed_params)
+
             total_num_simulations += 1
 
             if status != 0:
@@ -527,8 +526,8 @@ class viaABC:
         distances = []
         accepted = 0
         running_num_simulations = 0
-        
-        with tqdm(total=self.num_particles) as pbar:
+
+        with tqdm(total=self.num_particles, miniters=self.num_particles // 10) as pbar:
             while accepted < self.num_particles:
 
                 theta, new_weight = self._propose_particle(

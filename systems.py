@@ -36,11 +36,11 @@ class LotkaVolterra(viaABC):
 
     def sample_priors(self):
         # Sample from the prior distribution
-        priors = np.random.uniform(self.mu, self.sigma, self.num_parameters)
+        priors = np.random.uniform(self.lower_bounds, self.upper_bounds, self.num_parameters)
         return priors
     
     def calculate_prior_prob(self, parameters):
-        probabilities = uniform.logpdf(parameters, loc=self.mu, scale=self.sigma - self.mu) 
+        probabilities = uniform.logpdf(parameters, loc=self.lower_bounds, scale=self.upper_bounds - self.lower_bounds)
         probabilities = np.exp(np.sum(probabilities))
         return probabilities
     

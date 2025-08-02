@@ -22,13 +22,13 @@ class PositionalEncoding(nn.Module):
     def __init__(self, d_model, max_len=5000):
         super(PositionalEncoding, self).__init__()
         self.d_model = d_model
-        
+
         # Initialize positional encoding matrix
-        pe = torch.zeros(max_len + 1, d_model)  # +1 for [CLS] token
-        
+        pe = torch.zeros(max_len+1, d_model)  # +1 for [CLS] token
+
         # Generate positions (0 to max_len, where 0 is for [CLS])
-        pos = torch.arange(0, max_len + 1, dtype=torch.float).unsqueeze(1)
-        
+        pos = torch.arange(0, max_len+1, dtype=torch.float).unsqueeze(1)
+
         # Compute i values for each dimension
         i = torch.arange(0, d_model, dtype=torch.float) // 2  # Shape (d_model,)
         
@@ -101,7 +101,7 @@ class TiMAEEmbedding(nn.Module):
 class TSMVAE(nn.Module):
     def __init__(self, seq_len: int, in_chans: int, embed_dim: int, depth: int, num_heads: int, 
                  decoder_embed_dim: int, decoder_depth: int, decoder_num_heads: int, mlp_ratio: float = 4.0, 
-                 norm_layer=partial(nn.LayerNorm, eps=1e-6), z_type = 'vanilla',  cls_embed = True, dropout = 0.0, 
+                 norm_layer=partial(nn.LayerNorm, eps=1e-6), z_type = 'vanilla', dropout = 0.0, 
                  mask_ratio = 0.15, lambda_=0.00025, trainable_pos_emb = True, noise_factor = 0.5, tokenize = 'linear'):
         super().__init__()
         # --------------------------------------------------------------------------
@@ -111,7 +111,6 @@ class TSMVAE(nn.Module):
         else:
             self.embedder = TiMAEEmbedding(in_chans, embed_dim)
         
-        self.cls_embed = cls_embed
         self.trunc_init = False
         self.mask_ratio = mask_ratio
         self.embed_dim = embed_dim
@@ -125,14 +124,13 @@ class TSMVAE(nn.Module):
         #     (int(seq_len*(1 - mask_ratio) + int(cls_embed)), 
         #      int(seq_len*(1-mask_ratio)+ int(cls_embed))), dtype=torch.bool).triu(diagonal=1)
 
-        if cls_embed:
-            self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
-
+        self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
         self.pos_embed = nn.Parameter(torch.zeros(1, self.seq_len + 1, embed_dim), requires_grad=trainable_pos_emb)  # fixed sin-cos embedding
+
         # self.pos_embed = PositionalEncoding(embed_dim, max_len=seq_len)
 
         self.blocks = nn.ModuleList([
-            Block(embed_dim, num_heads, mlp_ratio, qkv_bias=True, norm_layer=norm_layer, drop_path=0.0)
+            Block(embed_dim, num_heads, mlp_ratio, qkv_bias=True, norm_layer=norm_layer, drop_path=0.0, proj_drop=0.1)
             for i in range(depth)])
         
         self.norm = norm_layer(embed_dim)
@@ -149,11 +147,12 @@ class TSMVAE(nn.Module):
 
         self.mask_token = nn.Parameter(torch.zeros(1, 1, decoder_embed_dim))
         
-        self.decoder_pos_embed = nn.Parameter(torch.zeros(1, self.seq_len + 1, decoder_embed_dim), requires_grad=trainable_pos_emb)  # fixed sin-cos embedding
+   
+        self.decoder_pos_embed = nn.Parameter(torch.zeros(1, self.seq_len + 1, decoder_embed_dim), requires_grad=trainable_pos_emb)
         # self.decoder_pos_embed = PositionalEncoding(decoder_embed_dim, max_len=seq_len)
 
         self.decoder_blocks = nn.ModuleList([
-            Block(decoder_embed_dim, decoder_num_heads, mlp_ratio, qkv_bias=True, norm_layer=norm_layer, drop_path=0.0)
+            Block(decoder_embed_dim, decoder_num_heads, mlp_ratio, qkv_bias=True, norm_layer=norm_layer, drop_path=0.0, proj_drop=0.1)
             for i in range(decoder_depth)])
 
         self.decoder_norm = norm_layer(decoder_embed_dim)
@@ -174,8 +173,7 @@ class TSMVAE(nn.Module):
         else:
             w = self.embedder.conv.weight.data
 
-        if self.cls_embed:
-            torch.nn.init.trunc_normal_(self.cls_token, std=0.02)
+        torch.nn.init.trunc_normal_(self.cls_token, std=0.02)
 
         if self.trunc_init:
             torch.nn.init.trunc_normal_(w)
@@ -268,11 +266,7 @@ class TSMVAE(nn.Module):
 
         x = self.decoder_pred(x)
 
-        if self.cls_embed:
-            x = x[:, 1:, :]
-        else:
-            x = x[:, :, :]
-
+        x = x[:, 1:, :]
         return x
 
     def forward_loss(self, x, pred, mask):
