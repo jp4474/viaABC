@@ -1,10 +1,11 @@
 from viaABC import viaABC
-from scipy.stats import uniform
+from scipy.stats import uniform, lognorm
 import numpy as np
 from typing import Union, List
 from systems import *
 from metrics import *
 from scipy.ndimage import convolve
+from scipy.integrate import solve_ivp
 
 class LotkaVolterra(viaABC):
     def __init__(self,
@@ -32,7 +33,7 @@ class LotkaVolterra(viaABC):
         dprey = prey * (alpha - beta * predator)
         dpredator = predator * (-gamma + delta * prey)
         return [dprey, dpredator]
-        
+
     def sample_priors(self):
         # Sample from the prior distribution
         priors = np.random.uniform(self.mu, self.sigma, self.num_parameters)
@@ -320,3 +321,87 @@ class SpatialSIR3D(viaABC):
             x = np.expand_dims(x, axis=0)
 
         return x
+    
+
+# alpha ~ normal(0.01, 0.5);
+#   beta ~ normal(0.01, 0.5);
+#   mu ~ normal(0.01, 0.5);
+#   delta ~ normal(0.8, 0.3);
+#   lambda_WT ~ normal(0.1, 0.3);
+#   lambda_N2KO ~ normal(0.8, 0.3);
+#   M0N2 ~ normal(8, 1.5);
+
+# class CARModel(viaABC):
+#     def __init__(self,
+#         num_parameters = 7, 
+#         mu = np.array([0.01, 0.01, 0.01, 0.8, 0.1, 0.8, 8.]),
+#         sigma = np.array([0.5, 0.5, 0.5, 0.3, 0.3, 0.3, 1.5]),
+#         model = None,
+#         t0 = 4,
+#         tmax = 15, 
+#         time_space = np.array([1.1, 2.4, 3.9, 5.6, 7.5, 9.6, 11.9, 14.4]),
+#         pooling_method = "no_cls",
+#         metric = "pairwise_cosine"):
+#         super().__init__(num_parameters, mu, sigma, observational_data, model, None, t0, tmax, time_space, pooling_method, metric)
+#         self.lower_bounds = mu 
+#         self.upper_bounds = sigma
+
+#     def CAR_positive_FOB(self, t):
+#         F0 = np.exp(11.722278)
+#         B0 = np.exp(4.475064)
+#         n = 4.781548
+#         X = 6.943644
+#         q = 5
+#         value = F0 + (B0 * t**n) * (1 - (t**q / (X**q + t**q)))
+#         return value
+
+#     def CAR_negative_MZB(self, t):
+#         M0 = np.exp(14.06)
+#         nu = 0.0033
+#         b0 = 20.58
+#         value = M0 * (1 + np.exp(-nu * (t - b0)**2))
+#         return value
+
+#     def Total_FoB(self, t):
+#         M0 = np.exp(16.7)
+#         nu = 0.004
+#         b0 = 20
+#         value = M0 * (1 + np.exp(-nu * (t - b0)**2))
+#         return value
+
+#     def ode_system(self, t, state, parameters):
+#         """
+#         Parameters:
+#         - t: time (scalar)
+#         - state: [y1, y2, y3] (list or array of size 3)
+#         - parameters: [alpha, beta, mu, delta, lambda_WT, lambda_N2KO] (list or array)
+#         """
+#         y1, y2, y3 = state
+#         alpha, beta, mu, delta, lambda_WT, lambda_N2KO = parameters
+
+#         d_y1 = alpha * self.Total_FoB(t) - delta * y1
+#         d_y2 = mu * self.Total_FoB(t) + beta * self.CAR_negative_MZB(t) - lambda_WT * y2
+#         d_y3 = beta * self.CAR_negative_MZB(t) - lambda_N2KO * y3
+
+#         return [d_y1, d_y2, d_y3]
+    
+#     def simulate(self, parameters: np.ndarray):
+#         _, _, _, _, _, _, M0N2 = parameters
+#         state0 = np.array([np.exp(11.5), np.exp(10.8), np.exp(M0N2)])  # Initial state
+#         solution = solve_ivp(self.ode_system, [self.t0, self.tmax], y0=state0, t_eval=self.time_space, args=(parameters[:6],))
+                        
+#         return solution.y.T, solution.status
+    
+#     def sample_priors(self):
+#         priors = np.random.lognormal(mean=self.mu, sigma=self.sigma, size=(len(self.mu)))
+#         return priors
+    
+#     def calculate_prior_prob(self, parameters):
+#         # Calculate the prior probability of the parameters
+#         probs = lognorm.logpdf(parameters, s=self.sigma, scale=np.exp(self.mu))
+#         return np.exp(np.sum(probs))
+    
+#     def __sample_priors(self, n: int = 1):
+#         return np.random.lognormal(mean=self.mu, sigma=self.sigma, size=(n, len(self.mu)))
+
+    

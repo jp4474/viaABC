@@ -115,17 +115,6 @@ class viaABC:
             f"{len(time_space)} in time space."
         )
 
-        if model is None:
-            self.logger.warning(
-                "Model is None. The model must be provided to encode the data and run the algorithm.\n" \
-                "The class can be initialized without a model, but it will not\nbe able to run the algorithm."
-            )
-        else:
-            self.model = model
-            self.model.eval()
-            obs_tensor = torch.tensor(self.raw_observational_data, dtype=torch.float32)
-            self.encoded_observational_data = self.model.get_latent(obs_tensor, pooling_method=pooling_method)
-
         self.num_parameters = num_parameters
         self.mu = mu
         self.sigma = sigma
@@ -149,8 +138,15 @@ class viaABC:
             self.metric = metric
         else:
             raise ValueError(f"Metric must be one of {valid_metrics}")
+        
+        if model is None:
+            self.logger.warning(
+                "Model is None. The model must be provided to encode the data and run the algorithm.\n" \
+                "The class can be initialized without a model, but it will not\nbe able to run the algorithm."
+            )
+        else:
+            self.update_model(model)
 
-        self.densratio = DensityRatioEstimation(n=self.num_particles, epsilon=0.01, max_iter=200, abs_tol=0.01, fold=5, optimize=False)
         self.generations = []
 
         self.logger.info("Initialization complete")
@@ -296,13 +292,15 @@ class viaABC:
 
     @torch.inference_mode()
     def _run_init(self, num_particles: int, k: int = 5):
+        self.densratio = DensityRatioEstimation(n=100, epsilon=0.01, max_iter=200, abs_tol=0.01, fold=5, optimize=False)
+
         if self.model is None:
             raise ValueError("Model must be provided to encode the data and run the algorithm.")
     
         total_num_simulations = 0
         accepted = 0
 
-        self.encode_observational_data()
+        self._encode_observational_data()
         particles = np.ones((k * num_particles, self.num_parameters))
         weights = np.ones((k * self.num_particles))
         dists = np.zeros((k * num_particles))
@@ -438,7 +436,7 @@ class viaABC:
         max_generations: int = 20,
         k: int = 5,
     ) -> None:
-        """Run the ABC PMC algorithm.
+        """Run the viaABC algorithm.
         
         Args:
             num_particles: Number of particles to maintain per generation
@@ -704,8 +702,8 @@ class viaABC:
         return False
 
     def _log_final_results(self, start_time: float, total_simulations: int) -> None:
-        """Log final results of the ABC PMC run.
-        
+        """Log final results of the viaABC run.
+
         Args:
             start_time: Start time of the run
             total_simulations: Total number of simulations performed
@@ -713,7 +711,7 @@ class viaABC:
         duration = time.time() - start_time
         num_generations = len(self.generations)
         self.logger.info(
-            f"ABC SMC run completed in {duration:.2f} seconds with "
+            f"viaABC run completed in {duration:.2f} seconds with "
             f"{total_simulations} total simulations over {num_generations} generations."
         )
 

@@ -1,5 +1,5 @@
 """
-    This module contains utility functions for the latent-abc-smc package.
+    This module contains utility functions for the viaABC package.
     Some code is referenced from https://github.com/elfi-dev/elfi
 """
 import numpy as np

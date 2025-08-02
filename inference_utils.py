@@ -6,8 +6,7 @@ def load_pretrained_model(
     folder_name: str,
     model_class,
     lightning_class,
-    checkpoint_substr: str = "SUM",
-    in_chans: int = 3
+    checkpoint_substr: str = "TSMVAE"
 ):
     """
     Load a pretrained model from a folder containing a YAML config and checkpoint.
@@ -26,7 +25,7 @@ def load_pretrained_model(
     config_path = os.path.join(folder_name, "config.yaml")
     config = yaml.safe_load(open(config_path))
 
-    model = model_class(**config["model"]["params"], in_chans=in_chans)
+    model = model_class(**config["model"]["params"])
 
     checkpoint_files = [f for f in os.listdir(folder_name) if f.endswith(".ckpt") and checkpoint_substr in f]
     if not checkpoint_files:

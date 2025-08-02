@@ -1,21 +1,21 @@
 #!/bin/bash
-#beta_values=(1 0.1 0.01 0.001 0.0001 0)
-beta_values=(0 0.01 0.001 0.0001 0.00025)
+beta_values=(0 0.01 0.001 0.0001)
+#beta_values=(0)
 d=64
 ed=32
 enc_depth=6
 dec_depth=4
-num_heads=8
-decoder_num_heads=8
-noise_factor=0.5
+num_heads=4
+decoder_num_heads=4
+noise_factor=0.0
 mask=0.15
 
 for beta in "${beta_values[@]}"; do
     # Define the directory path with the current beta value
     if (( $(bc -l <<< "$beta == 0") )); then
-        dirpath="lotka_d${d}_ed${ed}_${enc_depth}_${num_heads}_${dec_depth}_${decoder_num_heads}_ae_mask_${mask}_noise_${noise_factor}_cls"
+        dirpath="lotka_d${d}_ed${ed}_${enc_depth}_${num_heads}_${dec_depth}_${decoder_num_heads}_ae_mask_${mask}_noise_${noise_factor}"
     else
-        dirpath="lotka_d${d}_ed${ed}_${enc_depth}_${num_heads}_${dec_depth}_${decoder_num_heads}_vae_mask_${mask}_beta_${beta}_noise_${noise_factor}_cls"
+        dirpath="lotka_d${d}_ed${ed}_${enc_depth}_${num_heads}_${dec_depth}_${decoder_num_heads}_vae_mask_${mask}_beta_${beta}_noise_${noise_factor}"
     fi
     
     # Set the log file name
@@ -23,7 +23,7 @@ for beta in "${beta_values[@]}"; do
 
     if (( $(bc -l <<< "$beta != 0") )); then
         # Run the command in the background with nohup
-        nohup python3 run_pretrain.py \
+        nohup python3 run_scripts/run_pretrain.py \
             --dirpath "$dirpath" \
             --type vae \
             --beta "$beta" \
@@ -37,7 +37,7 @@ for beta in "${beta_values[@]}"; do
             --noise_factor "$noise_factor" \
             > "$log_file" 2>&1 &
     else 
-        nohup python3 run_pretrain.py \
+        nohup python3 run_scripts/run_pretrain.py \
             --dirpath "$dirpath" \
             --type vanilla \
             --beta "$beta" \
@@ -56,21 +56,3 @@ for beta in "${beta_values[@]}"; do
 done
 
 # End of file
-
-# Wait for all background jobs to finish
-
-# d=64
-# ed=32
-# enc_depth=4
-# dec_depth=2
-# mask=0.15
-
-# d=128
-# ed=64
-# enc_depth=8
-# dec_depth=4
-
-# d=512
-# ed=256
-# enc_depth=6
-# dec_depth=4

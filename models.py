@@ -14,76 +14,9 @@ from timm.models.vision_transformer import Attention, Block
 from timm.layers import Mlp, DropPath, LayerScale
 
 # Local imports
-from pos_embed import get_2d_sincos_pos_embed
+from pos_embed import get_2d_sincos_pos_embed, get_2d_sincos_pos_embed_ts
 import video_vit
 
-def lambda_init(layer_idx):
-    return 0.8 - 0.6 * torch.exp(torch.tensor(-0.3 * (layer_idx - 1)))
-
-def DiffAttention(Q, K, V, lamb, scaling):
-    Q1, Q2 = torch.chunk(Q, 2, dim=-1)
-    K1, K2 = torch.chunk(K, 2, dim=-1)
-    A1 = torch.matmul(Q1, K1.transpose(-1, -2)) * scaling
-    A2 = torch.matmul(Q2, K2.transpose(-1, -2)) * scaling
-    attention = torch.softmax(A1, dim=-1) - lamb * torch.softmax(A2, dim=-1)
-    output = torch.matmul(attention, V)
-    return output
-
-class MultiHeadDiffAttention(nn.Module):
-    def __init__(self, dim, num_heads, layer_idx):
-        super().__init__()
-        self.num_heads = num_heads
-        self.dim = dim
-        assert dim % num_heads == 0, "dim must be divisible by num_heads"
-        self.head_dim = dim // num_heads
-
-        self.q_proj = nn.Linear(dim, dim * 2, bias=False)
-        self.k_proj = nn.Linear(dim, dim * 2, bias=False)
-        self.v_proj = nn.Linear(dim, dim, bias=False)
-        self.out_proj = nn.Linear(dim, dim, bias=False)
-
-        self.scaling = self.head_dim**-0.5
-
-        self.lambda_init = lambda_init(layer_idx)
-
-        self.lambda_q1 = nn.Parameter(
-            torch.zeros(self.head_dim, dtype=torch.float32).normal_(mean=0, std=0.1)
-        )
-        self.lambda_k1 = nn.Parameter(
-            torch.zeros(self.head_dim, dtype=torch.float32).normal_(mean=0, std=0.1)
-        )
-        self.lambda_q2 = nn.Parameter(
-            torch.zeros(self.head_dim, dtype=torch.float32).normal_(mean=0, std=0.1)
-        )
-        self.lambda_k2 = nn.Parameter(
-            torch.zeros(self.head_dim, dtype=torch.float32).normal_(mean=0, std=0.1)
-        )
-
-        self.norm = nn.LayerNorm(dim)
-
-    def forward(self, x):
-        batch_size, seq_len, _ = x.shape
-
-        Q = self.q_proj(x).view(batch_size, seq_len, self.num_heads, 2 * self.head_dim)
-        K = self.k_proj(x).view(batch_size, seq_len, self.num_heads, 2 * self.head_dim)
-        V = self.v_proj(x).view(batch_size, seq_len, self.num_heads, self.head_dim)
-
-        Q = Q.transpose(1, 2)
-        K = K.transpose(1, 2)
-        V = V.transpose(1, 2)
-
-        lambda_1 = torch.exp(torch.sum(self.lambda_q1 * self.lambda_k1, dim=-1))
-        lambda_2 = torch.exp(torch.sum(self.lambda_q2 * self.lambda_k2, dim=-1))
-        lamb = lambda_1 - lambda_2 + self.lambda_init
-
-        attn_output = DiffAttention(Q, K, V, lamb, self.scaling)
-
-        attn_output = attn_output.transpose(1, 2).contiguous().view(batch_size, seq_len, self.dim)
-
-        output = self.out_proj(attn_output)
-        output = self.norm(output)
-        
-        return output
     
 class PositionalEncoding(nn.Module):
     def __init__(self, d_model, max_len=5000):
@@ -165,64 +98,11 @@ class TiMAEEmbedding(nn.Module):
         """        
         return self.conv(x.permute(0, 2, 1)).permute(0, 2, 1)
 
-
-class Block_TS(nn.Module):
-    def __init__(
-            self,
-            dim: int,
-            num_heads: int,
-            mlp_ratio: float = 4.,
-            qkv_bias: bool = False,
-            qk_norm: bool = False,
-            proj_bias: bool = True,
-            proj_drop: float = 0.,
-            attn_drop: float = 0.,
-            init_values: Optional[float] = None,
-            drop_path: float = 0.,
-            act_layer: Type[nn.Module] = nn.GELU,
-            norm_layer: Type[nn.Module] = nn.LayerNorm,
-            mlp_layer: Type[nn.Module] = Mlp,
-            diff_attention: bool = False,
-            layer_idx: int = 0,
-    ) -> None:
-        super().__init__()
-        self.norm1 = norm_layer(dim)
-
-        self.attn = Attention(
-            dim,
-            num_heads=num_heads,
-            qkv_bias=qkv_bias,
-            qk_norm=qk_norm,
-            #proj_bias=proj_bias,
-            attn_drop=attn_drop,
-            proj_drop=proj_drop,
-            norm_layer=norm_layer,
-        ) if not diff_attention else MultiHeadDiffAttention(dim, num_heads, layer_idx)
-
-        self.ls1 = LayerScale(dim, init_values=init_values) if init_values else nn.Identity()
-        self.drop_path1 = DropPath(drop_path) if drop_path > 0. else nn.Identity()
-
-        self.norm2 = norm_layer(dim)
-        self.mlp = mlp_layer(
-            in_features=dim,
-            hidden_features=int(dim * mlp_ratio),
-            act_layer=act_layer,
-            bias=proj_bias,
-            drop=proj_drop,
-        )
-        self.ls2 = LayerScale(dim, init_values=init_values) if init_values else nn.Identity()
-        self.drop_path2 = DropPath(drop_path) if drop_path > 0. else nn.Identity()
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = x + self.drop_path1(self.ls1(self.attn(self.norm1(x))))
-        x = x + self.drop_path2(self.ls2(self.mlp(self.norm2(x))))
-        return x
-
 class TSMVAE(nn.Module):
     def __init__(self, seq_len: int, in_chans: int, embed_dim: int, depth: int, num_heads: int, 
                  decoder_embed_dim: int, decoder_depth: int, decoder_num_heads: int, mlp_ratio: float = 4.0, 
                  norm_layer=partial(nn.LayerNorm, eps=1e-6), z_type = 'vanilla',  cls_embed = True, dropout = 0.0, 
-                 mask_ratio = 0.15, lambda_=0.00025, trainable_pos_emb = False, noise_factor = 0.5, tokenize = 'linear'):
+                 mask_ratio = 0.15, lambda_=0.00025, trainable_pos_emb = True, noise_factor = 0.5, tokenize = 'linear'):
         super().__init__()
         # --------------------------------------------------------------------------
         # Encoder specifics
@@ -241,8 +121,6 @@ class TSMVAE(nn.Module):
         self.decoder_embed_dim = decoder_embed_dim
         self.noise_factor = noise_factor
         
-        # self.scaler_layer = DAIN_Layer(scale_mode, input_dim=in_chans)
-        self.scaler_layer = None
         # self.src_mask = None if not diagonal_attention else torch.ones(
         #     (int(seq_len*(1 - mask_ratio) + int(cls_embed)), 
         #      int(seq_len*(1-mask_ratio)+ int(cls_embed))), dtype=torch.bool).triu(diagonal=1)
@@ -254,7 +132,7 @@ class TSMVAE(nn.Module):
         # self.pos_embed = PositionalEncoding(embed_dim, max_len=seq_len)
 
         self.blocks = nn.ModuleList([
-            Block_TS(embed_dim, num_heads, mlp_ratio, qkv_bias=True, norm_layer=norm_layer, drop_path=dropout)
+            Block(embed_dim, num_heads, mlp_ratio, qkv_bias=True, norm_layer=norm_layer, drop_path=0.0)
             for i in range(depth)])
         
         self.norm = norm_layer(embed_dim)
@@ -275,7 +153,7 @@ class TSMVAE(nn.Module):
         # self.decoder_pos_embed = PositionalEncoding(decoder_embed_dim, max_len=seq_len)
 
         self.decoder_blocks = nn.ModuleList([
-            Block(decoder_embed_dim, decoder_num_heads, mlp_ratio, qkv_bias=True, norm_layer=norm_layer, drop_path=dropout)
+            Block(decoder_embed_dim, decoder_num_heads, mlp_ratio, qkv_bias=True, norm_layer=norm_layer, drop_path=0.0)
             for i in range(decoder_depth)])
 
         self.decoder_norm = norm_layer(decoder_embed_dim)
@@ -417,11 +295,6 @@ class TSMVAE(nn.Module):
             x_ = x + self.noise_factor * torch.randn_like(x, dtype=x.dtype)
         else:
             x_ = x
-
-        if self.scaler_layer != None:
-            x_ = self.scaler_layer(x_.mT).mT
-        else:
-            x_ = x_
             
         latent, mask, ids_restore = self.forward_encoder(x_, mask_ratio)
         x_pred = self.forward_decoder(latent, ids_restore)  # [N, L, p*p*3]
@@ -431,8 +304,6 @@ class TSMVAE(nn.Module):
             space_loss = torch.mean(-0.5 * torch.sum(1 + self.decoder_embed[1].latent_logvar \
                                                      - self.decoder_embed[1].latent_mean ** 2 \
                                                         - self.decoder_embed[1].latent_logvar.exp(), dim = -1), dim = -1).mean(0)
-        elif self.z_type == 'vq-vae':
-            space_loss = self.decoder_embed[1].vq_loss
         else:
             space_loss = 0
 
