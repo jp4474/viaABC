@@ -1,6 +1,6 @@
 #!/bin/bash
-beta_values=(0.01)
-mask=0.15
+beta_values=(0)
+mask=0.5
 d=128
 ed=64
 enc_depth=6
@@ -23,7 +23,7 @@ for beta in "${beta_values[@]}"; do
 
     if (( $(bc -l <<< "$beta != 0") )); then
         # Run the command in the background with nohup
-        nohup python3 run_pretrain_spatial.py \
+        nohup python3 run_scripts/run_pretrain_spatial.py \
             --dirpath "$dirpath" \
             --type vae \
             --beta "$beta" \
@@ -38,7 +38,7 @@ for beta in "${beta_values[@]}"; do
             --t_patch_size "$t_patch_size" \
             > "$log_file" 2>&1 &
     else 
-        nohup python3 run_pretrain_spatial.py \
+        nohup python3 run_scripts/run_pretrain_spatial.py \
             --dirpath "$dirpath" \
             --type vanilla \
             --beta "$beta" \
@@ -58,21 +58,3 @@ for beta in "${beta_values[@]}"; do
 done
 
 # End of file
-
-# Wait for all background jobs to finish
-
-# d=64
-# ed=32
-# enc_depth=4
-# dec_depth=2
-# mask=0.15
-
-# d=128
-# ed=64
-# enc_depth=8
-# dec_depth=4
-
-# d=512
-# ed=256
-# enc_depth=6
-# dec_depth=4

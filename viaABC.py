@@ -21,6 +21,7 @@ from metrics import *
 import numpy as np
 from scipy.integrate import solve_ivp
 from scipy.stats import qmc, multivariate_normal
+from scipy.special import logsumexp
 
 # Machine learning and visualization
 import torch
@@ -187,7 +188,7 @@ class viaABC:
         """
         raise NotImplementedError
 
-    def calculate_prior_prob(self, theta: np.ndarray) -> float:
+    def calculate_prior_log_prob(self, theta: np.ndarray) -> float:
         """
         Calculate the prior probability of the given parameters.
 
@@ -306,11 +307,10 @@ class viaABC:
 
         while accepted < (k * self.num_particles):
             perturbed_params = self.sample_priors()
-            prior_probability = 1.0
             new_weight = 1.0
 
-            prior_probability = self.calculate_prior_prob(perturbed_params)
-            if prior_probability <= 0:
+            prior_log_pdf = self.calculate_prior_log_prob(perturbed_params)
+            if np.isneginf(prior_log_pdf):
                 continue
 
             y, status = self.simulate(perturbed_params)
@@ -527,16 +527,14 @@ class viaABC:
         accepted = 0
         running_num_simulations = 0
 
-        with tqdm(total=self.num_particles, miniters=self.num_particles // 10) as pbar:
+        with tqdm(total=self.num_particles, miniters=self.num_particles // 10, maxinterval=float('inf')) as pbar:
             while accepted < self.num_particles:
 
-                theta, new_weight = self._propose_particle(
+                theta = self._propose_particle_fast(
                     prev_particles=prev_particles,
                     prev_weights=prev_weights,
                     prev_cov=prev_cov
                 )
-                if theta is None:
-                    continue
                     
                 y, status = self.simulate(theta)
                 running_num_simulations += 1
@@ -548,6 +546,11 @@ class viaABC:
                 if dist >= epsilon:
                     continue
                     
+                # Only calculate weight for accepted particles
+                new_weight = self._calculate_particle_weight(
+                    theta, prev_particles, prev_weights, prev_cov
+                )
+                
                 accepted += 1
                 pbar.update(1)
                 particles.append(theta)
@@ -556,42 +559,87 @@ class viaABC:
         
         return np.array(particles), np.array(weights), np.array(distances), running_num_simulations
 
-    def _propose_particle(
+    def _propose_particle_fast(
         self,
         prev_particles: np.ndarray,
         prev_weights: np.ndarray,
-        prev_cov: np.ndarray
-    ) -> tuple:
-        """Propose a new particle and calculate its weight.
+        prev_cov: np.ndarray,
+        max_attempts: int = 1000
+    ) -> np.ndarray:
+        """Propose a new particle without calculating weight.
         
         Args:
             prev_particles: Particles from previous generation
             prev_weights: Weights from previous generation
             prev_cov: Covariance matrix from previous generation
+            max_attempts: Maximum number of attempts before giving up
             
         Returns:
-            Tuple of (particle_params, weight) or (None, None) if invalid
-        """
-        idx = np.random.choice(self.num_particles, p=prev_weights)
-        theta = prev_particles[idx]
-        theta = np.atleast_2d(theta)
-        
-        # Perturb the parameters
-        perturbed_params = self.perturb_parameters(theta[0], prev_cov)
-        prior_probability = self.calculate_prior_prob(perturbed_params)
-        
-        if prior_probability <= 0:
-            return None, None
+            Particle parameters
             
-        phi = np.array([
-            np.sum(multivariate_normal.logpdf(perturbed_params, mean=x, cov=prev_cov)) 
-            for x in prev_particles
-        ])
-        log_weights = np.log(prev_weights) + phi
-        lse = np.log(np.sum(np.exp(log_weights)))
-        new_weight = np.exp(prior_probability - lse)
+        Raises:
+            RuntimeError: If unable to generate valid particle after max_attempts
+        """
+        # Ensure weights are normalized
+        if not np.isclose(np.sum(prev_weights), 1.0):
+            prev_weights = prev_weights / np.sum(prev_weights)
         
-        return (perturbed_params, new_weight) if new_weight > 0 else (None, None)
+        for attempt in range(max_attempts):
+            # Sample particle index based on weights
+            idx = np.random.choice(len(prev_particles), p=prev_weights)
+            theta = prev_particles[idx]
+            
+            # Ensure theta is 1D for consistency
+            if theta.ndim > 1:
+                theta = theta.flatten()
+
+            # Perturb the parameters
+            try:
+                perturbed_params = self.perturb_parameters(theta, prev_cov)
+                prior_logpdf = self.calculate_prior_log_prob(perturbed_params)
+
+                # Check if the proposal is valid (finite prior probability)
+                if np.isfinite(prior_logpdf):
+                    return perturbed_params
+                    
+            except Exception as e:
+                # Log the exception if you have logging set up
+                # logger.warning(f"Error in particle perturbation attempt {attempt + 1}: {e}")
+                continue
+        
+        # If we get here, we couldn't generate a valid particle
+        raise RuntimeError(
+            f"Unable to generate valid particle after {max_attempts} attempts. "
+            "Consider adjusting prior bounds or covariance matrix."
+        )
+
+    def _calculate_particle_weight(
+        self,
+        theta: np.ndarray,
+        prev_particles: np.ndarray,
+        prev_weights: np.ndarray,
+        prev_cov: np.ndarray
+    ) -> float:
+        """Calculate weight for an accepted particle.
+        
+        Args:
+            theta: Particle parameters
+            prev_particles: Particles from previous generation
+            prev_weights: Weights from previous generation
+            prev_cov: Covariance matrix from previous generation
+            
+        Returns:
+            Particle weight
+        """
+        prior_logpdf = self.calculate_prior_log_prob(theta)
+
+        phi = np.array([multivariate_normal.logpdf(theta, mean=x, cov=prev_cov) for x in prev_particles])
+
+        log_weights = np.log(prev_weights) + phi
+        lse = logsumexp(log_weights)
+        new_weight = np.exp(prior_logpdf - lse)
+
+        return new_weight
 
     def _process_generation_results(
         self,
@@ -757,44 +805,76 @@ class viaABC:
         scaled_samples = qmc.scale(samples, self.lower_bounds, self.upper_bounds)
         return scaled_samples
 
-    def __batch_simulations(self, num_simulations: int, save_dir: str = "data", prefix: str = "train", num_threads: int = 2):
-        """ This method should never be called directly; it is only used by the generate_training_data method. """
-        parameters = self.__sample_priors(n=num_simulations)
-        valid_params = []
-        valid_simulations = []
-
-        os.makedirs("data", exist_ok=True)  # Create directory if it doesn't exist
-
-        def run_simulation(i, param):
+    def __batch_simulations(
+        self, 
+        num_simulations: int, 
+        save_dir: str = "data", 
+        prefix: str = "train", 
+        num_threads: int = 2
+    ) -> None:
+        """
+        Run batch simulations in parallel and save valid results.
+        
+        This method should never be called directly; it is only used by 
+        the generate_training_data method.
+        
+        Args:
+            num_simulations: Number of simulations to run
+            save_dir: Directory to save results
+            prefix: Prefix for output filename
+            num_threads: Number of parallel threads
+        """
+        # Create output directory
+        os.makedirs(save_dir, exist_ok=True)
+        
+        # Sample parameters for all simulations
+        parameters = self._sample_priors(n=num_simulations)
+        
+        def run_simulation(i: int, param) -> tuple | None:
+            """Run a single simulation and return results or None on failure."""
             try:
                 simulation, status = self.simulate(param)
                 if status == 0:
-                    return i, simulation, param
+                    return simulation, param
                 else:
                     self.logger.error(f"Simulation {i} failed with status: {status}")
             except Exception as e:
                 self.logger.error(f"Simulation {i} failed with error: {e}")
             return None
-
+        
+        # Run simulations in parallel
+        valid_results = []
         with ThreadPoolExecutor(max_workers=num_threads) as executor:
-            futures = {executor.submit(run_simulation, i, param): i for i, param in enumerate(parameters)}
-
-            for future in as_completed(futures):
+            # Submit all jobs
+            future_to_index = {
+                executor.submit(run_simulation, i, param): i 
+                for i, param in enumerate(parameters)
+            }
+            
+            # Collect results as they complete
+            for future in as_completed(future_to_index):
                 try:
                     result = future.result()
                     if result is not None:
-                        _, simulation, param = result
-                        valid_simulations.append(simulation)
-                        valid_params.append(param)
+                        valid_results.append(result)
                 except Exception as e:
-                    self.logger.error(f"Error processing future: {e}")
-
-        if valid_simulations:
+                    idx = future_to_index[future]
+                    self.logger.error(f"Error processing simulation {idx}: {e}")
+        
+        # Save results if any valid simulations exist
+        if valid_results:
+            # Unpack results into separate arrays
+            valid_simulations, valid_params = zip(*valid_results)
             valid_simulations = np.array(valid_simulations)
             valid_params = np.array(valid_params)
-
-            self.logger.info(f"Saving {len(valid_simulations)} simulations to {save_dir}.")
-            np.savez(f"{os.path.join(os.getcwd(), save_dir)}/{prefix}_data.npz", params=valid_params, simulations=valid_simulations)
+            
+            # Save to file
+            output_path = os.path.join(save_dir, f"{prefix}_data.npz")
+            np.savez(output_path, params=valid_params, simulations=valid_simulations)
+            
+            self.logger.info(
+                f"Successfully saved {len(valid_simulations)} simulations to {output_path}"
+            )
         else:
             self.logger.warning("No valid simulations to save.")
 

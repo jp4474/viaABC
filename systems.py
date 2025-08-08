@@ -1,11 +1,12 @@
 from viaABC import viaABC
-from scipy.stats import uniform, lognorm
+from scipy.stats import uniform, truncnorm
 import numpy as np
 from typing import Union, List
 from systems import *
 from metrics import *
 from scipy.ndimage import convolve
 from scipy.integrate import solve_ivp
+from functools import lru_cache
 
 class LotkaVolterra(viaABC):
     def __init__(self,
@@ -56,7 +57,7 @@ class SpatialSIR(viaABC):
         sigma = np.array([4.5, 4.5]),
         model = None, 
         observational_data = None,
-        observational_data_path = '/home/jp4474/latent-abc-smc/data/SPATIAL/data.npy',
+        observational_data_path = '/home/jp4474/viaABC/data/SPATIAL/data.npy',
         state0 = None,
         t0 = 0,
         tmax = 16,
@@ -323,85 +324,137 @@ class SpatialSIR3D(viaABC):
         return x
     
 
-# alpha ~ normal(0.01, 0.5);
-#   beta ~ normal(0.01, 0.5);
-#   mu ~ normal(0.01, 0.5);
-#   delta ~ normal(0.8, 0.3);
-#   lambda_WT ~ normal(0.1, 0.3);
-#   lambda_N2KO ~ normal(0.8, 0.3);
-#   M0N2 ~ normal(8, 1.5);
+class CARModel(viaABC):
+    def __init__(self,
+        num_parameters=6, 
+        mu=np.array([0.01, 0.01, 0.01, 0.8, 0.1, 0.01]),
+        sigma=np.array([0.5, 0.5, 0.5, 0.3, 0.3, 0.5]),
+        model=None,
+        t0=4,
+        tmax=30, 
+        state0=np.array([np.exp(11.5), np.exp(10.8)]),
+        time_space=np.array([4, 7, 9, 14, 17, 22, 26, 30]),
+        pooling_method="no_cls",
+        metric="pairwise_cosine"):
+            
+        # Load data once and store
+        self.observational_data = np.load('/home/jp4474/viaABC/data/BCELL/noisy_data.npy')
+        
+        # Call parent constructor
+        super().__init__(num_parameters, mu, sigma, self.observational_data, model, 
+                        state0, t0, tmax, time_space, pooling_method, metric)
 
-# class CARModel(viaABC):
-#     def __init__(self,
-#         num_parameters = 7, 
-#         mu = np.array([0.01, 0.01, 0.01, 0.8, 0.1, 0.8, 8.]),
-#         sigma = np.array([0.5, 0.5, 0.5, 0.3, 0.3, 0.3, 1.5]),
-#         model = None,
-#         t0 = 4,
-#         tmax = 15, 
-#         time_space = np.array([1.1, 2.4, 3.9, 5.6, 7.5, 9.6, 11.9, 14.4]),
-#         pooling_method = "no_cls",
-#         metric = "pairwise_cosine"):
-#         super().__init__(num_parameters, mu, sigma, observational_data, model, None, t0, tmax, time_space, pooling_method, metric)
-#         self.lower_bounds = mu 
-#         self.upper_bounds = sigma
+        # Pre-compute bounds arrays
+        self.lower_bounds = np.array([0, 0, 0, 0, 0, 0])
+        self.upper_bounds = np.array([1, 0.5, 1, 1, 1, 1])
 
-#     def CAR_positive_FOB(self, t):
-#         F0 = np.exp(11.722278)
-#         B0 = np.exp(4.475064)
-#         n = 4.781548
-#         X = 6.943644
-#         q = 5
-#         value = F0 + (B0 * t**n) * (1 - (t**q / (X**q + t**q)))
-#         return value
+        assert np.all(self.lower_bounds < self.upper_bounds), "Lower bounds must be less than upper bounds"
+        assert np.all(self.mu >= self.lower_bounds) and np.all(self.mu <= self.upper_bounds), "Mu must be within bounds"
 
-#     def CAR_negative_MZB(self, t):
-#         M0 = np.exp(14.06)
-#         nu = 0.0033
-#         b0 = 20.58
-#         value = M0 * (1 + np.exp(-nu * (t - b0)**2))
-#         return value
+        # Pre-compute constants for efficiency
+        self._setup_constants()
+        
+        # Pre-compute truncnorm parameters for prior sampling
+        self._precompute_truncnorm_params()
 
-#     def Total_FoB(self, t):
-#         M0 = np.exp(16.7)
-#         nu = 0.004
-#         b0 = 20
-#         value = M0 * (1 + np.exp(-nu * (t - b0)**2))
-#         return value
+    def _setup_constants(self):
+        """Pre-compute constants used in calculations"""
+        # Constants for _CAR_positive_FOB
+        self.F0 = np.exp(11.722278)
+        self.B0 = np.exp(4.475064)
+        self.n = 4.781548
+        self.X = 6.943644
+        self.q = 5
+        self.X_q = self.X**self.q  # Pre-compute X^q
+        
+        # Constants for _CAR_negative_MZB
+        self.M0_neg = np.exp(14.06)
+        self.nu_neg = 0.0033
+        self.b0_neg = 20.58
+        
+        # Constants for _Total_FoB
+        self.M0_total = np.exp(16.7)
+        self.nu_total = 0.004
+        self.b0_total = 20
+        
+        # ODE constants
+        self.t0_ode = 4.0
 
-#     def ode_system(self, t, state, parameters):
-#         """
-#         Parameters:
-#         - t: time (scalar)
-#         - state: [y1, y2, y3] (list or array of size 3)
-#         - parameters: [alpha, beta, mu, delta, lambda_WT, lambda_N2KO] (list or array)
-#         """
-#         y1, y2, y3 = state
-#         alpha, beta, mu, delta, lambda_WT, lambda_N2KO = parameters
+    def _precompute_truncnorm_params(self):
+        """Pre-compute truncated normal parameters for efficiency"""
+        self.truncnorm_a = (self.lower_bounds - self.mu) / self.sigma
+        self.truncnorm_b = (self.upper_bounds - self.mu) / self.sigma
 
-#         d_y1 = alpha * self.Total_FoB(t) - delta * y1
-#         d_y2 = mu * self.Total_FoB(t) + beta * self.CAR_negative_MZB(t) - lambda_WT * y2
-#         d_y3 = beta * self.CAR_negative_MZB(t) - lambda_N2KO * y3
+    @lru_cache(maxsize=1000)
+    def _CAR_positive_FOB(self, t):
+        """Cached version of CAR positive FOB calculation"""
+        t_q = t**self.q
+        return self.F0 + (self.B0 * t**self.n) * (1 - t_q / (self.X_q + t_q))
 
-#         return [d_y1, d_y2, d_y3]
+    @lru_cache(maxsize=1000)
+    def _CAR_negative_MZB(self, t):
+        """Cached version of CAR negative MZB calculation"""
+        return self.M0_neg * (1 + np.exp(-self.nu_neg * (t - self.b0_neg)**2))
+
+    @lru_cache(maxsize=1000)
+    def _Total_FoB(self, t):
+        """Cached version of Total FoB calculation"""
+        return self.M0_total * (1 + np.exp(-self.nu_total * (t - self.b0_total)**2))
+
+    def ode_system(self, t, state, parameters):
+        """
+        Optimized ODE system derived from Stan code.
+
+        Parameters:
+        - t: time (scalar)
+        - state: [y1, y2]
+        - parameters: [alpha, beta, mu, delta, lambda_WT, nu]
+        """
+        y1, y2 = state
+        alpha, beta, mu, delta, lambda_WT, nu = parameters
+
+        # Time-dependent modulation centered at t0
+        mod = 1 + np.exp(nu * (t - self.t0_ode)**2)
+
+        # Time-modulated parameters (vectorized division)
+        alpha_tau = alpha / mod
+        beta_tau = beta / mod
+        mu_tau = mu / mod
+
+        # External inputs (using cached functions)
+        total_fob = self._Total_FoB(t)
+        car_neg_mzb = self._CAR_negative_MZB(t)
+
+        # ODEs
+        d_y1 = alpha_tau * total_fob - delta * y1  # CAR positive FOB growth
+        d_y2 = mu_tau * total_fob + beta_tau * car_neg_mzb - lambda_WT * y2  # CAR positive MZB growth
+
+        return np.array([d_y1, d_y2])
     
-#     def simulate(self, parameters: np.ndarray):
-#         _, _, _, _, _, _, M0N2 = parameters
-#         state0 = np.array([np.exp(11.5), np.exp(10.8), np.exp(M0N2)])  # Initial state
-#         solution = solve_ivp(self.ode_system, [self.t0, self.tmax], y0=state0, t_eval=self.time_space, args=(parameters[:6],))
-                        
-#         return solution.y.T, solution.status
-    
-#     def sample_priors(self):
-#         priors = np.random.lognormal(mean=self.mu, sigma=self.sigma, size=(len(self.mu)))
-#         return priors
-    
-#     def calculate_prior_prob(self, parameters):
-#         # Calculate the prior probability of the parameters
-#         probs = lognorm.logpdf(parameters, s=self.sigma, scale=np.exp(self.mu))
-#         return np.exp(np.sum(probs))
-    
-#     def __sample_priors(self, n: int = 1):
-#         return np.random.lognormal(mean=self.mu, sigma=self.sigma, size=(n, len(self.mu)))
+    def sample_priors(self):
+        """Optimized prior sampling using pre-computed parameters"""
+        # Vectorized sampling using pre-computed truncnorm parameters
+        priors = truncnorm.rvs(
+            a=self.truncnorm_a, 
+            b=self.truncnorm_b, 
+            loc=self.mu, 
+            scale=self.sigma, 
+            size=self.num_parameters
+        )
+        return priors
 
+    def calculate_prior_log_prob(self, parameters):
+        """Optimized prior probability calculation"""
+        # Vectorized log probability calculation
+        log_probs = truncnorm.logpdf(
+            parameters, 
+            a=self.truncnorm_a, 
+            b=self.truncnorm_b, 
+            loc=self.mu, 
+            scale=self.sigma
+        )
+        return np.sum(log_probs)
     
+    def preprocess(self, x):
+        s = np.mean(np.abs(x), 0)
+        return x/s
