@@ -74,7 +74,7 @@ class viaABC:
         """
         self.logger = logging.getLogger(__name__)
         logging.basicConfig(level=logging.INFO)
-        self.logger.info("Initializing ViaABC class")
+        self.logger.info("Initializing viaABC class")
 
         self.raw_observational_data = observational_data
         self.state0 = state0
@@ -169,11 +169,15 @@ class viaABC:
     def ode_system(self, t: int, state: np.ndarray, parameters: np.ndarray):
         raise NotImplementedError
 
-    def simulate(self, parameters: np.ndarray):
+    def simulate(self, parameters: np.ndarray, time_space: Union[np.ndarray, None] = None) -> tuple:
         if self.state0 is not None:
-            solution = solve_ivp(self.ode_system, [self.t0, self.tmax], y0=self.state0, t_eval=self.time_space, args=(parameters,))
-                        
+            if time_space is not None:
+                solution = solve_ivp(self.ode_system, [self.t0, self.tmax], y0=self.state0, t_eval=time_space, args=(parameters,))
+            else:
+                solution = solve_ivp(self.ode_system, [self.t0, self.tmax], y0=self.state0, t_eval=self.time_space, args=(parameters,))
             return solution.y.T, solution.status
+        else:
+            raise ValueError("Initial state (state0) must be set before simulation.")
 
     def sample_priors(self) -> np.ndarray:
         """
@@ -292,44 +296,52 @@ class viaABC:
 
     @torch.inference_mode()
     def _run_init(self, num_particles: int, k: int = 5):
-        self.densratio = DensityRatioEstimation(n=100, epsilon=0.01, max_iter=200, abs_tol=0.01, fold=5, optimize=False)
+        self.densratio = DensityRatioEstimation(n=100, epsilon=0.001, max_iter=200, abs_tol=0.01, fold=5, optimize=False)
 
         if self.model is None:
             raise ValueError("Model must be provided to encode the data and run the algorithm.")
-    
+
         total_num_simulations = 0
         accepted = 0
+        target_particles = k * num_particles
 
         self._encode_observational_data()
-        particles = np.ones((k * num_particles, self.num_parameters))
-        weights = np.ones((k * self.num_particles))
-        dists = np.zeros((k * num_particles))
+        
+        # Pre-allocate arrays with exact size needed
+        particles = np.empty((target_particles, self.num_parameters))
+        weights = np.ones(target_particles, dtype=np.float32)  # Use float32 if precision allows
+        dists = np.empty(target_particles, dtype=np.float32)
+        
+        # Get device once to avoid repeated attribute access
+        device = self.model.device
 
-        while accepted < (k * self.num_particles):
+        # TODO: this can be batched
+        while accepted < target_particles:
             perturbed_params = self.sample_priors()
-            new_weight = 1.0
 
+            # Early exit for invalid priors
             prior_log_pdf = self.calculate_prior_log_prob(perturbed_params)
             if np.isneginf(prior_log_pdf):
                 continue
 
             y, status = self.simulate(perturbed_params)
-
             total_num_simulations += 1
 
+            # Early exit for failed simulations
             if status != 0:
                 continue
 
+            # Optimized tensor operations
             y_scaled = self.preprocess(y)
-            y_tensor = torch.tensor(y_scaled, dtype=torch.float32).to(self.model.device)
+            y_tensor = torch.tensor(y_scaled, dtype=torch.float32, device=device)  # Direct device placement
             y_latent_np = self.get_latent(y_tensor)
             dist = self.calculate_distance(y_latent_np)
+            
+            # Store results
             particles[accepted] = perturbed_params
-            weights[accepted] = new_weight
             dists[accepted] = dist
             accepted += 1
 
-        # Sort by distance
         sorted_indices = np.argsort(dists)
         particles = particles[sorted_indices]
         weights = weights[sorted_indices]
@@ -339,25 +351,27 @@ class viaABC:
         particles = particles[:num_particles]
         weights = weights[:num_particles]
 
-        # Normalize weights
-        weights /= np.sum(weights)
-        epsilon = dists[:num_particles][-1] # initial epsilon
+        # Weights are already normalized (all ones, sum = num_particles)
+        weights = weights / np.sum(weights)
+        epsilon = dists[-1]  # Last element after sorting
 
-        sample_cov = np.atleast_2d(np.cov(particles.reshape(self.num_particles, -1), rowvar=False))
+        # Optimized covariance calculation
+        sample_cov = np.atleast_2d(np.cov(particles.reshape(num_particles, -1), rowvar=False))
         sigma_max = np.min(np.sqrt(np.diag(sample_cov)))
         
+        # More efficient diagonal operations
         cov = 2 * np.diag(sample_cov)
 
         # Store first generation
         self.generations.append({
-            't' : 0,
-            'particles': np.array(particles),
-            'weights': np.array(weights),
+            't': 0,
+            'particles': particles.copy(),  # Only copy if needed elsewhere
+            'weights': weights.copy(),
             'epsilon': epsilon,
-            'cov' : sample_cov,
+            'cov': sample_cov,
             'sigma_max': sigma_max,
             'simulations': total_num_simulations,
-            'meta' :{
+            'meta': {
                 'cov': cov
             }
         })
@@ -447,29 +461,31 @@ class viaABC:
             raise ValueError("Model must be provided to encode the data and run the algorithm.")
         
         self.generations = []
-
         self.num_particles = num_particles
         self.max_generations = max_generations - 1
         total_num_simulations = 0
         
-        self.logger.info(f"Starting ABC PMC run with Q Threshold: {q_threshold}")
-        start_time = time.time()
+        # Cache logger and reduce string formatting overhead
+        logger = self.logger
+        logger.info(f"Starting viaABC run with Q Threshold: {q_threshold}")
+        start_time = time.perf_counter()  # More precise timing
 
         # Initial generation
-        self._initialize_first_generation(k = k)
+        self._initialize_first_generation(k=k)
         self._compute_statistics(0)
         
         # Run subsequent generations
         for generation_num in range(1, max_generations + 1):
-            generation_start_time = time.time()
-            self.logger.info(f"Generation {generation_num} started")
+            generation_start_time = time.perf_counter()
+            logger.info(f"Generation {generation_num} started")
+            prev_gen = self.generations[-1]
             
-            # Unpack previous generation values
-            prev_particles = self.generations[generation_num - 1]['particles']
-            prev_weights = self.generations[generation_num - 1]['weights']
-            prev_sigma_max = self.generations[generation_num - 1]['sigma_max']
-            prev_epsilon = self.generations[generation_num - 1]['epsilon']
-            prev_meta_cov = self.generations[generation_num - 1]['meta']['cov']
+            # Direct unpacking from cached reference (avoid repeated dict lookups)
+            prev_particles = prev_gen['particles']
+            prev_weights = prev_gen['weights'] 
+            prev_sigma_max = prev_gen['sigma_max']
+            prev_epsilon = prev_gen['epsilon']
+            prev_meta_cov = prev_gen['meta']['cov']
             
             # Run generation
             particles, weights, distances, simulations = self._run_generation(
@@ -491,17 +507,20 @@ class viaABC:
                 prev_sigma_max=prev_sigma_max,
                 simulations=simulations,
             )
+            
             self.generations.append(current_gen)
             self._compute_statistics(generation_num)
 
-            geneneration_end_time = time.time()
-            self.logger.info(f"Generation {generation_num} completed in {geneneration_end_time - generation_start_time:.2f} seconds")
+            generation_end_time = time.perf_counter()
+            logger.info(f"Generation {generation_num} completed in {generation_end_time - generation_start_time:.2f} seconds")
             
-            # Check stopping conditions
-            if self._should_stop(generation_num, current_gen['qt'], q_threshold, current_gen['epsilon']):
+            # Early termination check with cached values
+            if self._should_stop(generation_num, current_gen['qt'], q_threshold):
                 break
 
-        self._log_final_results(start_time, total_num_simulations)
+        end_time = time.perf_counter()
+        duration = end_time - start_time
+        self._log_final_results(duration, total_num_simulations)
 
     def _run_generation(
         self,
@@ -580,33 +599,18 @@ class viaABC:
         Raises:
             RuntimeError: If unable to generate valid particle after max_attempts
         """
-        # Ensure weights are normalized
-        if not np.isclose(np.sum(prev_weights), 1.0):
-            prev_weights = prev_weights / np.sum(prev_weights)
-        
         for attempt in range(max_attempts):
             # Sample particle index based on weights
             idx = np.random.choice(len(prev_particles), p=prev_weights)
             theta = prev_particles[idx]
+
+            perturbed_params = self.perturb_parameters(theta, prev_cov)
+            prior_logpdf = self.calculate_prior_log_prob(perturbed_params)
+
+            # Check if the proposal is valid (finite prior probability)
+            if np.isfinite(prior_logpdf):
+                return perturbed_params
             
-            # Ensure theta is 1D for consistency
-            if theta.ndim > 1:
-                theta = theta.flatten()
-
-            # Perturb the parameters
-            try:
-                perturbed_params = self.perturb_parameters(theta, prev_cov)
-                prior_logpdf = self.calculate_prior_log_prob(perturbed_params)
-
-                # Check if the proposal is valid (finite prior probability)
-                if np.isfinite(prior_logpdf):
-                    return perturbed_params
-                    
-            except Exception as e:
-                # Log the exception if you have logging set up
-                # logger.warning(f"Error in particle perturbation attempt {attempt + 1}: {e}")
-                continue
-        
         # If we get here, we couldn't generate a valid particle
         raise RuntimeError(
             f"Unable to generate valid particle after {max_attempts} attempts. "
@@ -726,7 +730,7 @@ class viaABC:
         y_latent_np = self.get_latent(y_tensor) # z_sim
         return self.calculate_distance(y_latent_np)
 
-    def _should_stop(self, generation_num: int, qt: float, q_threshold: float, epsilon: float) -> bool:
+    def _should_stop(self, generation_num: int, qt: float, q_threshold: float) -> bool:
         """Determine if stopping conditions are met.
         
         Args:
@@ -748,17 +752,16 @@ class viaABC:
         
         return False
 
-    def _log_final_results(self, start_time: float, total_simulations: int) -> None:
+    def _log_final_results(self, total_time: float, total_simulations: int) -> None:
         """Log final results of the viaABC run.
 
         Args:
-            start_time: Start time of the run
+            total_time: Total time taken for the run
             total_simulations: Total number of simulations performed
         """
-        duration = time.time() - start_time
         num_generations = len(self.generations)
         self.logger.info(
-            f"viaABC run completed in {duration:.2f} seconds with "
+            f"viaABC run completed in {total_time:.2f} seconds with "
             f"{total_simulations} total simulations over {num_generations} generations."
         )
 
@@ -828,7 +831,7 @@ class viaABC:
         os.makedirs(save_dir, exist_ok=True)
         
         # Sample parameters for all simulations
-        parameters = self._sample_priors(n=num_simulations)
+        parameters = self.__sample_priors(n=num_simulations)
         
         def run_simulation(i: int, param) -> tuple | None:
             """Run a single simulation and return results or None on failure."""

@@ -39,7 +39,7 @@ def main(train_sizes: List[int], seed: int, num_workers: int, num_repeats: int) 
     """
     
     # Initialize and run simulation
-    model = SpatialSIR()
+    model = CARModel()
     model.generate_training_data(train_sizes, seed=seed, num_workers=num_workers)
 
 if __name__ == "__main__":

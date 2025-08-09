@@ -59,6 +59,19 @@ class SpatialSIRDataset(Dataset):
         y = torch.from_numpy(y).to(torch.float32).permute(3, 0, 1, 2)  # Change to (C, T, H, W) format
 
         return y
+
+class CARDataset(NumpyDataset):
+    def __init__(self, data_dir, prefix='train'):
+        super().__init__(data_dir, prefix)
+
+        # Calculate mean and std across all simulations and time steps
+        self.s = np.mean(np.abs(self.simulations), axis=1, keepdims=True)
+        self.y_normalized = (self.simulations) / self.s
+
+    def __getitem__(self, idx):
+        y = self.y_normalized[idx]
+        y = torch.from_numpy(y).to(torch.float32)
+        return y
     
 def create_dataloaders(data_dir: str, batch_size: int) -> Tuple[DataLoader, DataLoader]:
     # Check data directory existence
@@ -67,8 +80,8 @@ def create_dataloaders(data_dir: str, batch_size: int) -> Tuple[DataLoader, Data
 
     #train_dataset = SpatialSIRDataset(data_dir, prefix='train')
     #val_dataset = SpatialSIRDataset(data_dir, prefix='val')
-    train_dataset = LotkaVolterraDataset(data_dir, prefix='train')
-    val_dataset = LotkaVolterraDataset(data_dir, prefix='val')
+    train_dataset = CARDataset(data_dir, prefix='train')
+    val_dataset = CARDataset(data_dir, prefix='val')
 
     # # Ensure data type matches precision setting
     train_dataset.simulations = train_dataset.simulations.astype('float32')

@@ -54,16 +54,14 @@ def bert_score_batch(x, y):
     return scores.mean()
 
 def pairwise_cosine(x, y):
+    assert x.ndim == 3 and y.ndim == 3, "Input arrays must be 3D"
+
     x_norm = x / np.linalg.norm(x, axis=-1, keepdims=True)
     y_norm = y / np.linalg.norm(y, axis=-1, keepdims=True)
 
-    scores = []
-    for a, b in zip(x_norm, y_norm):
-        scores.append(bert_score(a, b)[-1])
-    
-    scores = np.array(scores)
+    cos_sim = np.mean(np.sum(x_norm * y_norm, axis=-1), axis=-1)[0]
 
-    return scores.mean()
+    return cos_sim
 
 def maxSim(x, y):
     """

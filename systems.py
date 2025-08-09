@@ -40,9 +40,9 @@ class LotkaVolterra(viaABC):
         priors = np.random.uniform(self.lower_bounds, self.upper_bounds, self.num_parameters)
         return priors
     
-    def calculate_prior_prob(self, parameters):
+    def calculate_prior_log_prob(self, parameters):
         probabilities = uniform.logpdf(parameters, loc=self.lower_bounds, scale=self.upper_bounds - self.lower_bounds)
-        probabilities = np.exp(np.sum(probabilities))
+        probabilities = np.sum(probabilities)
         return probabilities
     
     def preprocess(self, x):
@@ -339,14 +339,14 @@ class CARModel(viaABC):
             
         # Load data once and store
         self.observational_data = np.load('/home/jp4474/viaABC/data/BCELL/noisy_data.npy')
-        
-        # Call parent constructor
-        super().__init__(num_parameters, mu, sigma, self.observational_data, model, 
-                        state0, t0, tmax, time_space, pooling_method, metric)
 
         # Pre-compute bounds arrays
         self.lower_bounds = np.array([0, 0, 0, 0, 0, 0])
-        self.upper_bounds = np.array([1, 0.5, 1, 1, 1, 1])
+        self.upper_bounds = np.array([1, 1, 1, 1, 1, 1])
+
+        # Call parent constructor
+        super().__init__(num_parameters, self.lower_bounds, self.upper_bounds, self.observational_data, model, 
+                        state0, t0, tmax, time_space, pooling_method, metric)
 
         assert np.all(self.lower_bounds < self.upper_bounds), "Lower bounds must be less than upper bounds"
         assert np.all(self.mu >= self.lower_bounds) and np.all(self.mu <= self.upper_bounds), "Mu must be within bounds"
@@ -434,27 +434,33 @@ class CARModel(viaABC):
     def sample_priors(self):
         """Optimized prior sampling using pre-computed parameters"""
         # Vectorized sampling using pre-computed truncnorm parameters
-        priors = truncnorm.rvs(
-            a=self.truncnorm_a, 
-            b=self.truncnorm_b, 
-            loc=self.mu, 
-            scale=self.sigma, 
-            size=self.num_parameters
-        )
+        # priors = truncnorm.rvs(
+        #     a=self.truncnorm_a, 
+        #     b=self.truncnorm_b, 
+        #     loc=self.mu, 
+        #     scale=self.sigma, 
+        #     size=self.num_parameters
+        # )
+        # return priors
+        priors = np.random.uniform(self.lower_bounds, self.upper_bounds, self.num_parameters)
         return priors
 
     def calculate_prior_log_prob(self, parameters):
         """Optimized prior probability calculation"""
         # Vectorized log probability calculation
-        log_probs = truncnorm.logpdf(
-            parameters, 
-            a=self.truncnorm_a, 
-            b=self.truncnorm_b, 
-            loc=self.mu, 
-            scale=self.sigma
-        )
+        # log_probs = truncnorm.logpdf(
+        #     parameters, 
+        #     a=self.truncnorm_a, 
+        #     b=self.truncnorm_b, 
+        #     loc=self.mu, 
+        #     scale=self.sigma
+        # )
+        # return np.sum(log_probs)
+        log_probs = uniform.logpdf(parameters, loc=self.lower_bounds, scale=self.upper_bounds - self.lower_bounds)
         return np.sum(log_probs)
     
     def preprocess(self, x):
-        s = np.mean(np.abs(x), 0)
-        return x/s
+        # x = np.log1p(x) / 10
+        s = np.mean(np.abs(x), axis=0)
+        x = x/s
+        return x
