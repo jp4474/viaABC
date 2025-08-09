@@ -200,7 +200,7 @@ class SpatialSIR3D(viaABC):
         initial_infected = 5,
         radius = 5):
 
-        observational_data = np.load('/home/jp4474/viaABC/data/SPATIAL/data.npy')
+        observational_data = self.labels2map(np.load('/home/jp4474/viaABC/data/SPATIAL/data.npy'))
 
         super().__init__(num_parameters, mu, sigma, observational_data, model, state0, t0, tmax, time_space, pooling_method, metric)
         self.grid_size = grid_size
@@ -296,6 +296,7 @@ class SpatialSIR3D(viaABC):
         frames_idx = (self.time_space / dt).astype(int) - 1
         output = frames[frames_idx].transpose(3, 0, 1, 2) 
 
+        # TODO: use try and catch
         return output, 0
     
     def sample_priors(self):
@@ -308,6 +309,15 @@ class SpatialSIR3D(viaABC):
         # This must match the prior distribution used in sampling
         log_probabilities = uniform.logpdf(parameters, loc=self.lower_bounds, scale=self.upper_bounds - self.lower_bounds) 
         return np.sum(log_probabilities)
+
+    def labels2map(self, y):
+        susceptible = (y == 0)
+        infected = (y == 1)
+        resistant = (y == 2)
+
+        y_onehot = np.stack([susceptible, infected, resistant], axis=1)  # Shape: (3, H, W)
+
+        return y_onehot
     
     def preprocess(self, x):
         # add a channel dimension at the beginning in numpy
@@ -337,6 +347,8 @@ class CARModel(viaABC):
         self.observational_data = np.load('/home/jp4474/viaABC/data/BCELL/noisy_data.npy')
 
         # Pre-compute bounds arrays
+        # self.lower_bounds = np.array([0, 0, 0, 0.6, 0, 0])
+        # self.upper_bounds = np.array([0.1, 0.1, 0.1, 1, 0.2, 0.1])
         self.lower_bounds = np.array([0, 0, 0, 0, 0, 0])
         self.upper_bounds = np.array([1, 1, 1, 1, 1, 1])
 
@@ -456,7 +468,6 @@ class CARModel(viaABC):
         return np.sum(log_probs)
     
     def preprocess(self, x):
-        # x = np.log1p(x) / 10
         s = np.mean(np.abs(x), axis=0)
         x = x/s
         return x

@@ -281,10 +281,10 @@ class viaABC:
         mean = np.average(particles, weights=weights, axis=0)
         var = np.average((particles - mean) ** 2, weights=weights, axis=0)
         median = np.median(particles, axis=0)
-
-        self.logger.info(f"Mean: {mean}")
-        self.logger.info(f"Median: {median}")
-        self.logger.info(f"Variance: {var}")
+        
+        self.logger.info(f"Mean: {mean:.4f}")
+        self.logger.info(f"Median: {median:.4f}")
+        self.logger.info(f"Variance: {var:.4f}")
 
     def update_train_dataset(self, train_dataset):
         # check if train_dataset is a torch Dataset
@@ -353,7 +353,7 @@ class viaABC:
 
         # Weights are already normalized (all ones, sum = num_particles)
         weights = weights / np.sum(weights)
-        epsilon = dists[-1]  # Last element after sorting
+        epsilon = dists[num_particles-1]
 
         # Optimized covariance calculation
         sample_cov = np.atleast_2d(np.cov(particles.reshape(num_particles, -1), rowvar=False))
@@ -782,13 +782,12 @@ class viaABC:
         var = np.average((particles - mean) ** 2, weights=weights, axis=0)
         median = np.median(particles, axis=0)
 
-        self.mean = mean    
-        self.var = var
-        self.median = median
 
-        self.logger.info(f"Mean: {mean}")
-        self.logger.info(f"Median: {median}")
-        self.logger.info(f"Variance: {var}")
+        fmt = lambda arr: np.array2string(np.asarray(arr), formatter={'float_kind': lambda x: f"{x:.4f}"})
+        self.logger.info(f"Mean: {fmt(mean)}")
+        self.logger.info(f"Median: {fmt(median)}")
+        self.logger.info(f"Variance: {fmt(var)}")
+
 
         # TODO: calculate 95% HDI
         # hdi = hdi_of_grid(particles, weights, 0.95)

@@ -88,7 +88,7 @@ class PreTrainLightningSpatial(L.LightningModule):
         return self.model(simulations, mask_ratio = mask_ratio)
 
     def training_step(self, batch):
-        _, simulations = batch
+        simulations = batch
         loss, space_loss, _, _ = self(simulations)
         self.log("train_recon_loss", loss, prog_bar=False, on_step=False, on_epoch=True)
         self.log("train_space_loss", space_loss, prog_bar=False, on_step=False, on_epoch=True)
@@ -97,7 +97,7 @@ class PreTrainLightningSpatial(L.LightningModule):
         return total_loss
 
     def validation_step(self, batch):
-        _, simulations = batch
+        simulations = batch
         loss, space_loss, _, _ = self(simulations)
         self.log("val_recon_loss", loss, prog_bar=False, on_step=False, on_epoch=True)
         self.log("val_space_loss", space_loss, prog_bar=False, on_step=False, on_epoch=True)
