@@ -697,10 +697,10 @@ class viaABC:
         qt = max(1 / max_value, 0.05)
         epsilon = weighted_sample_quantile(distances, qt, weights=weights_normalized)
 
-        self.logger.info(f'ABC-SMC: Epsilon : {epsilon:.5f}')
-        self.logger.info(f'ABC-SMC: Quantile : {qt:.5f}')
-        self.logger.info(f'ABC-SMC: Simulations : {simulations}')
-        
+        self.logger.info(f'Epsilon : {epsilon:.5f}')
+        self.logger.info(f'Quantile : {qt:.5f}')
+        self.logger.info(f'Simulations : {simulations}')
+
         return {
             't': generation_num,
             'particles': particles,
