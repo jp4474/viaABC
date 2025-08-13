@@ -686,10 +686,10 @@ class viaABC:
             sigma = calculate_densratio_basis_sigma(sigma_max, prev_sigma_max)
         
         self.densratio.fit(
-            x=prev_particles,
-            y=particles,
-            weights_x=prev_weights,
-            weights_y=weights_normalized,
+            x=particles,
+            y=prev_particles,
+            weights_x=weights_normalized,
+            weights_y=prev_weights,
             sigma=sigma
         )
         
