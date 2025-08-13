@@ -59,8 +59,10 @@ def pairwise_cosine(x, y):
     x_norm = x / np.linalg.norm(x, axis=-1, keepdims=True)
     y_norm = y / np.linalg.norm(y, axis=-1, keepdims=True)
 
-    cos_sim = np.mean(np.sum(x_norm * y_norm, axis=-1), axis=-1)[0]
+    cos_sim = np.mean(np.sum(x_norm * y_norm, axis=-1), axis=-1)
 
+    if y.shape[0] == 1:
+        return cos_sim[0]
     return cos_sim
 
 def maxSim(x, y):

@@ -1,7 +1,7 @@
 from viaABC import viaABC
 from scipy.stats import uniform, truncnorm
 import numpy as np
-from typing import Union, List
+from typing import Union, List, Optional
 from systems import *
 from metrics import *
 from scipy.ndimage import convolve
@@ -330,11 +330,40 @@ class SpatialSIR3D(viaABC):
         return x
     
 
+
+# alpha                       1.1e-01  1.7e-03  3.6e-02  3.4e-02   6.0e-02   1.1e-01   1.8e-01       387       362          40    1.0
+# beta                        1.0e-02  2.2e-04  3.0e-03  2.8e-03   5.0e-03   1.0e-02   1.5e-02       287        98          30    1.0
+# mu                          3.5e-04  1.4e-05  2.5e-04  2.5e-04   3.6e-05   3.2e-04   8.4e-04       388       178          40    1.0
+# nu                          5.3e-03  5.5e-05  9.9e-04  8.3e-04   3.9e-03   5.3e-03   6.9e-03       366       297          38    1.0
+# delta                       9.2e-01  1.5e-02  2.7e-01  2.6e-01   4.6e-01   9.3e-01   1.3e+00       310       196          32    1.0
+# lambda_WT                   7.6e-02  1.1e-03  2.3e-02  2.2e-02   4.3e-02   7.5e-02   1.1e-01       444       497          46    1.0
+# lambda_N2KO                 8.4e-01  1.7e-02  2.4e-01  2.3e-01   4.6e-01   8.5e-01   1.2e+00       270        98          28    1.0
+# M0N2                        9.7e+00 
+#   alpha ~ normal(0.01, 0.5);
+#   beta ~ normal(0.01, 0.5);
+#   mu ~ normal(0.01, 0.5);
+#   nu ~ normal(0.01, 0.5);
+#   delta ~ normal(0.8, 0.3);
+#   lambda_WT ~ normal(0.1, 0.3);
+#   lambda_N2KO ~ normal(0.8, 0.3);
+#   M0N2 ~ normal(8, 1.5);
+
+#   real<lower = 0> alpha;
+#   real<lower = 0> beta;
+#   real<lower = 0> mu;
+#   real<lower = 0> nu;
+#   real<lower = 0> delta;
+#   real<lower = 0> lambda_WT;
+#   real<lower = lambda_WT> lambda_N2KO;
+#   real<lower = 0> M0N2;
+
 class CARModel(viaABC):
     def __init__(self,
-        num_parameters=6, 
-        mu=np.array([0.01, 0.01, 0.01, 0.8, 0.1, 0.01]),
-        sigma=np.array([0.5, 0.5, 0.5, 0.3, 0.3, 0.5]),
+        num_parameters=8, 
+        mu=np.array([0.01, 0.01, 0.01, 0.01, 0.8, 0.1, 0.8, 8]),
+        sigma=np.array([0.5, 0.5, 0.5, 0.5, 0.3, 0.3, 0.3, 1.5]),
+        lower_bounds = np.array([0, 0, 0, 0, 0, 0, 0, 0]),
+        upper_bounds = np.array([1, 1, 1, 1, 1, 1, 1, 12]),
         model=None,
         t0=4,
         tmax=30, 
@@ -344,16 +373,16 @@ class CARModel(viaABC):
         metric="pairwise_cosine"):
             
         # Load data once and store
-        self.observational_data = np.load('/home/jp4474/viaABC/data/BCELL/noisy_data.npy')
+        self.observational_data = np.load('/home/jp4474/CAR/viaABC/data/BCELL/noisy_data.npy')
 
+        self.mu = mu
+        self.sigma = sigma
         # Pre-compute bounds arrays
-        # self.lower_bounds = np.array([0, 0, 0, 0.6, 0, 0])
-        # self.upper_bounds = np.array([0.1, 0.1, 0.1, 1, 0.2, 0.1])
-        self.lower_bounds = np.array([0, 0, 0, 0, 0, 0])
-        self.upper_bounds = np.array([1, 1, 1, 1, 1, 1])
+        self.lower_bounds = lower_bounds
+        self.upper_bounds = upper_bounds
 
         # Call parent constructor
-        super().__init__(num_parameters, self.lower_bounds, self.upper_bounds, self.observational_data, model, 
+        super().__init__(num_parameters, self.mu, self.sigma, self.observational_data, model, 
                         state0, t0, tmax, time_space, pooling_method, metric)
 
         assert np.all(self.lower_bounds < self.upper_bounds), "Lower bounds must be less than upper bounds"
@@ -408,6 +437,48 @@ class CARModel(viaABC):
     def _Total_FoB(self, t):
         """Cached version of Total FoB calculation"""
         return self.M0_total * (1 + np.exp(-self.nu_total * (t - self.b0_total)**2))
+    
+    def simulate(self, parameters: np.ndarray, time_space: Optional[np.ndarray] = None) -> tuple:
+        """
+        Simulate the ODE system with given parameters.
+        
+        Args:
+            parameters: Array of parameters, last element is M0N2 (log-transformed)
+            time_space: Optional time evaluation points. If None, uses self.time_space
+            
+        Returns:
+            tuple: (solution array, solver status)
+        """
+        # Extract and transform the last parameter
+        m0n2_log = parameters[-1]
+        car_mz0n2k0 = np.exp(m0n2_log)
+        
+        # Prepare initial state
+        initial_state = np.array([self.state0[0], self.state0[1], car_mz0n2k0])
+        
+        # Set time evaluation points
+        t_eval = self.time_space if time_space is None else time_space
+        
+        # Solve ODE system
+        solution = solve_ivp(
+            fun=self.ode_system,
+            t_span=[self.t0, self.tmax],
+            y0=initial_state,
+            t_eval=t_eval,
+            args=(parameters[:-1],)
+        )
+        
+        # Process solution based on whether default time_space was used
+        if time_space is None:
+            # Apply NaN masking for default time_space
+            solution_array = solution.y.T.copy()
+            nan_mask = (np.array([0, 4, 5, 6, 7]), np.array([2, 2, 2, 2, 2]))
+            solution_array[nan_mask] = 0
+            return solution_array, solution.status
+        else:
+            # Return solution directly for custom time_space
+            return solution.y.T, solution.status
+
 
     def ode_system(self, t, state, parameters):
         """
@@ -418,8 +489,9 @@ class CARModel(viaABC):
         - state: [y1, y2]
         - parameters: [alpha, beta, mu, delta, lambda_WT, nu]
         """
-        y1, y2 = state
-        alpha, beta, mu, delta, lambda_WT, nu = parameters
+        y1, y2, y3 = state
+
+        alpha, beta, mu, nu, delta, lambda_WT, lambda_N2KO = parameters
 
         # Time-dependent modulation centered at t0
         mod = 1 + np.exp(nu * (t - self.t0_ode)**2)
@@ -436,38 +508,36 @@ class CARModel(viaABC):
         # ODEs
         d_y1 = alpha_tau * total_fob - delta * y1  # CAR positive FOB growth
         d_y2 = mu_tau * total_fob + beta_tau * car_neg_mzb - lambda_WT * y2  # CAR positive MZB growth
+        d_y3 = beta_tau * car_neg_mzb - lambda_N2KO * y3  # CAR negative MZB growth
 
-        return np.array([d_y1, d_y2])
-    
+        return np.array([d_y1, d_y2, d_y3])
+
     def sample_priors(self):
         """Optimized prior sampling using pre-computed parameters"""
         # Vectorized sampling using pre-computed truncnorm parameters
-        # priors = truncnorm.rvs(
-        #     a=self.truncnorm_a, 
-        #     b=self.truncnorm_b, 
-        #     loc=self.mu, 
-        #     scale=self.sigma, 
-        #     size=self.num_parameters
-        # )
-        # return priors
-        priors = np.random.uniform(self.lower_bounds, self.upper_bounds, self.num_parameters)
+        priors = truncnorm.rvs(
+            a=self.truncnorm_a, 
+            b=self.truncnorm_b, 
+            loc=self.mu, 
+            scale=self.sigma, 
+            size=self.num_parameters
+        )
         return priors
 
     def calculate_prior_log_prob(self, parameters):
         """Optimized prior probability calculation"""
         # Vectorized log probability calculation
-        # log_probs = truncnorm.logpdf(
-        #     parameters, 
-        #     a=self.truncnorm_a, 
-        #     b=self.truncnorm_b, 
-        #     loc=self.mu, 
-        #     scale=self.sigma
-        # )
-        # return np.sum(log_probs)
-        log_probs = uniform.logpdf(parameters, loc=self.lower_bounds, scale=self.upper_bounds - self.lower_bounds)
+        log_probs = truncnorm.logpdf(
+            parameters, 
+            a=self.truncnorm_a, 
+            b=self.truncnorm_b, 
+            loc=self.mu, 
+            scale=self.sigma
+        )
         return np.sum(log_probs)
     
     def preprocess(self, x):
-        s = np.mean(np.abs(x), axis=0)
-        x = x/s
-        return x
+        x = np.abs(x)
+        m = np.median(x, axis=0)
+        s = np.mean(x, axis=0)
+        return (x - m) / s

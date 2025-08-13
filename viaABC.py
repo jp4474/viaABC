@@ -79,6 +79,9 @@ class viaABC:
         self.raw_observational_data = observational_data
         self.state0 = state0
 
+        if not torch.cuda.is_available():
+            raise RuntimeError("CUDA is not available.")
+
         if state0 is None:
             self.logger.warning(
                 "Initial state is not initialized. Only do this if you wish to "
@@ -296,8 +299,6 @@ class viaABC:
 
     @torch.inference_mode()
     def _run_init(self, num_particles: int, k: int = 5):
-        self.densratio = DensityRatioEstimation(n=100, epsilon=0.001, max_iter=200, abs_tol=0.01, fold=5, optimize=False)
-
         if self.model is None:
             raise ValueError("Model must be provided to encode the data and run the algorithm.")
 
@@ -392,7 +393,6 @@ class viaABC:
             # Ensure the latent is a tensor before appending
             candidates['parameters'].append(x.numpy())
             candidates['distances'].append(self.calculate_distance(latent))
-
         # Concatenate parameters and distances (all are tensors, so use torch.cat and torch.stack)
         candidates['parameters'] = np.concatenate(candidates['parameters'], axis=0)
         candidates['distances'] = np.concatenate(candidates['distances'], axis=0)
@@ -435,7 +435,7 @@ class viaABC:
         self.logger.info("Initialization (generation 0) started")
         init_start_time = time.time()
         self._run_init(self.num_particles, k)
-        #self._run_init_v2(self.num_particles)
+        # self._run_init_v2(self.num_particles)
         init_end_time = time.time()
         self.logger.info(
             f"Initialization completed in {init_end_time - init_start_time:.2f} seconds"
@@ -448,6 +448,7 @@ class viaABC:
         q_threshold: float = 0.99,
         max_generations: int = 20,
         k: int = 5,
+        optimize: bool = False
     ) -> None:
         """Run the viaABC algorithm.
         
@@ -460,6 +461,7 @@ class viaABC:
         if self.model is None:
             raise ValueError("Model must be provided to encode the data and run the algorithm.")
         
+        self.densratio = DensityRatioEstimation(n=100, epsilon=0.001, max_iter=200, abs_tol=0.01, fold=5, optimize=optimize)
         self.generations = []
         self.num_particles = num_particles
         self.max_generations = max_generations - 1
@@ -670,7 +672,7 @@ class viaABC:
         Returns:
             Dictionary containing generation results
         """
-        # Normalize weights
+        # Normalize weights, safe guard
         weights_normalized = weights / np.sum(weights)
         
         # Calculate statistics
