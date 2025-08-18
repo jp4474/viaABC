@@ -164,8 +164,10 @@ class viaABC:
         self.logger.info(f"metric: {metric}")
 
     def update_model(self, model: torch.nn.Module):
+        model.requires_grad_(False)
+        model.eval()
+        model = torch.compile(model)
         self.model = model
-        self.model.eval()
         self.logger.info("Model updated")
         self._encode_observational_data()
 
@@ -255,7 +257,7 @@ class viaABC:
 
         elif self.metric == "pairwise_cosine":
             distances = 1 - pairwise_cosine(x, y)
-        
+
         elif self.metric == "bertscore_batch":
             # Compute bert_score for all items in the batch
             mean_f1_score = bert_score_batch(x, y)
@@ -488,6 +490,11 @@ class viaABC:
             prev_sigma_max = prev_gen['sigma_max']
             prev_epsilon = prev_gen['epsilon']
             prev_meta_cov = prev_gen['meta']['cov']
+
+            cdf = np.cumsum(prev_weights)
+            cdf[-1] = 1.0  # guard against FP drift
+
+            self.cdf = cdf
             
             # Run generation
             particles, weights, distances, simulations = self._run_generation(
@@ -603,7 +610,10 @@ class viaABC:
         """
         for attempt in range(max_attempts):
             # Sample particle index based on weights
-            idx = np.random.choice(len(prev_particles), p=prev_weights)
+            # idx = np.random.choice(len(prev_particles), p=prev_weights)
+            # theta = prev_particles[idx]
+            r = np.random.rand()  # uniform [0,1)
+            idx = np.searchsorted(self.cdf, r, side="right")
             theta = prev_particles[idx]
 
             perturbed_params = self.perturb_parameters(theta, prev_cov)
@@ -639,7 +649,7 @@ class viaABC:
         """
         prior_logpdf = self.calculate_prior_log_prob(theta)
 
-        phi = np.array([multivariate_normal.logpdf(theta, mean=x, cov=prev_cov) for x in prev_particles])
+        phi = multivariate_normal.logpdf(prev_particles, mean=theta, cov=prev_cov)
 
         log_weights = np.log(prev_weights) + phi
         lse = logsumexp(log_weights)
@@ -728,9 +738,10 @@ class viaABC:
             Distance metric
         """
         y_scaled = self.preprocess(y) 
-        y_tensor = torch.tensor(y_scaled, dtype=torch.float32).to(self.model.device)
+        y_tensor = torch.as_tensor(y_scaled, dtype=torch.float32, device=self.model.device)
         y_latent_np = self.get_latent(y_tensor) # z_sim
         return self.calculate_distance(y_latent_np)
+
 
     def _should_stop(self, generation_num: int, qt: float, q_threshold: float) -> bool:
         """Determine if stopping conditions are met.

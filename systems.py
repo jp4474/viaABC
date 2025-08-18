@@ -50,138 +50,6 @@ class LotkaVolterra(viaABC):
         x = x / mean
         return x
 
-# class SpatialSIR(viaABC):
-#     def __init__(self,
-#         num_parameters = 2, 
-#         mu = np.array([0.2, 0.2]),
-#         sigma = np.array([4.5, 4.5]),
-#         model = None, 
-#         observational_data = None,
-#         observational_data_path = '/home/jp4474/viaABC/data/SPATIAL/data.npy',
-#         state0 = None,
-#         t0 = 0,
-#         tmax = 16,
-#         interval = 1,
-#         time_space = np.arange(1, 16, 1),
-#         pooling_method = "no_cls",
-#         metric = "pairwise_cosine",
-#         grid_size = 80,
-#         initial_infected = 5,
-#         radius = 5):
-
-#         if observational_data is None and observational_data_path is not None:
-#             observational_data = np.load(observational_data_path)
-
-#         super().__init__(num_parameters, mu, sigma, observational_data, model, state0, t0, tmax, time_space, pooling_method, metric)
-#         self.grid_size = grid_size
-#         self.initial_infected = initial_infected
-#         self.radius = radius
-#         self.time_steps = int((tmax - t0)/interval)
-#         self.lower_bounds = mu
-#         self.upper_bounds = sigma
-
-#     def simulate(self, parameters: np.ndarray):
-#         SUSCEPTIBLE, INFECTED, RECOVERED = 0, 1, 2
-
-#         beta, tau_I = parameters
-#         dt = .05                   # time step, small to simulate continuous time
-#         I = tau_I                 # infection duration (τ_I in paper, fixed time)    <---------------  0.2 - 4.0
-#         R = 1.0                    # resistance duration (τ_R = 1.0, fixed in paper) 
-#         steps = int(np.round(np.max(self.time_space) / dt))
-
-#         # Initialize the grid
-#         grid = np.zeros((self.grid_size, self.grid_size), dtype=np.uint8)
-#         grid_shape = grid.shape
-#         infection_timer = np.zeros(grid_shape)
-#         recovery_timer = np.zeros(grid_shape)
-#         susceptible_timer = np.zeros(grid_shape)
-
-#         centers = np.array([[44, 67], [24, 67], [64, 73], [3, 55], [12, 20]])
-
-#         for x, y in centers:
-#             dx, dy = np.random.randint(-self.radius, self.radius + 1, 2)
-#             xi, yi = np.clip([x + dx, y + dy], 0, self.grid_size - 1)
-#             grid[xi, yi] = INFECTED
-
-#         kernel = np.array([[1, 1, 1],
-#                         [1, 0, 1],
-#                         [1, 1, 1]])
-
-#         # Prepare to store grid states
-#         frames = []
-#         frames.append(grid.copy())
-
-#         # Run the simulation
-#         frames = []
-#         for t in range(steps):
-#             # Count infected neighbors
-#             infected_neighbors = convolve((grid == INFECTED).astype(np.uint8), kernel, mode='constant')
-
-#             # Calculate infection probability based on PNAS paper formula
-#             p_inf = 1 - np.exp(-beta * infected_neighbors * dt)
-
-#             # Infect susceptible cells
-#             rand_vals = np.random.rand(*grid_shape)
-#             new_infections = (grid == SUSCEPTIBLE) & (rand_vals < p_inf) 
-#             grid[new_infections] = INFECTED
-
-#             recovery_timer[new_infections] = 0  # Reset recovery timer when infected
-#             infection_timer[new_infections] = 0
-#             susceptible_timer[new_infections] = 0  # Reset susceptible timer when infected
-
-#             # Update timers and state transitions
-#             infection_timer[grid == INFECTED] += dt
-#             to_recover = (grid == INFECTED) & (infection_timer >= I)
-#             grid[to_recover] = RECOVERED
-
-#             susceptible_timer[to_recover] = 0  # Reset susceptible timer when recovering
-#             recovery_timer[to_recover] = 0
-#             infection_timer[to_recover] = 0  # Optional: reset infection timer
-
-#             recovery_timer[grid == RECOVERED] += dt
-#             to_reset = (grid == RECOVERED) & (recovery_timer >= R)
-#             grid[to_reset] = SUSCEPTIBLE
-
-#             infection_timer[to_reset] = 0  # Reset infection timer on return to susceptible
-#             susceptible_timer[to_reset] = 0  # Reset timer on return to susceptible
-#             recovery_timer[to_reset] = 0     # Optional: reset recovery timer
-
-#             # Increment susceptible timer for susceptible cells
-#             susceptible_timer[grid == SUSCEPTIBLE] += dt
-
-#             # Store timers as a 3D tensor for visualization/ML
-#             # x = np.stack((susceptible_timer, infection_timer, recovery_timer), axis=-1)
-#             # x = np.stack((susceptible_timer, infection_timer, recovery_timer), axis=-1)
-#             susceptible = (grid == SUSCEPTIBLE).astype(np.float32)
-#             infected = (grid == INFECTED).astype(np.float32)
-#             recovered = (grid == RECOVERED).astype(np.float32)
-#             x = np.stack((susceptible, infected, recovered), axis=-1)
-#             # add along the time dimension
-#             # x = x.sum(axis=-1)
-#             frames.append(x.copy())
-
-#         # Convert to one-hot encoded 3D array for visualization/ML
-#         frames = np.array(frames)
-#         frames_idx = (self.time_space / dt).astype(int) - 1
-#         output = frames[frames_idx].transpose(0, 3, 1, 2)  # Move time to the first dimension
-
-#         return output, 0
-    
-#     def sample_priors(self):
-#         # Sample from the prior distribution
-#         priors = np.random.uniform(self.mu, self.sigma, self.num_parameters)
-#         return priors
-            
-#     def calculate_prior_prob(self, parameters):
-#         # Calculate the prior probability of the parameters
-#         # This must match the prior distribution used in sampling
-#         probabilities = uniform.logpdf(parameters, loc=self.mu, scale=self.sigma - self.mu) 
-#         probabilities = np.exp(np.sum(probabilities))
-#         return probabilities
-    
-#     def preprocess(self, x):
-#         return x
-
 class SpatialSIR3D(viaABC):
     def __init__(self,
         num_parameters = 2, 
@@ -329,34 +197,6 @@ class SpatialSIR3D(viaABC):
 
         return x
     
-
-
-# alpha                       1.1e-01  1.7e-03  3.6e-02  3.4e-02   6.0e-02   1.1e-01   1.8e-01       387       362          40    1.0
-# beta                        1.0e-02  2.2e-04  3.0e-03  2.8e-03   5.0e-03   1.0e-02   1.5e-02       287        98          30    1.0
-# mu                          3.5e-04  1.4e-05  2.5e-04  2.5e-04   3.6e-05   3.2e-04   8.4e-04       388       178          40    1.0
-# nu                          5.3e-03  5.5e-05  9.9e-04  8.3e-04   3.9e-03   5.3e-03   6.9e-03       366       297          38    1.0
-# delta                       9.2e-01  1.5e-02  2.7e-01  2.6e-01   4.6e-01   9.3e-01   1.3e+00       310       196          32    1.0
-# lambda_WT                   7.6e-02  1.1e-03  2.3e-02  2.2e-02   4.3e-02   7.5e-02   1.1e-01       444       497          46    1.0
-# lambda_N2KO                 8.4e-01  1.7e-02  2.4e-01  2.3e-01   4.6e-01   8.5e-01   1.2e+00       270        98          28    1.0
-# M0N2                        9.7e+00 
-#   alpha ~ normal(0.01, 0.5);
-#   beta ~ normal(0.01, 0.5);
-#   mu ~ normal(0.01, 0.5);
-#   nu ~ normal(0.01, 0.5);
-#   delta ~ normal(0.8, 0.3);
-#   lambda_WT ~ normal(0.1, 0.3);
-#   lambda_N2KO ~ normal(0.8, 0.3);
-#   M0N2 ~ normal(8, 1.5);
-
-#   real<lower = 0> alpha;
-#   real<lower = 0> beta;
-#   real<lower = 0> mu;
-#   real<lower = 0> nu;
-#   real<lower = 0> delta;
-#   real<lower = 0> lambda_WT;
-#   real<lower = lambda_WT> lambda_N2KO;
-#   real<lower = 0> M0N2;
-
 class CARModel(viaABC):
     def __init__(self,
         num_parameters=8, 
@@ -499,16 +339,16 @@ class CARModel(viaABC):
         # Time-modulated parameters (vectorized division)
         alpha_tau = alpha / mod
         beta_tau = beta / mod
-        mu_tau = mu / mod
+        mu_tau = mu # / mod
 
         # External inputs (using cached functions)
         total_fob = self._Total_FoB(t)
         car_neg_mzb = self._CAR_negative_MZB(t)
 
         # ODEs
-        d_y1 = alpha_tau * total_fob - delta * y1  # CAR positive FOB growth
-        d_y2 = mu_tau * total_fob + beta_tau * car_neg_mzb - lambda_WT * y2  # CAR positive MZB growth
-        d_y3 = beta_tau * car_neg_mzb - lambda_N2KO * y3  # CAR negative MZB growth
+        d_y1 = alpha_tau * total_fob - delta * y1  # CAR positive GCB cells in WT
+        d_y2 = mu_tau * total_fob + beta_tau * car_neg_mzb - lambda_WT * y2  # CAR positive MZB cells in WT
+        d_y3 = beta_tau * car_neg_mzb - lambda_N2KO * y3  # CAR positive MZB cells in N2KO
 
         return np.array([d_y1, d_y2, d_y3])
 
@@ -538,6 +378,5 @@ class CARModel(viaABC):
     
     def preprocess(self, x):
         x = np.abs(x)
-        m = np.median(x, axis=0)
         s = np.mean(x, axis=0)
-        return (x - m) / s
+        return x / s

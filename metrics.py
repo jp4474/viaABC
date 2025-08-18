@@ -53,14 +53,28 @@ def bert_score_batch(x, y):
     scores = np.array(scores)
     return scores.mean()
 
-def pairwise_cosine(x, y):
+def pairwise_cosine(x, y, weights=None):
     assert x.ndim == 3 and y.ndim == 3, "Input arrays must be 3D"
+    assert x.shape[1:] == y.shape[1:], "Input shapes must match except for batch dimension"
 
-    x_norm = x / np.linalg.norm(x, axis=-1, keepdims=True)
-    y_norm = y / np.linalg.norm(y, axis=-1, keepdims=True)
+    # Normalize vectors (avoid division by zero)
+    x_norm = x / (np.linalg.norm(x, axis=-1, keepdims=True) + 1e-8)
+    y_norm = y / (np.linalg.norm(y, axis=-1, keepdims=True) + 1e-8)
 
-    cos_sim = np.mean(np.sum(x_norm * y_norm, axis=-1), axis=-1)
+    # Compute cosine similarity over feature dim
+    cos_sim = np.sum(x_norm * y_norm, axis=-1)  # shape: (B, P)
 
+    # Handle weights
+    if weights is None:
+        weights = np.ones(x.shape[1], dtype=x.dtype)  # shape: (P,)
+    else:
+        assert weights.ndim == 1, "Weights should be a 1-Dimensional array"
+        assert weights.shape[0] == x.shape[1], "Weights should match the number of patches"
+
+    # Weighted average over patches (axis=1, not -1)
+    cos_sim = np.average(cos_sim, weights=weights, axis=1)  # shape: (B,)
+
+    # If y had batch size 1, squeeze result
     if y.shape[0] == 1:
         return cos_sim[0]
     return cos_sim
