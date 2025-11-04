@@ -6,21 +6,20 @@ enc_depth=6
 num_heads=4
 dec_depths=(4)
 decoder_num_heads=4
-noise_factors=(0.0 0.5 1.0)
+noise_factors=(0.1)
 mask=0.15
 num_particles=1000
-idx=0
-k=10
-
+idx=1
+k=5
 for beta in "${beta_values[@]}"; do
     for ed in "${eds[@]}"; do
         for dec_depth in "${dec_depths[@]}"; do
             for noise in "${noise_factors[@]}"; do
                 # Define the directory path based on the beta value
                 if (( $(bc -l <<< "$beta == 0") )); then
-                    dirpath="Lotka/lotka_d${d}_ed${ed}_${enc_depth}_${num_heads}_${dec_depth}_${decoder_num_heads}_ae_mask_${mask}_noise_${noise}"
+                    dirpath="CAR_d${d}_ed${ed}_${enc_depth}_${num_heads}_${dec_depth}_${decoder_num_heads}_ae_mask_${mask}_noise_${noise}"
                 else
-                    dirpath="Lotka/lotka_d${d}_ed${ed}_${enc_depth}_${num_heads}_${dec_depth}_${decoder_num_heads}_vae_mask_${mask}_beta_${beta}_noise_${noise}"
+                    dirpath="CAR_d${d}_ed${ed}_${enc_depth}_${num_heads}_${dec_depth}_${decoder_num_heads}_vae_mask_${mask}_beta_${beta}_noise_${noise}"
                 fi
 
                 # dirpath="/home/jp4474/latent-abc-smc/notebooks_bcell/"

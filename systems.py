@@ -438,7 +438,7 @@ class CARModel(viaABC):
         d_y2 = mu_tau * total_fob + beta_tau * car_neg_mzb - lambda_WT * y2  # CAR positive MZB growth
 
         return np.array([d_y1, d_y2])
-    
+
     def sample_priors(self):
         """Optimized prior sampling using pre-computed parameters"""
         # Vectorized sampling using pre-computed truncnorm parameters

@@ -45,17 +45,20 @@ class LotkaVolterraDataset(NumpyDataset):
 class SpatialSIRDataset(Dataset):
     def __init__(self, data_dir, prefix='train', transform=None):
         self.data_dir = data_dir
-        self.files = [f for f in os.listdir(data_dir) if f.endswith('.npy')]
+        # self.files = [f for f in os.listdir(data_dir) if f.endswith('.npy')]
         
         # Load data
         self.data = np.load(os.path.join(data_dir, f'{prefix}_data.npz'), allow_pickle=True)
         self.simulations = self.data['simulations']
+        self.params = self.data['params']
 
     def __len__(self):
         return len(self.simulations)
 
     def __getitem__(self, idx):
+        x = self.params[idx]
         y = self.simulations[idx]
+        x = torch.from_numpy(x).to(torch.float32)
         y = torch.from_numpy(y).to(torch.float32).permute(3, 0, 1, 2)  # Change to (C, T, H, W) format
 
         return y
@@ -78,10 +81,10 @@ def create_dataloaders(data_dir: str, batch_size: int) -> Tuple[DataLoader, Data
     if not os.path.exists(data_dir):
         raise FileNotFoundError(f"Data directory {data_dir} does not exist.")
 
-    #train_dataset = SpatialSIRDataset(data_dir, prefix='train')
-    #val_dataset = SpatialSIRDataset(data_dir, prefix='val')
-    train_dataset = CARDataset(data_dir, prefix='train')
-    val_dataset = CARDataset(data_dir, prefix='val')
+    train_dataset = SpatialSIRDataset(data_dir, prefix='train')
+    val_dataset = SpatialSIRDataset(data_dir, prefix='val')
+    # train_dataset = CARDataset(data_dir, prefix='train')
+    # val_dataset = CARDataset(data_dir, prefix='val')
 
     # # Ensure data type matches precision setting
     train_dataset.simulations = train_dataset.simulations.astype('float32')

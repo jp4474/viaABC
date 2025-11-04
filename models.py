@@ -806,6 +806,7 @@ class MaskedAutoencoderViT3D(nn.Module):
         )  # unshuffle
         x = x_.view([N, T * H * W, C])
         # append cls token
+        
         if self.cls_embed:
             decoder_cls_token = self.decoder_cls_token
             decoder_cls_tokens = decoder_cls_token.expand(x.shape[0], -1, -1)

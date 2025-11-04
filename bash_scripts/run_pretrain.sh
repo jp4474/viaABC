@@ -1,12 +1,12 @@
 #!/bin/bash
 beta_values=(0 0.01 0.001 0.0001)
 d=64
-ed=48
-enc_depth=2
-dec_depth=2
+ed=32
+enc_depth=6
+dec_depth=4
 num_heads=4
 decoder_num_heads=4
-noise_factor=0.0
+noise_factor=0.1
 mask=0.15
 
 for beta in "${beta_values[@]}"; do

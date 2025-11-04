@@ -1,5 +1,9 @@
 import os
-from dotenv import load_dotenv
+import sys
+
+# Add the project root directory to the Python path
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import argparse
 import yaml
 import torch
@@ -7,6 +11,7 @@ from lightning.pytorch import Trainer, seed_everything
 from lightning.pytorch.callbacks import ModelCheckpoint, LearningRateMonitor
 from lightning.pytorch.callbacks.early_stopping import EarlyStopping
 from models import MaskedAutoencoderViT3D
+from lightning_module import PreTrainLightningSpatial
 from dataset import create_dataloaders
 
 def parse_args() -> argparse.Namespace:
@@ -64,7 +69,6 @@ def save_model_config(args, img_size: int, num_frames: int):
 def main():
     args = parse_args()
 
-    load_dotenv()
     seed_everything(args.seed)
 
     try:
@@ -95,20 +99,20 @@ def main():
             dropout=args.dropout,
         )
 
-        pl_model = PreTrainLightningSpatial2D(model=model, lr=args.learning_rate, mask_ratio=args.mask_ratio)
+        pl_model = PreTrainLightningSpatial(model=model, lr=args.learning_rate, mask_ratio=args.mask_ratio)
 
         checkpoint_callback = ModelCheckpoint(
             dirpath=args.dirpath,
-            filename='SpatialSIR-{epoch:02d}-{val_loss:.4f}',
+            filename='SpatialSIR3D-{epoch:02d}-{val_loss:.4f}',
             save_top_k=1,
             monitor='val_loss',
             mode='min'
         )
 
         lr_monitor = LearningRateMonitor(logging_interval='epoch')
-        early_stop_callback = EarlyStopping(monitor="val_loss", patience=100, mode="min")
+        early_stop_callback = EarlyStopping(monitor="val_loss", patience=10, mode="min")
 
-        torch.set_float32_matmul_precision('high')
+        torch.set_float32_matmul_precision('medium')
         trainer = Trainer(
             max_epochs=args.max_epochs,
             accelerator='auto',

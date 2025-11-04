@@ -1,24 +1,28 @@
 import os
-from dotenv import load_dotenv
 import argparse
 import yaml
 import torch
 from lightning.pytorch import Trainer, seed_everything
 from lightning.pytorch.callbacks import ModelCheckpoint, LearningRateMonitor
 from lightning.pytorch.callbacks.early_stopping import EarlyStopping
+import sys
+
+# Add the project root directory to the Python path
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from models import TSMVAE
 from lightning_module import PreTrainLightning
 from dataset import create_dataloaders
 import numpy as np
+from pytorch_lightning.loggers import CSVLogger
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description='Train TSMVAE model.')
     parser.add_argument('--batch_size', type=int, default=768, help='Batch size for training and validation.')
     parser.add_argument('--max_epochs', type=int, default=500, help='Maximum number of epochs to train.')
-    parser.add_argument('--seed', type=int, default=42, help='Random seed for reproducibility.')
-    parser.add_argument('--learning_rate', type=float, default=5e-5, help='Learning rate for the optimizer.')
-    parser.add_argument('--data_dir', type=str, default='data', help='Directory containing the dataset.')
+    parser.add_argument('--seed', type=int, default=1004, help='Random seed for reproducibility.')
+    parser.add_argument('--learning_rate', type=float, default=1e-4, help='Learning rate for the optimizer.')
+    parser.add_argument('--data_dir', type=str, default='data/BCELL', help='Directory containing the dataset.')
     parser.add_argument('--embed_dim', type=int, default=64, help='Embedding dimension for the model.')
     parser.add_argument('--num_heads', type=int, default=8, help='Number of attention heads.')
     parser.add_argument('--depth', type=int, default=2, help='Depth of the encoder.')
@@ -28,9 +32,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--mask_ratio', type=float, default=0.15, help='Masking ratio for the input data.')
     parser.add_argument('--dropout', type=float, default=0.1, help='Dropout rate.')
     parser.add_argument('--beta', type=float, default=1, help='Beta parameter for the VAE loss.')
-    parser.add_argument('--diff_attn', action='store_true', help='Use different attention for encoder and decoder.')
     parser.add_argument('--type', type=str, default='vanilla', help='Type of model to use.')
-    parser.add_argument('--multi_tasks', action='store_true', help='Use multi-tasks in the model.')
     parser.add_argument('--dirpath', type=str, default='checkpoints', help='Directory to save checkpoints.')
     parser.add_argument('--noise_factor', type=float, default=0.0, help='Noise factor (Std) for the model.')
     parser.add_argument('--debug', action='store_true', help='Debug mode in Trainer.')    
@@ -68,14 +70,13 @@ def save_model_config(args, seq_len: int, in_chans: int):
 def main():
     args = parse_args()
 
-    load_dotenv()
     seed_everything(args.seed)
 
     try:
         train_dataloader, val_dataloader = create_dataloaders(args.data_dir, args.batch_size)
 
         # Get data shape from the dataset
-        sample_data = train_dataloader.dataset[0][1]  # Assumes dataset returns (seq_len, in_chans)
+        sample_data = train_dataloader.dataset[0]  # Assumes dataset returns (seq_len, in_chans)
         seq_len, in_chans = sample_data.shape
 
         model = TSMVAE(
@@ -94,10 +95,9 @@ def main():
             noise_factor=args.noise_factor,
         )
 
-
         save_model_config(args, seq_len, in_chans)
 
-        pl_model = PreTrainLightning(model=model, lr=args.learning_rate, multi_tasks=args.multi_tasks)
+        pl_model = PreTrainLightning(model=model, lr=args.learning_rate, warmup_steps=2000)
 
         checkpoint_callback = ModelCheckpoint(
             dirpath=args.dirpath,
@@ -108,9 +108,12 @@ def main():
         )
 
         lr_monitor = LearningRateMonitor(logging_interval='epoch')
-        early_stop_callback = EarlyStopping(monitor="val_loss", patience=100, mode="min")
+        early_stop_callback = EarlyStopping(monitor="val_loss", patience=10, mode="min")
 
         torch.set_float32_matmul_precision('high')
+
+        logger = CSVLogger("logs/", name=args.dirpath)
+
         trainer = Trainer(
             max_epochs=args.max_epochs,
             accelerator='auto',
@@ -119,7 +122,8 @@ def main():
             log_every_n_steps=10,
             enable_progress_bar=False,
             precision="32-true",
-            fast_dev_run=args.debug
+            fast_dev_run=args.debug,
+            logger=logger
         )
         
         trainer.fit(pl_model, train_dataloader, val_dataloader)

@@ -1,6 +1,6 @@
 #!/bin/bash
-beta_values=(0)
-mask=0.5
+beta_values=(1)
+mask=0.15
 d=128
 ed=64
 enc_depth=6
