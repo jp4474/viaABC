@@ -437,6 +437,11 @@ class CARModel(viaABC):
         d_y1 = alpha_tau * total_fob - delta * y1  # CAR positive FOB growth
         d_y2 = mu_tau * total_fob + beta_tau * car_neg_mzb - lambda_WT * y2  # CAR positive MZB growth
 
+<<<<<<< HEAD
+=======
+        # return np.array([d_y1, d_y2, d_y3])
+
+>>>>>>> b14f2f5 (update)
         return np.array([d_y1, d_y2])
 
     def sample_priors(self):

@@ -81,10 +81,20 @@ def create_dataloaders(data_dir: str, batch_size: int) -> Tuple[DataLoader, Data
     if not os.path.exists(data_dir):
         raise FileNotFoundError(f"Data directory {data_dir} does not exist.")
 
+<<<<<<< HEAD
     train_dataset = SpatialSIRDataset(data_dir, prefix='train')
     val_dataset = SpatialSIRDataset(data_dir, prefix='val')
     # train_dataset = CARDataset(data_dir, prefix='train')
     # val_dataset = CARDataset(data_dir, prefix='val')
+=======
+    # train_dataset = LotkaVolterraDataset(data_dir, prefix='train')
+    # val_dataset = LotkaVolterraDataset(data_dir, prefix='val')
+    # train_dataset = CARDataset(data_dir, prefix='train')
+    # val_dataset = CARDataset(data_dir, prefix='val')
+
+    train_dataset = SpatialSIRDataset(data_dir, prefix='train')
+    val_dataset = SpatialSIRDataset(data_dir, prefix='val')
+>>>>>>> b14f2f5 (update)
 
     # # Ensure data type matches precision setting
     train_dataset.simulations = train_dataset.simulations.astype('float32')

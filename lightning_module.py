@@ -52,6 +52,7 @@ class PreTrainLightning(L.LightningModule):
             eps=1e-6,
             weight_decay=0.01,
         )
+
         def linear_warmup_decay(step, warmup_steps, total_steps):
             if step < warmup_steps:
                 return step / warmup_steps
@@ -77,19 +78,20 @@ class PreTrainLightning(L.LightningModule):
         return self.model.get_latent(x, pooling_method)
 
 class PreTrainLightningSpatial(L.LightningModule):
-    def __init__(self, model, lr=1e-3, warmup_steps=500, total_steps=80000):
+    def __init__(self, model, lr=1e-3, warmup_steps=500, total_steps=80000, mask_ratio=0.75):
         super().__init__()
         self.model = model
         self.lr = lr
         self.warmup_steps = warmup_steps
         self.total_steps = total_steps
+        self.mask_ratio = mask_ratio
 
-    def forward(self, simulations, mask_ratio = 0.75):
+    def forward(self, simulations, mask_ratio = None):
         return self.model(simulations, mask_ratio = mask_ratio)
 
     def training_step(self, batch):
         simulations = batch
-        loss, space_loss, _, _ = self(simulations)
+        loss, space_loss, _ = self(simulations, self.mask_ratio)
         self.log("train_recon_loss", loss, prog_bar=False, on_step=False, on_epoch=True)
         self.log("train_space_loss", space_loss, prog_bar=False, on_step=False, on_epoch=True)
         total_loss = loss + space_loss
@@ -98,7 +100,7 @@ class PreTrainLightningSpatial(L.LightningModule):
 
     def validation_step(self, batch):
         simulations = batch
-        loss, space_loss, _, _ = self(simulations)
+        loss, space_loss, _ = self(simulations, self.mask_ratio)
         self.log("val_recon_loss", loss, prog_bar=False, on_step=False, on_epoch=True)
         self.log("val_space_loss", space_loss, prog_bar=False, on_step=False, on_epoch=True)
         total_loss = loss + space_loss

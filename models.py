@@ -777,13 +777,13 @@ class MaskedAutoencoderViT3D(nn.Module):
         elif self.z_type == 'vanilla':
             space_loss = 0
 
-        return loss + self.lambda_ * space_loss
+        return loss, self.lambda_ * space_loss
 
     def forward(self, imgs, mask_ratio=0.75):
         latent, mask, ids_restore = self.forward_encoder(imgs, mask_ratio)
         pred = self.forward_decoder(latent, ids_restore)  # [N, L, p*p*3]
-        loss = self.forward_loss(imgs, pred, mask)
-        return loss, pred, mask
+        loss, space_loss = self.forward_loss(imgs, pred, mask)
+        return loss, space_loss, pred
     
     def get_latent(self, x, pooling_method = None):
         targets = self.patchify(x)
