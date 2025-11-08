@@ -7,7 +7,6 @@
 *.pyc
 checkpoints
 .neptune
-data
 lightning_logs
 penv
 *.checkpoints
@@ -22,3 +21,4 @@ penv
 *.gz
 .venv
 Sirs/
+data_temp/
