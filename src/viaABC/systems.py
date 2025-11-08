@@ -68,9 +68,14 @@ class SpatialSIR3D(viaABC):
         initial_infected = 5,
         radius = 5):
 
-        observational_data = self.labels2map(np.load('/home/jp4474/viaABC/data/SPATIAL/data.npy'))
+        observational_data = self.labels2map(observational_data) # Your observational data may not require this step
 
         super().__init__(num_parameters, mu, sigma, observational_data, model, state0, t0, tmax, time_space, pooling_method, metric)
+        observational_data = self.labels2map(observational_data) # Your observational data may not require this step
+
+        self.logger.info("Your observational data shape: %s", observational_data.shape)
+        self.logger.info("Converted labels to one-hot encoded maps. Remove this step if not needed.")
+
         self.grid_size = grid_size
         self.initial_infected = initial_infected
         self.radius = radius

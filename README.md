@@ -3,6 +3,11 @@ We combine a generative deep learning framework with ABC to infer the underlying
 
 Jun Won Park, Kangyu Zhao, Sanket Rane. \textit{Spatiodynamic Inference Using Vision-Based Generative Modelling}. ArXiv Preprint, 2025. https://arxiv.org/abs/2507.22256
 
+# Defining System
+
+You must define a custom system that inherits viaABC class. Please see src.viaABC.systems.py file for examples.
+
+
 ```bibtex
 @misc{park2025spatiodynamicinferenceusingvisionbased,
       title={Spatiodynamic inference using vision-based generative modelling}, 
