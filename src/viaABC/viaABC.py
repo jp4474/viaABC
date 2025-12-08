@@ -30,7 +30,8 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 
 from tqdm import tqdm
-from src.utils.utils import *
+from src.utils.viaABC_utils.utils import *
+from typing import Callable
 
 class viaABC:
     """Implementation of the viaABC algorithm for approximate Bayesian computation."""
@@ -49,29 +50,8 @@ class viaABC:
         time_space: np.ndarray,
         pooling_method: str = "cls",
         metric: str = "cosine",
+        transform: Callable = None,
     ) -> None:
-        """Initialize the viaABC algorithm.
-
-        Args:
-            num_parameters: Number of parameters in the ODE system.
-            mu: Mean values for normal priors.
-            sigma: Standard deviation values for normal priors.
-            observational_data: Observational/reference data to compare against.
-                Shape must be T x d where d is the dimension of the data and
-                T is the number of time points.
-            model: The latent encoding model to be used in the algorithm.
-            state0: Initial state of the system. Can be None if you want to sample
-                the initial state.
-            t0: Initial time. Must be provided.
-            tmax: Maximum time. Must be provided.
-            time_space: Evaluation space, must be sorted in ascending order.
-            pooling_method: Method for pooling data. Must be provided.
-            metric: Distance metric to use. Defaults to "cosine".
-
-        Raises:
-            ValueError: If required parameters are not provided.
-            AssertionError: If various dimension and value checks fail.
-        """
         self.logger = logging.getLogger(__name__)
         logging.basicConfig(level=logging.INFO)
         self.logger.info("Initializing viaABC class")
@@ -96,25 +76,27 @@ class viaABC:
             raise ValueError("tmax must be provided")
         self.tmax = tmax
 
-        self.time_space = time_space
-
         # Validate time parameters
         assert self.t0 < self.tmax, "t0 must be less than tmax"
-        assert (
-            self.tmax >= time_space[-1]
-        ), "tmax must be greater than or equal to the last element of time_space"
-        assert (
-            self.t0 <= time_space[0]
-        ), "t0 must be less than or equal to the first element of time_space"
 
-        # Validate data dimensions
-        assert observational_data.shape[0] == len(
-            time_space
-        ), (
-            f"Observational data and time space must match. "
-            f"Got {observational_data.shape[0]} time points in data but "
-            f"{len(time_space)} in time space."
-        )
+        if time_space is not None:
+            self.time_space = time_space
+       
+            assert (
+                self.tmax >= self.time_space[-1]
+            ), "tmax must be greater than or equal to the last element of time_space"
+            assert (
+                self.t0 <= time_space[0]
+            ), "t0 must be less than or equal to the first element of time_space"
+
+            # Validate data dimensions
+            assert observational_data.shape[0] == len(
+                time_space
+            ), (
+                f"Observational data and time space must match. "
+                f"Got {observational_data.shape[0]} time points in data but "
+                f"{len(time_space)} in time space."
+            )
 
         self.num_parameters = num_parameters
         self.mu = mu
@@ -228,10 +210,7 @@ class viaABC:
         Returns:
             np.ndarray: Distance measures between 0 and 2 for each item in the batch
         """
-        x = self.encoded_observational_data  # Encoded data (single reference vector)
-        # safe-guard
-        #if y.shape[0] == 1:
-        #    y = y.squeeze(0)
+        x = self.encoded_observational_data 
         
         if self.metric == "cosine":
             # Compute cosine similarity for all items in the batch
@@ -961,7 +940,9 @@ class viaABC:
         
         # if x is numpy convert to tensor
         if isinstance(x, np.ndarray):
-            x = torch.tensor(x, dtype=torch.float32).to(self.model.device)
+            x = torch.tensor(x, dtype=torch.float32).to(self.model.device).unsqueeze(0)
+        else:
+            x = x.to(self.model.device).unsqueeze(0)
 
         x = self.model.get_latent(x, self.pooling_method)
 

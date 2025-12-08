@@ -8,6 +8,10 @@ from scipy.ndimage import convolve
 from scipy.integrate import solve_ivp
 from functools import lru_cache
 
+import sys
+sys.path.append("/home/jp4474/viaABC/src/viaABC/spatial2D/build")
+import cellular_sim_2d as sim
+
 class LotkaVolterra(viaABC):
     def __init__(self,
         num_parameters = 2, 
@@ -21,8 +25,10 @@ class LotkaVolterra(viaABC):
         tmax = 15, 
         time_space = np.array([1.1, 2.4, 3.9, 5.6, 7.5, 9.6, 11.9, 14.4]),
         pooling_method = "no_cls",
-        metric = "pairwise_cosine"):
-        super().__init__(num_parameters, mu, sigma, observational_data, model, state0, t0, tmax, time_space, pooling_method, metric)
+        metric = "pairwise_cosine",
+        transform = None):
+        self.transform = transform
+        super().__init__(num_parameters, mu, sigma, observational_data, model, state0, t0, tmax, time_space, pooling_method, metric,)
         self.lower_bounds = mu 
         self.upper_bounds = sigma
 
@@ -46,9 +52,78 @@ class LotkaVolterra(viaABC):
         return probabilities
     
     def preprocess(self, x):
-        mean = np.mean(np.abs(x), 0)
-        x = x / mean
+        if self.transform is not None:
+            x = self.transform(x)
         return x
+    
+class Spatial2D(viaABC):
+    def __init__(self,
+        num_parameters = 3, 
+        mu = np.array( [0.2, 0.2, 0.2]), # Lower Bound
+        sigma = np.array([4.5, 4.5, 4.5]),
+        model = None, 
+        observational_data = None,
+        state0 = None,
+        t0 = 0,
+        tmax = 24,
+        time_space = 1,
+        pooling_method = "no_cls",
+        metric = "pairwise_cosine",):
+
+        super().__init__(num_parameters, mu, sigma, observational_data, model, state0, t0, tmax, time_space, pooling_method, metric)
+        self.lower_bounds = mu
+        self.upper_bounds = sigma
+        
+    def simulate(self, initial_grid: np.ndarray, parameters: np.ndarray, dt: float):
+        if initial_grid is None:
+            initial_grid = self.observational_data
+
+        params = sim.Parameters()
+        params.alpha = parameters[0]
+        params.beta = parameters[1]
+        params.gamma = parameters[2]
+        params.dt = dt if dt is not None else 0.1
+        params.t0 = self.t0
+        params.t_end = self.tmax
+
+        g = sim.GridFromNumpy(initial_grid, params)
+        g.simulate()
+
+        return np.array(g.getGrid()), 0
+    
+    def sample_priors(self):
+        # Sample from the prior distribution
+        priors = np.random.uniform(self.lower_bounds, self.upper_bounds, self.num_parameters)
+        return priors
+            
+    def calculate_prior_log_prob(self, parameters):
+        # Calculate the prior log probability of the parameters
+        # This must match the prior distribution used in sampling
+        log_probabilities = uniform.logpdf(parameters, loc=self.lower_bounds, scale=self.upper_bounds - self.lower_bounds) 
+        return np.sum(log_probabilities)
+
+    def labels2map(self, y):
+        STATE_R = 0  # R cells (Red) - cells that can be activated
+        STATE_Y = 1  # Y cells (Yellow) - Activated with rate alpha
+        STATE_B = 2  # B cells (Blue) - these stay unchanged
+        STATE_X = 3  # X cells (no color) - these stay unchanged
+        STATE_G = 4  # G cells (Green) - converted from Y with upregulation rate beta
+        STATE_H = 5  # H cells (Hotspot) - formed from G cells with some probability
+
+        state_R = (y == STATE_R)
+        state_Y = (y == STATE_Y)
+        state_B = (y == STATE_B)
+        state_X = (y == STATE_X)
+        state_G = (y == STATE_G)
+        state_H = (y == STATE_H)
+
+        y_onehot = np.stack([state_R, state_Y, state_B, state_X, state_G, state_H], axis=1)  # Shape: (6, H, W)
+
+        return y_onehot
+    
+    def preprocess(self, x):
+        return x
+
 
 class SpatialSIR3D(viaABC):
     def __init__(self,

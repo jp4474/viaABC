@@ -1,6 +1,19 @@
 import os
 import numpy as np
+import torch
 import yaml
+from omegaconf import OmegaConf, DictConfig
+from hydra.utils import instantiate
+import hydra
+
+def strip_orig_mod(state_dict):
+    new_state_dict = {}
+    for k, v in state_dict.items():
+        # Remove "model._orig_mod." → "model."
+        new_k = k.replace("model._orig_mod.", "model.")
+        new_state_dict[new_k] = v
+    return new_state_dict
+
 
 def load_pretrained_model(
     folder_name: str,

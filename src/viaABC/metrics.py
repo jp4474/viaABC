@@ -11,14 +11,14 @@ def l2_distance(x, y):
 
 def cosine_similarity(x, y):
     """Compute the Cosine Similarity between two vectors."""
-    x_norm = x / np.linalg.norm(x, axis=0, keepdims=True)
+    x_norm = x / np.linalg.norm(x, axis=1, keepdims=True)
 
-    y_norm = y / np.linalg.norm(y, axis=0, keepdims=True)
+    y_norm = y / np.linalg.norm(y, axis=1, keepdims=True)
 
     # Compute the cosine similarity matrix for each batch
     cosine_sim = np.dot(x_norm, y_norm.T)
 
-    return cosine_sim
+    return cosine_sim.item()
 
 def bert_score(x, y):
     """Compute BERTScore (Precision, Recall, F1) between two sets of embeddings."""

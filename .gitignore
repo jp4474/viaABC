@@ -24,3 +24,6 @@ Sirs/
 data_temp/
 notebooks_lotka_temp/
 notebooks_sir_temp/
+myenv/
+.pytest_cache
+logs
