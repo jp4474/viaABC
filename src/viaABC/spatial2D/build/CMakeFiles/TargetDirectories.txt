@@ -1,0 +1,3 @@
+/home/jp4474/viaABC/src/viaABC/spatial2D/build/CMakeFiles/spatial2D_cpp.dir
+/home/jp4474/viaABC/src/viaABC/spatial2D/build/CMakeFiles/edit_cache.dir
+/home/jp4474/viaABC/src/viaABC/spatial2D/build/CMakeFiles/rebuild_cache.dir

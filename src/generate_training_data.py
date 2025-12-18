@@ -10,9 +10,8 @@ def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description='Generate simulations')
     parser.add_argument('--train_sizes', 
                        type=int, 
-                       nargs=3,
-                       default=[50000, 10000, 10000],
-                       help='List of three integers for training data sizes')
+                       default=50000,
+                       help='Training data sizes')
     
     parser.add_argument('--seed', 
                        type=int,
@@ -42,7 +41,7 @@ def main(train_sizes: List[int], seed: int, num_workers: int, num_repeats: int) 
     """
     
     # Initialize and run simulation
-    model = LotkaVolterra()
+    model = Spatial2D()
     model.generate_training_data(train_sizes, seed=seed, num_workers=num_workers)
 
 if __name__ == "__main__":

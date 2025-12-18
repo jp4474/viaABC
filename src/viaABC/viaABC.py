@@ -814,7 +814,7 @@ class viaABC:
         def run_simulation(i: int, param) -> tuple | None:
             """Run a single simulation and return results or None on failure."""
             try:
-                simulation, status = self.simulate(param)
+                simulation, status = self.simulate(parameters = param)
                 if status == 0:
                     return simulation, param
                 else:
@@ -859,22 +859,18 @@ class viaABC:
         else:
             self.logger.warning("No valid simulations to save.")
 
-    def generate_training_data(self, num_simulations: list = [50000, 10000, 10000], save_dir: str = "data", seed: int = 1234, num_workers: int = 1):
+    def generate_training_data(self, num_simulations: int = 50000, save_dir: str = "data", seed: int = 1234, num_workers: int = 1):
         np.random.seed(seed)
         self.logger.info(f"Generating training data for training with seed {seed}")
 
-        prefix = ["train", "val", "test"]
-        total_time = 0  # Initialize the total time counter
-        
-        for i, num_simulation in enumerate(num_simulations):
-            self.logger.info(f"Generating {num_simulation} simulations for training data")
-            start = time.time()
-            self.__batch_simulations(num_simulation, save_dir, prefix=prefix[i], num_threads=num_workers * 2)
-            end = time.time()
-            elapsed = end - start
-            total_time += elapsed
-            self.logger.info(f"Generated {num_simulation} simulations for training data in {elapsed:.2f} seconds")
-
+        total_time = 0
+        self.logger.info(f"Generating {num_simulations} simulations for training data")
+        start = time.time()
+        self.__batch_simulations(num_simulations, save_dir, prefix='train', num_threads=num_workers * 2)
+        end = time.time()
+        elapsed = end - start
+        total_time += elapsed
+        self.logger.info(f"Generated {num_simulations} simulations for training data in {elapsed:.2f} seconds")
         self.logger.info(f"Training data generation completed and saved. Total time taken: {total_time:.2f} seconds")
 
     def update_train_dataset(self, train_dataset):
@@ -938,12 +934,14 @@ class viaABC:
         if self.model is None:
             raise ValueError("Model must be provided to encode the data and run the method.")
         
-        # if x is numpy convert to tensor
         if isinstance(x, np.ndarray):
-            x = torch.tensor(x, dtype=torch.float32).to(self.model.device).unsqueeze(0)
+            x = torch.from_numpy(x).float().to(self.model.device)
+        elif isinstance(x, torch.Tensor):
+            x = x.float().to(self.model.device)
         else:
-            x = x.to(self.model.device).unsqueeze(0)
+            raise TypeError(f"Unsupported type for x: {type(x)}")
 
+        x = x.unsqueeze(0)
         x = self.model.get_latent(x, self.pooling_method)
 
         # if x is tensor convert to numpy, safeguard

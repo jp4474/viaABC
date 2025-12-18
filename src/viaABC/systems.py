@@ -10,7 +10,8 @@ from functools import lru_cache
 
 import sys
 sys.path.append("/home/jp4474/viaABC/src/viaABC/spatial2D/build")
-import cellular_sim_2d as sim
+import spatial2D_cpp as cpp
+from PIL import Image
 
 class LotkaVolterra(viaABC):
     def __init__(self,
@@ -24,7 +25,7 @@ class LotkaVolterra(viaABC):
         t0 = 0,
         tmax = 15, 
         time_space = np.array([1.1, 2.4, 3.9, 5.6, 7.5, 9.6, 11.9, 14.4]),
-        pooling_method = "no_cls",
+        pooling_method = "all",
         metric = "pairwise_cosine",
         transform = None):
         self.transform = transform
@@ -59,37 +60,72 @@ class LotkaVolterra(viaABC):
 class Spatial2D(viaABC):
     def __init__(self,
         num_parameters = 3, 
-        mu = np.array( [0.2, 0.2, 0.2]), # Lower Bound
-        sigma = np.array([4.5, 4.5, 4.5]),
+        mu = np.array( [0., 0., 0.]), # Lower Bound
+        sigma = np.array([1., 1., 1.]),
         model = None, 
         observational_data = None,
         state0 = None,
         t0 = 0,
         tmax = 24,
-        time_space = 1,
-        pooling_method = "no_cls",
+        dt = 0.1,
+        time_space = None,
+        pooling_method = "all",
         metric = "pairwise_cosine",):
 
-        super().__init__(num_parameters, mu, sigma, observational_data, model, state0, t0, tmax, time_space, pooling_method, metric)
+        def read_image_as_matrix(image_path):
+        # converts an image to a numpy array
+            img = Image.open(image_path)
+            # Convert to numpy array
+            img_array = np.array(img)
+            
+            return img_array
+
+        raw = read_image_as_matrix("/home/jp4474/viaABC/data/spatial2D/raw/image1_processed.jpg")
+        img = raw.copy()
+        
+        # Define thresholds for color classification
+        red_threshold = 40
+        green_threshold = 40
+        blue_threshold = 50
+
+        # pixels that have both red and green high are yellow,
+        yellow_mask = (img[:, :, 0] > red_threshold) & (img[:, :, 1] > green_threshold) & (img[:, :, 2] < blue_threshold)
+        # no color mask
+        no_color_mask = (img[:, :, 0] < red_threshold) & (img[:, :, 1] < green_threshold) & (img[:, :, 2] < blue_threshold)
+
+        # Create masks for each color
+        red_mask = (img[:, :, 0] > red_threshold) & (img[:, :, 1] < green_threshold) & (img[:, :, 2] < blue_threshold)
+        green_mask = (img[:, :, 0] < red_threshold) & (img[:, :, 1] > green_threshold) & (img[:, :, 2] < blue_threshold)
+        blue_mask = (img[:, :, 0] < red_threshold) & (img[:, :, 1] < green_threshold) & (img[:, :, 2] > blue_threshold)
+
+        # intialize grid with pixels with red_mask as 0,  yellow_mask as 1, blue_mask as 2, no_color_mask as 3
+        grid = np.zeros(img.shape[:2], dtype=int)
+        grid[red_mask] = 0
+        grid[yellow_mask] = 1
+        grid[blue_mask] = 2
+        grid[no_color_mask] = 3
+        grid[green_mask] = 4
+        self.observational_data = grid[None, ...]
+
+        super().__init__(num_parameters, mu, sigma, self.observational_data, model, state0, t0, tmax, time_space, pooling_method, metric)
         self.lower_bounds = mu
         self.upper_bounds = sigma
+        self.dt = dt
+        self.observational_data_flattened = self.observational_data[0].astype(int).tolist()
         
-    def simulate(self, initial_grid: np.ndarray, parameters: np.ndarray, dt: float):
-        if initial_grid is None:
-            initial_grid = self.observational_data
-
-        params = sim.Parameters()
+    def simulate(self, parameters: np.ndarray):
+        params = cpp.Parameters()
         params.alpha = parameters[0]
         params.beta = parameters[1]
         params.gamma = parameters[2]
-        params.dt = dt if dt is not None else 0.1
+        params.dt = self.dt
         params.t0 = self.t0
         params.t_end = self.tmax
 
-        g = sim.GridFromNumpy(initial_grid, params)
+        g = cpp.Grid(self.observational_data_flattened, params)
         g.simulate()
 
-        return np.array(g.getGrid()), 0
+        return g.numpy(), 0
     
     def sample_priors(self):
         # Sample from the prior distribution
@@ -103,27 +139,12 @@ class Spatial2D(viaABC):
         return np.sum(log_probabilities)
 
     def labels2map(self, y):
-        STATE_R = 0  # R cells (Red) - cells that can be activated
-        STATE_Y = 1  # Y cells (Yellow) - Activated with rate alpha
-        STATE_B = 2  # B cells (Blue) - these stay unchanged
-        STATE_X = 3  # X cells (no color) - these stay unchanged
-        STATE_G = 4  # G cells (Green) - converted from Y with upregulation rate beta
-        STATE_H = 5  # H cells (Hotspot) - formed from G cells with some probability
-
-        state_R = (y == STATE_R)
-        state_Y = (y == STATE_Y)
-        state_B = (y == STATE_B)
-        state_X = (y == STATE_X)
-        state_G = (y == STATE_G)
-        state_H = (y == STATE_H)
-
-        y_onehot = np.stack([state_R, state_Y, state_B, state_X, state_G, state_H], axis=1)  # Shape: (6, H, W)
-
-        return y_onehot
+        return np.eye(6, dtype=np.float32)[y].transpose(2, 0, 1)
     
     def preprocess(self, x):
+        if x.ndim == 2:
+            x = x[None, ...]
         return x
-
 
 class SpatialSIR3D(viaABC):
     def __init__(self,

@@ -53,15 +53,29 @@ def bert_score_batch(x, y):
     scores = np.array(scores)
     return scores.mean()
 
-def pairwise_cosine(x, y):
+def pairwise_cosine(x, y, eps=1e-8):
+    """
+    x: (B, T, D)
+    y: (1, T, D)  or broadcastable to x
+    returns: scalar — mean cosine similarity over batch and time
+    """
     assert x.ndim == 3 and y.ndim == 3, "Input arrays must be 3D"
+    assert y.shape[0] == 1, "y must have batch size 1"
+    assert x.shape[1:] == y.shape[1:], "x and y must match in (T, D)"
 
-    x_norm = x / np.linalg.norm(x, axis=-1, keepdims=True)
-    y_norm = y / np.linalg.norm(y, axis=-1, keepdims=True)
+    # Normalize along feature dimension
+    x_norm = x / (np.linalg.norm(x, axis=-1, keepdims=True) + eps)
+    y_norm = y / (np.linalg.norm(y, axis=-1, keepdims=True) + eps)
 
-    cos_sim = np.mean(np.sum(x_norm * y_norm, axis=-1), axis=-1)[0]
+    # Broadcast y over batch: (B, T, D)
+    # cosine per timestep: (B, T)
+    cos_per_t = np.sum(x_norm * y_norm, axis=-1)
 
-    return cos_sim
+    # mean over time → (B,)
+    cos_per_batch = cos_per_t.mean(axis=-1)
+
+    # mean over batch → scalar
+    return cos_per_batch.mean()
 
 def maxSim(x, y):
     """

@@ -34,6 +34,15 @@ class LotkaVolterraDataset(BaseNumpyDataset):
         x = torch.as_tensor(x, dtype=torch.float32)
         return x
     
+class Spatial2DDataset(BaseNumpyDataset):
+    def __init__(self, data_dir, prefix="train"):
+        super().__init__(data_dir, prefix,)
+
+    def __getitem__(self, idx):
+        x = self.simulations[idx]
+        x = torch.as_tensor(x, dtype=torch.float32).unsqueeze(0)  # Add channel dimension
+        return x
+    
 class SpatialSIRDataset(BaseNumpyDataset):
     def __init__(self, data_dir, prefix="train", transform=None):
         super().__init__(data_dir, prefix, transform)

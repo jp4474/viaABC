@@ -12,7 +12,8 @@ class PreTrainLightning(L.LightningModule):
                 net: DictConfig,
                 optimizer: torch.optim.Optimizer,
                 scheduler: torch.optim.lr_scheduler,
-                compile: bool):
+                compile: bool,
+                vae_warmup_steps: int = 100000,):
         super().__init__()
         
         self.save_hyperparameters(logger=False)
@@ -22,23 +23,45 @@ class PreTrainLightning(L.LightningModule):
         self.scheduler = scheduler
         self.compile = compile
         self.prog_bar = True
+        self.vae_warmup_steps = vae_warmup_steps
 
-    def forward(self, simulations, mask_ratio = None):
+    def forward(self, simulations, mask_ratio=None):
+        # forward should ONLY do forward-pass logic
         recon_loss, space_loss, _ = self.model(simulations, mask_ratio)
         return recon_loss, space_loss
-    
-    def training_step(self, batch):
-        simulations = batch
-        loss, space_loss = self(simulations)
-        scaled_space_loss =  self.annealer(space_loss)
-        
-        self.log("train/recon_loss", loss, prog_bar=self.prog_bar, on_step=True, on_epoch=True)
+
+    def forward_step(self, simulations):
+        """Shared loss computation for both training and validation."""
+        recon_loss, space_loss = self(simulations)
+        scaled_space_loss = self.annealer(space_loss)
+        total_loss = recon_loss + scaled_space_loss
+        return recon_loss, space_loss, scaled_space_loss, total_loss
+
+    def training_step(self, batch, batch_idx):
+        recon_loss, space_loss, scaled_space_loss, total_loss = self.forward_step(batch)
+        # Logging
+        self.log("train/recon_loss", recon_loss, prog_bar=self.prog_bar, on_step=True, on_epoch=True)
         self.log("train/space_loss", space_loss, prog_bar=self.prog_bar, on_step=True, on_epoch=True)
         self.log("train/scaled_space_loss", scaled_space_loss, prog_bar=self.prog_bar, on_step=True, on_epoch=True)
-        total_loss = loss + scaled_space_loss
         self.log("train/loss", total_loss, prog_bar=self.prog_bar, on_step=True, on_epoch=True)
         self.log("train/kld_weight", self.annealer._slope(), prog_bar=self.prog_bar, on_step=True, on_epoch=True)
+
+        # Move scheduler AFTER logging
         self.annealer.step()
+        
+        return total_loss
+
+    def validation_step(self, batch, batch_idx):        
+        recon_loss, space_loss, _ = self.model(batch, 0.0)
+
+        scaled_space_loss = self.annealer(space_loss)
+        total_loss = recon_loss + scaled_space_loss
+        # No annealer stepping here!
+        self.log("val/recon_loss", recon_loss, prog_bar=self.prog_bar, on_step=True, on_epoch=True)
+        self.log("val/space_loss", space_loss, prog_bar=self.prog_bar, on_step=True, on_epoch=True)
+        self.log("val/scaled_space_loss", scaled_space_loss, prog_bar=self.prog_bar, on_step=True, on_epoch=True)
+        self.log("val/loss", total_loss, prog_bar=self.prog_bar, on_step=True, on_epoch=True)
+
         return total_loss
 
     def test_step(self, batch):
@@ -55,7 +78,7 @@ class PreTrainLightning(L.LightningModule):
         """
         if self.compile and stage == "fit":
             self.model = torch.compile(self.model)
-            self.annealer = Annealer(total_steps=53333, shape='cosine', baseline=0.0, cyclical=True, disable=False)
+            self.annealer = Annealer(total_steps=self.vae_warmup_steps, shape='cosine', baseline=0.0, cyclical=True, disable=False)
             
     def configure_optimizers(self) -> Dict[str, Any]:
         """Choose what optimizers and learning-rate schedulers to use in your optimization.

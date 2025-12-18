@@ -235,8 +235,13 @@ class TSMVAE(nn.Module):
         # return loss
 
         loss = (pred - x) ** 2
-        loss = loss.mean()
 
+        # if self.training:
+        #     loss = loss.mean(dim=-1)
+        #     loss = (loss * mask).sum() / mask.sum()  # mean loss on removed patches
+        # else:
+        #     loss = loss.mean()
+        loss = loss.mean()
         # loss = (loss * mask).sum() / mask.sum()  # mean loss on removed patches
         return loss
 
@@ -260,12 +265,9 @@ class TSMVAE(nn.Module):
             kl_per_token = -0.5 * torch.sum(
                 1 + logvar - mu.pow(2) - logvar.exp(),
                 dim=-1,   # sum over D
-            )   # shape [B, T]
+            )   # shape [B, T * mask_ratio]
 
-            space_loss = kl_per_token.mean() 
-            # space_loss = torch.mean(-0.5 * torch.sum(1 + self.decoder_embed[1].latent_logvar \
-            #                                          - self.decoder_embed[1].latent_mean ** 2 \
-            #                                             - self.decoder_embed[1].latent_logvar.exp(), dim = -1), dim = -1).mean(0)
+            space_loss = kl_per_token.mean()
         else:
             space_loss = 0
 

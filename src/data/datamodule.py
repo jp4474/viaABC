@@ -3,7 +3,7 @@
 from typing import Optional, Callable, Type, Any
 from torch.utils.data import DataLoader
 import lightning as L
-from torch.utils.data import Dataset # Or wherever your BaseNumpyDataset comes from
+from torch.utils.data import Dataset, random_split
 from hydra.utils import instantiate
 
 class SimulationDataModule(L.LightningDataModule):
@@ -31,13 +31,25 @@ class SimulationDataModule(L.LightningDataModule):
         self.pin_memory = pin_memory
 
     def setup(self, stage=None):
-        self.train_dataset = self.dataset_cls
+        self.dataest = self.dataset_cls
+        self.train_dataset, self.val_dataset = random_split(
+            self.dataest, [int(0.8 * len(self.dataest)), len(self.dataest) - int(0.8 * len(self.dataest))]
+        )
         
     def train_dataloader(self):
         return DataLoader(
             self.train_dataset,
             batch_size=self.batch_size,
             shuffle=True,
+            num_workers=self.num_workers,
+            pin_memory=self.pin_memory,
+        )
+
+    def val_dataloader(self):
+        return DataLoader(
+            self.val_dataset,
+            batch_size=self.batch_size,
+            shuffle=False,
             num_workers=self.num_workers,
             pin_memory=self.pin_memory,
         )

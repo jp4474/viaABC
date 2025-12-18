@@ -20,7 +20,7 @@ from src.models.components import get_2d_sincos_pos_embed, Lambda
 class MaskedAutoencoderViT(nn.Module):
     """ Masked Autoencoder with VisionTransformer backbone
     """
-    def __init__(self, img_size=224, patch_size=16, in_chans=3,
+    def __init__(self, img_size=1200, patch_size=16, in_chans=1, out_chans=6,
                  embed_dim=1024, depth=24, num_heads=16,
                  decoder_embed_dim=512, decoder_depth=8, decoder_num_heads=16,
                  mlp_ratio=4., norm_layer=nn.LayerNorm, norm_pix_loss=False, mask_ratio=0.75, kld_weight=1.0):
@@ -30,7 +30,7 @@ class MaskedAutoencoderViT(nn.Module):
         # MAE encoder specifics
         self.patch_embed = PatchEmbed(img_size, patch_size, in_chans, embed_dim)
         num_patches = self.patch_embed.num_patches
-
+        self.patch_size = patch_size
         self.mask_ratio = mask_ratio
         self.kld_weight = kld_weight
         
@@ -65,7 +65,7 @@ class MaskedAutoencoderViT(nn.Module):
             for i in range(decoder_depth)])
 
         self.decoder_norm = norm_layer(decoder_embed_dim)
-        self.decoder_pred = nn.Linear(decoder_embed_dim, patch_size**2 * in_chans, bias=True) # decoder to patch
+        self.decoder_pred = nn.Linear(decoder_embed_dim, patch_size**2 * out_chans, bias=True) # decoder to patch
         # --------------------------------------------------------------------------
 
         self.norm_pix_loss = norm_pix_loss
@@ -205,24 +205,78 @@ class MaskedAutoencoderViT(nn.Module):
 
         return x
 
+    # def forward_recon_loss(self, imgs, pred, mask):
+    #     """
+    #     imgs: [N, 3, H, W]
+    #     pred: [N, L, p*p*3]
+    #     mask: [N, L], 0 is keep, 1 is remove, 
+    #     """
+    #     # target = self.patchify(imgs)
+    #     # if self.norm_pix_loss:
+    #     #     mean = target.mean(dim=-1, keepdim=True)
+    #     #     var = target.var(dim=-1, keepdim=True)
+    #     #     target = (target - mean) / (var + 1.e-6)**.5
+
+    #     # loss = (pred - target) ** 2
+
+    #     pred = self.unpatchify(pred)
+    #     target = self.map2labels(imgs)
+    #     loss = nn.CrossEntropyLoss(reduction='mean')(pred, target)  # [N*L]
+
+    #     # if self.training:
+    #     #     loss = loss.mean(dim=-1)  # [N, L], mean loss per patch
+    #     #     loss = (loss * mask).sum() / mask.sum()  # mean loss on removed patches
+    #     # else:
+    #     #     loss = loss.mean()  # mean loss over all patches
+    #     return loss
+    
     def forward_recon_loss(self, imgs, pred, mask):
         """
-        imgs: [N, 3, H, W]
-        pred: [N, L, p*p*3]
-        mask: [N, L], 0 is keep, 1 is remove, 
+        imgs: [N, 1, H, W]        int labels in {0..5}
+        pred: [N, L, p*p*6]
+        mask: [N, L]             1 = masked patch
         """
-        target = self.patchify(imgs)
-        if self.norm_pix_loss:
-            mean = target.mean(dim=-1, keepdim=True)
-            var = target.var(dim=-1, keepdim=True)
-            target = (target - mean) / (var + 1.e-6)**.5
 
-        loss = (pred - target) ** 2
-        loss = loss.mean(dim=-1)  # [N, L], mean loss per patch
+        # --------------------------------------------------
+        # Targets
+        # --------------------------------------------------
+        target = imgs.squeeze(1).long()        # [N, H, W]
 
-        loss = (loss * mask).sum() / mask.sum()  # mean loss on removed patches
+        # --------------------------------------------------
+        # Logits
+        # --------------------------------------------------
+        pred = self.unpatchify(pred)           # [N, 6, H, W]
+
+        # --------------------------------------------------
+        # Pixel-wise CE
+        # --------------------------------------------------
+        loss = torch.nn.functional.cross_entropy(
+            pred,
+            target,
+            reduction="none",
+        )                                      # [N, H, W]
+
+        # --------------------------------------------------
+        # 🔴 FIX: expand patch mask to p*p before unpatchify
+        # --------------------------------------------------
+        p = self.patch_size
+        mask_pp = mask.unsqueeze(-1).expand(-1, -1, p * p)  # [N, L, p*p]
+
+        pixel_mask = self.unpatchify(
+            mask_pp.float()
+        ).squeeze(1)                           # [N, H, W]
+
+        # --------------------------------------------------
+        # Apply mask + normalize
+        # --------------------------------------------------
+        if self.training:
+            loss = (loss * pixel_mask).sum() / pixel_mask.sum()
+        else:
+            loss = loss.mean()
+
         return loss
-    
+
+
     def forward_space_loss(self, mu, logvar):
         kl_per_token = -0.5 * torch.sum(
             1 + logvar - mu.pow(2) - logvar.exp(),
@@ -266,30 +320,3 @@ class MaskedAutoencoderViT(nn.Module):
             return torch.mean(x[:, 1:, :], dim=-1)
         elif pooling_method == "no_cls":
             return x[:, 1:, :]
-    
-def mae_vit_base_patch16_dec512d8b(**kwargs):
-    model = MaskedAutoencoderViT(
-        patch_size=16, embed_dim=768, depth=12, num_heads=12,
-        decoder_embed_dim=512, decoder_depth=8, decoder_num_heads=16,
-        mlp_ratio=4, norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
-    return model
-
-
-def mae_vit_large_patch16_dec512d8b(**kwargs):
-    model = MaskedAutoencoderViT(
-        patch_size=16, embed_dim=1024, depth=24, num_heads=16,
-        decoder_embed_dim=512, decoder_depth=8, decoder_num_heads=16,
-        mlp_ratio=4, norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
-    return model
-
-def mae_vit_huge_patch14_dec512d8b(**kwargs):
-    model = MaskedAutoencoderViT(
-        patch_size=14, embed_dim=1280, depth=32, num_heads=16,
-        decoder_embed_dim=512, decoder_depth=8, decoder_num_heads=16,
-        mlp_ratio=4, norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
-    return model
-
-# set recommended archs
-mae_vit_base_patch16 = mae_vit_base_patch16_dec512d8b  # decoder: 512 dim, 8 blocks
-mae_vit_large_patch16 = mae_vit_large_patch16_dec512d8b  # decoder: 512 dim, 8 blocks
-mae_vit_huge_patch14 = mae_vit_huge_patch14_dec512d8b  # decoder: 512 dim, 8 blocks

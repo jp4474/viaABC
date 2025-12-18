@@ -1,53 +1,56 @@
 #pragma once
+
 #include <vector>
 #include <random>
-#include <string>
+#include <cstddef>
 
-// ---- Cell State Constants ---- //
-const int STATE_R = 0;
-const int STATE_Y = 1;
-const int STATE_B = 2;
-const int STATE_X = 3;
-const int STATE_G = 4;
-const int STATE_H = 5;
-
-// ---- Parameters for Simulation ---- //
-struct Parameters {
-    double alpha;
-    double beta;
-    double gamma;
-    double dt;
-    double t0;
-    double t_end;
+// ---- Cell States ---- //
+enum CellState : uint8_t {
+    STATE_R = 0,
+    STATE_Y = 1,
+    STATE_B = 2,
+    STATE_X = 3,
+    STATE_G = 4,
+    STATE_H = 5
 };
 
-// ---- Grid Class ---- //
+// ---- Parameters ---- //
+struct Parameters {
+    double alpha{0.0};
+    double beta{0.0};
+    double gamma{0.0};
+    double dt{0.0};
+    double t0{0.0};
+    double t_end{0.0};
+};
+
+// ---- Grid ---- //
 class Grid {
 private:
-    std::vector<std::vector<int>> data;
-    int rows, cols;
+    std::size_t rows{0}, cols{0};
+
+    // row-major flattened storage
+    std::vector<uint8_t> data;
+    std::vector<uint8_t> next;
 
     std::mt19937 rng;
-    std::uniform_real_distribution<double> dist;
+    std::uniform_real_distribution<double> dist{0.0, 1.0};
+
     Parameters params;
 
+    inline std::size_t idx(std::size_t i, std::size_t j) const {
+        return i * cols + j;
+    }
+
 public:
-    // Load from text file
-    Grid(const std::string &filename, const Parameters &params);
+    Grid(const std::vector<std::vector<int>>& initial,
+         const Parameters& params);
 
-    // NEW: Construct from numpy (passed as vector<vector<int>>)
-    Grid(const std::vector<std::vector<int>> &initial, const Parameters &params);
+    void simulate();
 
-    void loadFromFile(const std::string &filename);
-    void saveToFile(const std::string &filename);
+    // ---- Accessors ---- //
+    std::size_t getRows() const noexcept { return rows; }
+    std::size_t getCols() const noexcept { return cols; }
 
-    int countNeighbors(int i, int j, int state) const;
-
-    void simulate();                   // one step
-
-    // Python accessors
-    std::vector<std::vector<int>> getGrid() const { return data; }
-    int getRows() const { return rows; }
-    int getCols() const { return cols; }
-    void updateGrid(const std::vector<std::vector<int>> &new_data) { data = new_data; }
+    const std::vector<uint8_t>& raw() const noexcept { return data; }
 };
