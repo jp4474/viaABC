@@ -4,7 +4,6 @@ from typing import Optional, Callable, Type, Any
 from torch.utils.data import DataLoader
 import lightning as L
 from torch.utils.data import Dataset, random_split
-from hydra.utils import instantiate
 
 class SimulationDataModule(L.LightningDataModule):
     def __init__(
@@ -31,9 +30,9 @@ class SimulationDataModule(L.LightningDataModule):
         self.pin_memory = pin_memory
 
     def setup(self, stage=None):
-        self.dataest = self.dataset_cls
+        self.dataset = self.dataset_cls
         self.train_dataset, self.val_dataset = random_split(
-            self.dataest, [int(0.8 * len(self.dataest)), len(self.dataest) - int(0.8 * len(self.dataest))]
+            self.dataset, [int(0.8 * len(self.dataset)), len(self.dataset) - int(0.8 * len(self.dataset))]
         )
         
     def train_dataloader(self):

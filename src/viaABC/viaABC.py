@@ -12,26 +12,21 @@ Some code is referenced from https://github.com/elfi-dev/elfi
 import logging
 import os
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
-
-from typing import Union
-
-from src.viaABC.metrics import *
-# Third-party scientific computing
 import numpy as np
+import torch
+from typing import Union, Callable
+
 from scipy.integrate import solve_ivp
 from scipy.stats import qmc, multivariate_normal
 from scipy.special import logsumexp
 
-# Machine learning and visualization
-import torch
-
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from tqdm import tqdm
-import matplotlib.pyplot as plt
 
-from tqdm import tqdm
-from src.utils.viaABC_utils.utils import *
-from typing import Callable
+from src.viaABC.metrics import *
+from src.utils.viaABC_utils.DensityRatioEstimation import dre_cpp
+from src.utils.viaABC_utils.utils import weighted_var, calculate_densratio_basis_sigma, weighted_sample_quantile
+from src.utils.viaABC_utils.ParticleWeight import particle_weight_cpp
 
 class viaABC:
     """Implementation of the viaABC algorithm for approximate Bayesian computation."""
@@ -275,7 +270,7 @@ class viaABC:
 
     @torch.inference_mode()
     def _run_init(self, num_particles: int, k: int = 5):
-        self.densratio = DensityRatioEstimation(n=100, epsilon=0.001, max_iter=200, abs_tol=0.01, fold=5, optimize=False)
+        self.densratio = dre_cpp.DensityRatioEstimation(n=100, epsilon=0.001, max_iter=1000, abs_tol=1e-4, fold=5, optimize=False)
 
         if self.model is None:
             raise ValueError("Model must be provided to encode the data and run the algorithm.")
@@ -312,7 +307,11 @@ class viaABC:
 
             # Optimized tensor operations
             y_scaled = self.preprocess(y)
-            y_tensor = torch.tensor(y_scaled, dtype=torch.float32, device=device)  # Direct device placement
+            y_tensor = torch.as_tensor(
+                y_scaled,
+                dtype=torch.float32,
+                device=self.model.device,
+            )
             y_latent_np = self.get_latent(y_tensor)
             dist = self.calculate_distance(y_latent_np)
             
@@ -562,37 +561,44 @@ class viaABC:
         prev_particles: np.ndarray,
         prev_weights: np.ndarray,
         prev_cov: np.ndarray,
-        max_attempts: int = 1000
+        batch_size: int = 4,
+        max_attempts: int = 250
     ) -> np.ndarray:
-        """Propose a new particle without calculating weight.
+        """
+        Propose a new particle efficiently using batch proposals.
         
         Args:
             prev_particles: Particles from previous generation
             prev_weights: Weights from previous generation
             prev_cov: Covariance matrix from previous generation
-            max_attempts: Maximum number of attempts before giving up
-            
+            batch_size: Number of candidates to propose per attempt
+            max_attempts: Maximum number of batch attempts
+        
         Returns:
             Particle parameters
-            
+        
         Raises:
-            RuntimeError: If unable to generate valid particle after max_attempts
+            RuntimeError: If unable to generate a valid particle after max_attempts
         """
-        for attempt in range(max_attempts):
-            # Sample particle index based on weights
-            idx = np.random.choice(len(prev_particles), p=prev_weights)
-            theta = prev_particles[idx]
+        for _ in range(max_attempts):
+            # Sample a batch of particle indices based on weights
+            idxs = np.random.choice(len(prev_particles), size=batch_size, p=prev_weights)
+            candidates = prev_particles[idxs]
 
-            perturbed_params = self.perturb_parameters(theta, prev_cov)
-            prior_logpdf = self.calculate_prior_log_prob(perturbed_params)
+            # Perturb all candidates
+            perturbed = np.array([self.perturb_parameters(theta, prev_cov) for theta in candidates])
 
-            # Check if the proposal is valid (finite prior probability)
-            if np.isfinite(prior_logpdf):
-                return perturbed_params
-            
-        # If we get here, we couldn't generate a valid particle
+            # Evaluate prior log-probabilities
+            priors = np.array([self.calculate_prior_log_prob(p) for p in perturbed])
+
+            # Select first valid particle
+            valid = perturbed[np.isfinite(priors)]
+            if len(valid) > 0:
+                return valid[0]
+
+        # Failed to propose a valid particle
         raise RuntimeError(
-            f"Unable to generate valid particle after {max_attempts} attempts. "
+            f"Unable to generate valid particle after {max_attempts * batch_size} proposals. "
             "Consider adjusting prior bounds or covariance matrix."
         )
 
@@ -603,24 +609,19 @@ class viaABC:
         prev_weights: np.ndarray,
         prev_cov: np.ndarray
     ) -> float:
-        """Calculate weight for an accepted particle.
+        """Calculate weight for an accepted particle."""
         
-        Args:
-            theta: Particle parameters
-            prev_particles: Particles from previous generation
-            prev_weights: Weights from previous generation
-            prev_cov: Covariance matrix from previous generation
-            
-        Returns:
-            Particle weight
-        """
-        prior_logpdf = self.calculate_prior_log_prob(theta)
+        prev_particles = np.atleast_2d(prev_particles)
+        prev_cov = np.atleast_2d(prev_cov)
+        prev_cov += 1e-6 * np.eye(prev_cov.shape[0])
 
-        phi = np.array([multivariate_normal.logpdf(theta, mean=x, cov=prev_cov) for x in prev_particles])
-
-        log_weights = np.log(prev_weights) + phi
-        lse = logsumexp(log_weights)
-        new_weight = np.exp(prior_logpdf - lse)
+        new_weight = particle_weight_cpp.calculate_particle_weight(
+            theta,
+            prev_particles,
+            prev_weights,
+            prev_cov,
+            self.calculate_prior_log_prob
+        )
 
         return new_weight
 
@@ -675,9 +676,10 @@ class viaABC:
         max_value = max(self.densratio.max_ratio(), 1.0)
         qt = max(1 / max_value, 0.05)
         epsilon = weighted_sample_quantile(distances, qt, weights=weights_normalized)
+        epsilon = np.float32(epsilon)
 
-        self.logger.info(f'Epsilon : {epsilon:.5f}')
-        self.logger.info(f'Quantile : {qt:.5f}')
+        self.logger.info(f'Epsilon : {epsilon:.7f}')       # float32 ~7 decimals
+        self.logger.info(f'Quantile : {qt:.7f}')
         self.logger.info(f'Simulations : {simulations}')
 
         return {
@@ -705,7 +707,11 @@ class viaABC:
             Distance metric
         """
         y_scaled = self.preprocess(y) 
-        y_tensor = torch.tensor(y_scaled, dtype=torch.float32).to(self.model.device)
+        y_tensor = torch.as_tensor(
+            y_scaled,
+            dtype=torch.float32,
+            device=self.model.device,
+        )
         y_latent_np = self.get_latent(y_tensor) # z_sim
         return self.calculate_distance(y_latent_np)
 
@@ -726,7 +732,7 @@ class viaABC:
             return True
         
         if qt >= q_threshold and generation_num >= 3:
-            self.logger.info(f"Stopping criterion met (qt = {qt:.3f} >= {q_threshold})")
+            self.logger.info(f"Stopping criterion met (qt = {qt:.7f} >= {q_threshold})")
             return True
         
         return False
@@ -761,12 +767,10 @@ class viaABC:
         var = np.average((particles - mean) ** 2, weights=weights, axis=0)
         median = np.median(particles, axis=0)
 
-
-        fmt = lambda arr: np.array2string(np.asarray(arr), formatter={'float_kind': lambda x: f"{x:.4f}"})
+        fmt = lambda arr: np.array2string(np.asarray(arr), formatter={'float_kind': lambda x: f"{x:.7f}"})
         self.logger.info(f"Mean: {fmt(mean)}")
         self.logger.info(f"Median: {fmt(median)}")
         self.logger.info(f"Variance: {fmt(var)}")
-
 
         # TODO: calculate 95% HDI
         # hdi = hdi_of_grid(particles, weights, 0.95)

@@ -2,6 +2,7 @@
 Models module containing neural network implementations.
 """
 from functools import partial
+import math
 
 import torch
 import torch.nn as nn
@@ -13,26 +14,17 @@ from src.models.components import Lambda
 
 class PositionalEncoding(nn.Module):
     def __init__(self, d_model, max_len=5000):
-        super(PositionalEncoding, self).__init__()
-        self.d_model = d_model
+        super().__init__()
+        pe = torch.zeros(max_len+1, d_model)
+        position = torch.arange(0, max_len+1, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        self.register_buffer('pe', pe.unsqueeze(0))  # Shape: (1, max_len+1, d_model)
 
-        # Initialize positional encoding matrix
-        pe = torch.zeros(max_len+1, d_model)  # +1 for [CLS] token
-
-        # Generate positions (0 to max_len, where 0 is for [CLS])
-        pos = torch.arange(0, max_len+1, dtype=torch.float).unsqueeze(1)
-
-        # Compute i values for each dimension
-        i = torch.arange(0, d_model, dtype=torch.float) // 2  # Shape (d_model,)
-        
-        angles = torch.exp(torch.log(pos) - 2 * torch.log(torch.tensor(10000)) * i / d_model)
-        # Apply sine to even indices and cosine to odd indices
-        pe[:, 0::2] = torch.sin(angles[:, 0::2])
-        pe[:, 1::2] = torch.cos(angles[:, 1::2])
-        
-        # Register as buffer to avoid model training
-        self.register_buffer('pe', pe.unsqueeze(0))  # Shape (1, max_len + 1, d_model)
-
+    def forward(self, x):
+        return x + self.pe[:, :x.size(1)]
+    
 class TiMAEEmbedding(nn.Module):
     def __init__(
         self, 
@@ -57,85 +49,77 @@ class TiMAEEmbedding(nn.Module):
 class TSMVAE(nn.Module):
     def __init__(self, seq_len: int, in_chans: int, embed_dim: int, depth: int, num_heads: int, 
                  decoder_embed_dim: int, decoder_depth: int, decoder_num_heads: int, mlp_ratio: float = 4.0, 
-                 norm_layer=partial(nn.LayerNorm, eps=1e-6), dropout = 0.0, 
-                 mask_ratio = 0.15, kld_weight=0.00025, trainable_pos_emb = False, noise_factor = 0.5):
+                 norm_layer=partial(nn.LayerNorm, eps=1e-6), drop_path = 0.0, 
+                 mask_ratio = 0.15, kld_weight=1.0, trainable_pos_emb = False, noise_factor = 0.0):
         super().__init__()
-        # --------------------------------------------------------------------------
-        # Encoder specifics
 
+        # ---------------- Encoder ----------------
         self.embedder = nn.Linear(in_chans, embed_dim, bias=True)
-        self.trunc_init = False
-        self.mask_ratio = mask_ratio
         self.embed_dim = embed_dim
         self.seq_len = seq_len
+        self.mask_ratio = mask_ratio
         self.z_type = 'vae' if kld_weight > 0 else 'vanilla'
         self.kld_weight = kld_weight
-        self.decoder_embed_dim = decoder_embed_dim
         self.noise_factor = noise_factor
-        
-        # self.src_mask = None if not diagonal_attention else torch.ones(
-        #     (int(seq_len*(1 - mask_ratio) + int(cls_embed)), 
-        #      int(seq_len*(1-mask_ratio)+ int(cls_embed))), dtype=torch.bool).triu(diagonal=1)
+        self.trunc_init = False
+        self.decoder_embed_dim = decoder_embed_dim
 
         self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
-        self.pos_embed = nn.Parameter(torch.zeros(1, self.seq_len + 1, embed_dim), requires_grad=trainable_pos_emb)  # fixed sin-cos embedding
-
-        # self.pos_embed = PositionalEncoding(embed_dim, max_len=seq_len)
+        # positional embedding as parameter (learnable if trainable_pos_emb=True)
+        self.pos_embed = nn.Parameter(torch.zeros(1, seq_len + 1, embed_dim), requires_grad=trainable_pos_emb)
 
         self.blocks = nn.ModuleList([
-            Block(embed_dim, num_heads, mlp_ratio, qkv_bias=True, norm_layer=norm_layer, drop_path=0.0, proj_drop=0.0)
-            for i in range(depth)])
-        
+            Block(embed_dim, num_heads, mlp_ratio, qkv_bias=True, norm_layer=norm_layer, drop_path=drop_path, proj_drop=0.0)
+            for _ in range(depth)
+        ])
         self.norm = norm_layer(embed_dim)
-        # --------------------------------------------------------------------------
 
-        # --------------------------------------------------------------------------
-        # Decoder specifics
-
+        # ---------------- Decoder ----------------
         if self.z_type == 'vanilla':
             self.decoder_embed = nn.Linear(embed_dim, decoder_embed_dim)
-        elif self.z_type == 'vae':
-            self.decoder_embed = nn.Sequential(torch.nn.Linear(embed_dim, decoder_embed_dim),
-                                               Lambda(decoder_embed_dim, decoder_embed_dim))
+        else:
+            self.decoder_embed = nn.Sequential(
+                nn.Linear(embed_dim, decoder_embed_dim),
+                Lambda(decoder_embed_dim, decoder_embed_dim)
+            )
 
         self.mask_token = nn.Parameter(torch.zeros(1, 1, decoder_embed_dim))
-        
-   
-        self.decoder_pos_embed = nn.Parameter(torch.zeros(1, self.seq_len + 1, decoder_embed_dim), requires_grad=trainable_pos_emb)
-        # self.decoder_pos_embed = PositionalEncoding(decoder_embed_dim, max_len=seq_len)
+        self.decoder_pos_embed = nn.Parameter(torch.zeros(1, seq_len + 1, decoder_embed_dim), requires_grad=trainable_pos_emb)
 
         self.decoder_blocks = nn.ModuleList([
-            Block(decoder_embed_dim, decoder_num_heads, mlp_ratio, qkv_bias=True, norm_layer=norm_layer, drop_path=0.0, proj_drop=0.0)
-            for i in range(decoder_depth)])
-
+            Block(decoder_embed_dim, decoder_num_heads, mlp_ratio, qkv_bias=True, norm_layer=norm_layer, drop_path=drop_path, proj_drop=0.0)
+            for _ in range(decoder_depth)
+        ])
         self.decoder_norm = norm_layer(decoder_embed_dim)
-        self.decoder_pred = nn.Linear(decoder_embed_dim, in_chans, bias=True) # decoder to patch
+        self.decoder_pred = nn.Linear(decoder_embed_dim, in_chans)
 
-        self.linear = nn.Linear(decoder_embed_dim, 2)
         self.initialize_weights()
 
     def initialize_weights(self):
-        pos_embed = PositionalEncoding(self.embed_dim, max_len=self.seq_len)
-        self.pos_embed.data.copy_(pos_embed.pe.float())
+        # ---------------- Positional embeddings ----------------
+        pos_enc = PositionalEncoding(self.embed_dim, max_len=self.seq_len)
+        with torch.no_grad():
+            self.pos_embed.copy_(pos_enc.pe)
 
-        decoder_pos_embed = PositionalEncoding(self.decoder_embed_dim, max_len=self.seq_len)
-        self.decoder_pos_embed.data.copy_(decoder_pos_embed.pe.float())
-        
+        dec_pos_enc = PositionalEncoding(self.decoder_embed_dim, max_len=self.seq_len)
+        with torch.no_grad():
+            self.decoder_pos_embed.copy_(dec_pos_enc.pe)
+
+        # ---------------- Embedder ----------------
         if isinstance(self.embedder, nn.Linear):
-            w = self.embedder.weight.data
+            w = self.embedder.weight
         else:
-            w = self.embedder.conv.weight.data
-
-        torch.nn.init.trunc_normal_(self.cls_token, std=0.02)
-
+            w = self.embedder.conv.weight
         if self.trunc_init:
-            torch.nn.init.trunc_normal_(w)
-            torch.nn.init.trunc_normal_(self.mask_token, std=0.02)
+            nn.init.trunc_normal_(w)
+            nn.init.trunc_normal_(self.mask_token, std=0.02)
         else:
-            torch.nn.init.xavier_uniform_(w.view([w.shape[0], -1]))
-            torch.nn.init.normal_(self.mask_token, std=0.02)
+            nn.init.xavier_uniform_(w.view(w.shape[0], -1))
+            nn.init.normal_(self.mask_token, std=0.02)
 
-        # initialize nn.Linear and nn.LayerNorm
+        nn.init.trunc_normal_(self.cls_token, std=0.02)
+
+        # ---------------- Other modules ----------------
         self.apply(self._init_weights)
 
     def _init_weights(self, m):
@@ -235,14 +219,9 @@ class TSMVAE(nn.Module):
         # return loss
 
         loss = (pred - x) ** 2
+        loss = loss.mean(dim=-1)
+        loss = (loss * mask).sum() / mask.sum() 
 
-        # if self.training:
-        #     loss = loss.mean(dim=-1)
-        #     loss = (loss * mask).sum() / mask.sum()  # mean loss on removed patches
-        # else:
-        #     loss = loss.mean()
-        loss = loss.mean()
-        # loss = (loss * mask).sum() / mask.sum()  # mean loss on removed patches
         return loss
 
     def forward(self, x, y = None, mask_ratio = None):
@@ -255,29 +234,27 @@ class TSMVAE(nn.Module):
             x_ = x
             
         latent, mask, ids_restore = self.forward_encoder(x_, mask_ratio)
-        x_pred = self.forward_decoder(latent, ids_restore)  # [N, L, p*p*3]
+        x_pred = self.forward_decoder(latent, ids_restore)
         loss = self.forward_loss(x, x_pred, mask)
 
         if self.z_type == 'vae':
-            mu = self.decoder_embed[1].latent_mean      # [B, T, D]
-            logvar = self.decoder_embed[1].latent_logvar   # [B, T, D]
+            mean = self.decoder_embed[-1].latent_mean          # [B, T, D]
+            logvar = self.decoder_embed[-1].latent_logvar      # log(std^2)
+            var = torch.exp(logvar)
 
-            kl_per_token = -0.5 * torch.sum(
-                1 + logvar - mu.pow(2) - logvar.exp(),
-                dim=-1,   # sum over D
-            )   # shape [B, T * mask_ratio]
+            kl_loss = 0.5 * (mean.pow(2) + var - 1.0 - logvar)
+            kl_loss = torch.mean(torch.sum(kl_loss, dim=-1))   # sum D, mean B,T
 
-            space_loss = kl_per_token.mean()
+            space_loss = kl_loss
         else:
             space_loss = 0
-
 
         return loss, self.kld_weight * space_loss, x_pred
     
     def extract_features(self, x, pooling_method = None):
         x, _, ids_restore = self.forward_encoder(x, 0.0)
         x = self.decoder_embed(x)
-
+        
         x_ = x[:, 1:, :]
         x_ = torch.gather(x_, dim=1, index=ids_restore.unsqueeze(-1).repeat(1, 1, x.shape[2]))  # unshuffle
         x = torch.cat([x[:, :1, :], x_], dim=1)  # append cls token

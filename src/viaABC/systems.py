@@ -32,6 +32,7 @@ class LotkaVolterra(viaABC):
         super().__init__(num_parameters, mu, sigma, observational_data, model, state0, t0, tmax, time_space, pooling_method, metric,)
         self.lower_bounds = mu 
         self.upper_bounds = sigma
+        self.logger.info("Transform: %s", getattr(transform, "__name__", str(transform)))
 
     def ode_system(self, t, state, parameters):
         # Lotka-Volterra equations

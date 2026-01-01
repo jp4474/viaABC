@@ -8,6 +8,7 @@ import numpy as np
 from omegaconf import DictConfig, OmegaConf
 from hydra.utils import instantiate
 import namer
+import matplotlib.pyplot as plt
 
 # -----------------------------------------------------------------------------
 # Setup project root
@@ -77,7 +78,7 @@ def load_model_and_transform(cfg: DictConfig):
         raise KeyError("`model` not found in training config")
 
     model_cfg = train_cfg.model
-    transform_cfg = model_cfg.get("transform", None)
+    transform_cfg = train_cfg.data.get("transform", None)
 
     log.info("Loaded model + transform config from training run")
 
@@ -181,11 +182,36 @@ def run_inference(cfg: DictConfig) -> None:
     if transform is not None:
         kwargs["transform"] = transform
 
-    system: BaseSystem = instantiate(cfg.system, **kwargs)
+    system = instantiate(cfg.system, **kwargs)
 
+    system_name = system.__class__.__name__
 
-    log.info(f"viaABC System initialized: {system.__class__.__name__}")
+    log.info(f"viaABC System initialized: {system_name}")
     log.info(f"Metric: {system.metric}")
+
+    # -------------------------------------------------------------------------
+    if str(system_name) == "Spatial2D":
+        fig, ax = plt.subplots(1, 2, figsize=(8, 4))
+
+        torch_obs_data = torch.from_numpy(system.observational_data).to(model.device).unsqueeze(0).float()
+        obs_data = torch_obs_data.cpu().numpy()[0]
+
+        with torch.no_grad():
+            recon_data = model.model.forward(torch_obs_data)[-1]
+            recon_data = model.model.unpatchify(recon_data).cpu().numpy()[0].argmax(axis=0)
+        vmin = min(obs_data.min(), recon_data.min())
+        vmax = max(obs_data.max(), recon_data.max())
+
+        ax[0].imshow(obs_data.squeeze(0), cmap="viridis", vmin=vmin, vmax=vmax)
+        ax[1].imshow(recon_data, cmap="viridis", vmin=vmin, vmax=vmax)
+
+        ax[0].set_title("Observation")
+        ax[1].set_title("Reconstruction")
+
+        plt.tight_layout()
+
+        plt.savefig(save_dir / "reconstruction.png")
+        plt.close()
 
     # -------------------------------------------------------------------------
     # 3. Run viaABC (ALL logs captured)

@@ -1,13 +1,26 @@
 import numpy as np
 
+def normalize(x, eps=1e-8):
+    return x / (np.linalg.norm(x, axis=-1, keepdims=True) + eps)
+
 def l1_distance(x, y):
     """Compute the Manhattan Distance (L1) between two vectors."""
-    #return np.linalg.norm(y - x, ord=1)
-    return np.sum(np.abs(y - x), axis=-1)
+    return np.sum(np.abs(y - x), axis=-1).mean()
 
 def l2_distance(x, y):
-    """Compute the Euclidean Distance (L2) between two vectors."""
-    return np.linalg.norm(y - x, ord=2, axis=-1)
+    """
+    x: (B, T, D)
+    y: (1, T, D)
+    returns: scalar
+    """
+    # Broadcast: (B, T, D)
+    diff = x - y
+
+    # L2 distance per (batch, time): (B, T)
+    dist_bt = np.linalg.norm(diff, axis=-1)
+
+    # scalar
+    return dist_bt.mean()
 
 def cosine_similarity(x, y):
     """Compute the Cosine Similarity between two vectors."""

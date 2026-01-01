@@ -237,28 +237,15 @@ class MaskedAutoencoderViT(nn.Module):
         mask: [N, L]             1 = masked patch
         """
 
-        # --------------------------------------------------
-        # Targets
-        # --------------------------------------------------
         target = imgs.squeeze(1).long()        # [N, H, W]
-
-        # --------------------------------------------------
-        # Logits
-        # --------------------------------------------------
         pred = self.unpatchify(pred)           # [N, 6, H, W]
 
-        # --------------------------------------------------
-        # Pixel-wise CE
-        # --------------------------------------------------
         loss = torch.nn.functional.cross_entropy(
             pred,
             target,
             reduction="none",
         )                                      # [N, H, W]
 
-        # --------------------------------------------------
-        # 🔴 FIX: expand patch mask to p*p before unpatchify
-        # --------------------------------------------------
         p = self.patch_size
         mask_pp = mask.unsqueeze(-1).expand(-1, -1, p * p)  # [N, L, p*p]
 
@@ -266,9 +253,6 @@ class MaskedAutoencoderViT(nn.Module):
             mask_pp.float()
         ).squeeze(1)                           # [N, H, W]
 
-        # --------------------------------------------------
-        # Apply mask + normalize
-        # --------------------------------------------------
         if self.training:
             loss = (loss * pixel_mask).sum() / pixel_mask.sum()
         else:
@@ -276,19 +260,23 @@ class MaskedAutoencoderViT(nn.Module):
 
         return loss
 
-
     def forward_space_loss(self, mu, logvar):
-        kl_per_token = -0.5 * torch.sum(
-            1 + logvar - mu.pow(2) - logvar.exp(),
-            dim=-1,   # sum over D
-        )   # shape [B, T]
+        # mu, logvar: [B, T, D]
 
-        space_loss = kl_per_token.mean() 
+        kl_loss = 0.5 * (
+            mu.pow(2) +
+            logvar.exp() -
+            1.0 -
+            logvar
+        )  # [B, T, D]
 
-        return self.kld_weight * space_loss
+        # sum over D, mean over B and T
+        kl_loss = torch.mean(torch.sum(kl_loss, dim=-1))
 
-    def forward(self, imgs, mask_ratio):
-        if mask_ratio is None and self.training:
+        return self.kld_weight * kl_loss
+
+    def forward(self, imgs, mask_ratio=None):
+        if mask_ratio is None:
             mask_ratio = self.mask_ratio
 
         latent, mask, ids_restore = self.forward_encoder(imgs, mask_ratio)
