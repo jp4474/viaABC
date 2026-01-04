@@ -133,6 +133,19 @@ See `src/models/lightning_module.py` and `src/models/components/annealing.py` fo
 
 You can turn off annealing by setting `annealing: false` in the config file. In this case, the model uses **β-VAE**, where the strength of the KL divergence term is controlled by `kld_weight`. 
 
+You can read more about LR Scheduling in [this blog](https://pub.towardsai.net/are-you-sure-that-you-can-implement-image-classification-networks-d5f0bffb242d).
+
+Related configuration options are
+```
+  scheduler:
+    warmup_steps: 30000
+    max_steps: ${trainer.max_steps}
+    min_lr: 0.000001
+    max_lr: 0.0002
+```
+
+Please see `src/models/components/schedulers/WarmupCosineScheduler`
+
 ## TODO
 
 1. C++ code for spatial2D is slow when using pybind (~0.7 s per iteration). Consider using CPython instead.
