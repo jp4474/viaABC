@@ -51,15 +51,21 @@ To train a lotka-volterra system using TSMVAE,
 ```bash
 python src/train.py experiment=lotka
 ```
-> **Note**: This looks at a configuration file defined in `configs/experiement/lotka.yaml` where the model and data configuratios are defined.
+> **Note**: This looks at a configuration file defined in `configs/experiement/lotka.yaml` where the model and data configurations are defined.
+
+> **Note**: You must defined your logger or set it to null. See [Experiment Tracking] below
+
 
 To run viaABC using the trained model,
 ```bash
 python src/inference.py inference=lotka
 ```
 > **Note**: This looks at a configuration file defined in `configs/inference/lotka.yaml` where abc configurations are defined.
+
 > **Note**: You must change the `run_folder_path` and `checkpoint_substr` to correctly load the saved trained model weights
+
 > **Note**: The log and ABC results will be saved to a folder called inference_output which is created inside the `run_folder_path`
+
 
 ## Workflow
 
