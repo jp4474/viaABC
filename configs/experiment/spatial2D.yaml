@@ -14,16 +14,17 @@ defaults:
 
 tags: ["spatial2D", "MAE"]
 
-run:
-  dir: ${paths.log_dir}/${task_name}/runs/spatial2D_VAE
+hydra:
+  run:
+    dir: ${paths.log_dir}/${task_name}/runs/spatial2D_VAE
 
 seed: 12345
 
 trainer:
   max_steps: 300000
-  fast_dev_run: false
+  fast_dev_run: false 
   precision: 32-true
-  log_every_n_steps: 200
+  log_every_n_steps: 10
   max_epochs: -1
   gradient_clip_val: 10.0
 
@@ -32,12 +33,13 @@ model:
     patch_size: 16
     embed_dim: 384
     depth: 12
+    in_chans: 6
+    out_chans: 6
     num_heads: 6
     decoder_embed_dim: 256
     decoder_depth: 4
     decoder_num_heads: 8
     mlp_ratio: 4.0
-    norm_pix_loss: True
     mask_ratio: 0.75
     kld_weight: 1.0
 

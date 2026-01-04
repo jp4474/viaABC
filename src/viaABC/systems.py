@@ -106,15 +106,16 @@ class Spatial2D(viaABC):
         grid[blue_mask] = 2
         grid[no_color_mask] = 3
         grid[green_mask] = 4
-        self.observational_data = grid[None, ...]
+        self.observational_data = self.labels2map(grid)  # Shape: (num_classes, height, width) == (6, 1200, 1200)
 
         super().__init__(num_parameters, mu, sigma, self.observational_data, model, state0, t0, tmax, time_space, pooling_method, metric)
         self.lower_bounds = mu
         self.upper_bounds = sigma
         self.dt = dt
-        self.observational_data_flattened = self.observational_data[0].astype(int).tolist()
+        self.observational_data_flattened = grid.astype(int).tolist()
         
     def simulate(self, parameters: np.ndarray):
+        """ Simulate the spatial 2D model using C++ extension. Output numpy array of shape (num_classes, height, width) and boolean indicating success. 0 means success, 1 means failure."""
         params = cpp.Parameters()
         params.alpha = parameters[0]
         params.beta = parameters[1]
@@ -140,6 +141,7 @@ class Spatial2D(viaABC):
         return np.sum(log_probabilities)
 
     def labels2map(self, y):
+        # (1200, 1200) to (6, 1200, 1200) one-hot encoding
         return np.eye(6, dtype=np.float32)[y].transpose(2, 0, 1)
     
     def preprocess(self, x):
@@ -168,7 +170,7 @@ class SpatialSIR3D(viaABC):
         observational_data = self.labels2map(observational_data) # Your observational data may not require this step
 
         super().__init__(num_parameters, mu, sigma, observational_data, model, state0, t0, tmax, time_space, pooling_method, metric)
-        observational_data = self.labels2map(observational_data) # Your observational data may not require this step
+        # observational_data = self.labels2map(observational_data) # Your observational data may not require this step
 
         self.logger.info("Your observational data shape: %s", observational_data.shape)
         self.logger.info("Converted labels to one-hot encoded maps. Remove this step if not needed.")

@@ -2,8 +2,11 @@
 
 neptune:
   _target_: lightning.pytorch.loggers.neptune.NeptuneLogger
-  api_key: ${oc.env:NEPTUNE_API_TOKEN} # api key is loaded from environment variable
-  project: username/lightning-hydra-template
+  api_key: ${oc.env:NEPTUNE_API_TOKEN} # api key is loaded from environment variable Or You can just replace this line with your api key
+  project: null # CHANGE THIS TO YOUR NEPTUNE PROJECT
   # name: ""
   log_model_checkpoints: True
   prefix: ""
+
+
+# you can export NEPTUNE_API_TOKEN="your api key" in your terminal

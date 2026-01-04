@@ -38,9 +38,14 @@ class Spatial2DDataset(BaseNumpyDataset):
     def __init__(self, data_dir, prefix="train"):
         super().__init__(data_dir, prefix,)
 
+    def _transform(self, x):
+        x = np.eye(6, dtype=np.float32)[x].transpose(2, 0, 1)
+        return x
+
     def __getitem__(self, idx):
         x = self.simulations[idx]
-        x = torch.as_tensor(x, dtype=torch.float32).unsqueeze(0)  # Add channel dimension
+        x = self._transform(x)
+        x = torch.as_tensor(x, dtype=torch.float32)
         return x
     
 class SpatialSIRDataset(BaseNumpyDataset):

@@ -20,7 +20,7 @@ from src.models.components import get_2d_sincos_pos_embed, Lambda
 class MaskedAutoencoderViT(nn.Module):
     """ Masked Autoencoder with VisionTransformer backbone
     """
-    def __init__(self, img_size=1200, patch_size=16, in_chans=1, out_chans=6,
+    def __init__(self, img_size=1200, patch_size=16, in_chans=6, out_chans=6,
                  embed_dim=1024, depth=24, num_heads=16,
                  decoder_embed_dim=512, decoder_depth=8, decoder_num_heads=16,
                  mlp_ratio=4., norm_layer=nn.LayerNorm, norm_pix_loss=False, mask_ratio=0.75, kld_weight=1.0):
@@ -204,31 +204,6 @@ class MaskedAutoencoderViT(nn.Module):
         x = x[:, 1:, :]
 
         return x
-
-    # def forward_recon_loss(self, imgs, pred, mask):
-    #     """
-    #     imgs: [N, 3, H, W]
-    #     pred: [N, L, p*p*3]
-    #     mask: [N, L], 0 is keep, 1 is remove, 
-    #     """
-    #     # target = self.patchify(imgs)
-    #     # if self.norm_pix_loss:
-    #     #     mean = target.mean(dim=-1, keepdim=True)
-    #     #     var = target.var(dim=-1, keepdim=True)
-    #     #     target = (target - mean) / (var + 1.e-6)**.5
-
-    #     # loss = (pred - target) ** 2
-
-    #     pred = self.unpatchify(pred)
-    #     target = self.map2labels(imgs)
-    #     loss = nn.CrossEntropyLoss(reduction='mean')(pred, target)  # [N*L]
-
-    #     # if self.training:
-    #     #     loss = loss.mean(dim=-1)  # [N, L], mean loss per patch
-    #     #     loss = (loss * mask).sum() / mask.sum()  # mean loss on removed patches
-    #     # else:
-    #     #     loss = loss.mean()  # mean loss over all patches
-    #     return loss
     
     def forward_recon_loss(self, imgs, pred, mask):
         """
@@ -237,27 +212,23 @@ class MaskedAutoencoderViT(nn.Module):
         mask: [N, L]             1 = masked patch
         """
 
-        target = imgs.squeeze(1).long()        # [N, H, W]
-        pred = self.unpatchify(pred)           # [N, 6, H, W]
+        target = torch.argmax(imgs.squeeze(1), dim=1)  # [N, H, W], Long
+        pred = self.unpatchify(pred).float()           # [N, 6, H, W], logits
 
+        # compute pixel-wise CE loss
         loss = torch.nn.functional.cross_entropy(
             pred,
             target,
             reduction="none",
-        )                                      # [N, H, W]
+        )  # [N, H, W]
 
+        # expand mask to pixels
         p = self.patch_size
         mask_pp = mask.unsqueeze(-1).expand(-1, -1, p * p)  # [N, L, p*p]
+        pixel_mask = self.unpatchify(mask_pp.float()).squeeze(1)  # [N, H, W]
 
-        pixel_mask = self.unpatchify(
-            mask_pp.float()
-        ).squeeze(1)                           # [N, H, W]
-
-        if self.training:
-            loss = (loss * pixel_mask).sum() / pixel_mask.sum()
-        else:
-            loss = loss.mean()
-
+        # masked average
+        loss = (loss * pixel_mask).sum() / pixel_mask.sum()
         return loss
 
     def forward_space_loss(self, mu, logvar):
