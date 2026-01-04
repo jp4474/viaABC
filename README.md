@@ -50,6 +50,13 @@ The directory structure of the project looks like this:
 
 To train a Lotka–Volterra system using TSMVAE:
 
+First, simulate synthetic data using the script
+```bash
+python src/generate_training_data.py # Change line 44 to LotkaVolterra()
+```
+
+then run to start training
+
 ```bash
 python src/train.py experiment=lotka
 ````
@@ -57,6 +64,8 @@ python src/train.py experiment=lotka
 > **Note**: This uses a configuration file defined in `configs/experiment/lotka.yaml`, where the model and data configurations are specified.
 
 > **Note**: You must define your logger or set it to `null`. See [Experiment Tracking] below.
+
+> **Note**: You can set `kld_weight: 0` to use AE instead of VAE. This will automatically turn off, VAE related settings and losses. 
 
 To run viaABC using the trained model:
 
@@ -77,12 +86,13 @@ python src/inference.py inference=lotka
 1. Write your PyTorch model module according to the defined Lightning module (see `src/models/TSMVAE/model.py` for an example). The output of `forward` must match the expected format exactly.
 2. Write your viaABC system and its configuration (see `src/viaABC/systems.py` and `configs/system/lotka_volterra.yaml` for examples).
 3. Write your experiment config, containing paths to the model, datamodule, and system (see `configs/experiment/lotka.yaml` for an example).
-4. Run training with the chosen experiment config:
+4. Run `src/generate_training_data.py` to generate your train data.
+5. Run training with the chosen experiment config:
 
    ```bash
    python src/train.py experiment=experiment_name.yaml
    ```
-5. Run viaABC with the chosen inference config:
+6. Run viaABC with the chosen inference config:
 
    ```bash
    python src/inference.py inference=experiment_name.yaml
