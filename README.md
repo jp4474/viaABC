@@ -67,6 +67,8 @@ python src/train.py experiment=lotka
 
 > **Note**: You can set `kld_weight: 0` to use AE instead of VAE. This will automatically turn off, VAE related settings and losses. 
 
+Your model will be saved to a folder in `logs/train/runs`
+
 To run viaABC using the trained model:
 
 ```bash
@@ -105,7 +107,7 @@ PyTorch Lightning supports many popular logging frameworks: [Weights & Biases](h
 These tools help you keep track of hyperparameters and output metrics, and allow you to compare and visualize results.
 
 To use Weights & Biases or Neptune, change the `- logger:` line defined in `configs/train.yaml`. You can obtain a free Neptune or Weights & Biases account for academic research purposes.
-The default is set to `wandb`. You can also set it to `null`.
+The default is set to `neptune`. You can also set it to `null`.
 
 ## Installation
 
@@ -145,6 +147,9 @@ Related configuration options are
 ```
 
 Please see `src/models/components/schedulers/WarmupCosineScheduler`
+
+## TIP
+use `fast_dev_run: true` for fast debugging purposes and turn this off for training.
 
 ## TODO
 
