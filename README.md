@@ -125,6 +125,14 @@ source myenv/bin/activate
 pip install -r requirements.txt
 ```
 
+## Resources
+You can read more about VAE annealing in [this paper](https://arxiv.org/pdf/1903.10145) and [this blog](https://medium.com/@chengjing/a-must-have-training-trick-for-vae-variational-autoencoder-d28ff53b0023).
+
+Related configuration options are `vae_warmup_steps` and `annealing`.  
+See `src/models/lightning_module.py` and `src/models/components/annealing.py` for implementation details.
+
+You can turn off annealing by setting `annealing: false` in the config file. In this case, the model uses **β-VAE**, where the strength of the KL divergence term is controlled by `kld_weight`. 
+
 ## TODO
 
 1. C++ code for spatial2D is slow when using pybind (~0.7 s per iteration). Consider using CPython instead.
