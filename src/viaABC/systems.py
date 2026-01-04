@@ -1,17 +1,23 @@
 from src.viaABC.viaABC import viaABC
-from scipy.stats import uniform, truncnorm
+from scipy.stats import uniform
 import numpy as np
-from typing import Union, List
 from src.viaABC.systems import *
 from src.viaABC.metrics import *
 from scipy.ndimage import convolve
-from scipy.integrate import solve_ivp
-from functools import lru_cache
+from PIL import Image
 
 import sys
-sys.path.append("/home/jp4474/viaABC/src/viaABC/spatial2D/build")
+import rootutils
+
+# Setup project root and add to PYTHONPATH
+rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
+
+# Now add the build folder relative to root
+from pathlib import Path
+PROJECT_ROOT = Path(rootutils.find_root())
+sys.path.append(str(PROJECT_ROOT / "src" / "viaABC" / "spatial2D" / "build"))
+
 import spatial2D_cpp as cpp
-from PIL import Image
 
 class LotkaVolterra(viaABC):
     def __init__(self,
@@ -25,14 +31,13 @@ class LotkaVolterra(viaABC):
         t0 = 0,
         tmax = 15, 
         time_space = np.array([1.1, 2.4, 3.9, 5.6, 7.5, 9.6, 11.9, 14.4]),
-        pooling_method = "all",
+        pooling_method = "no_cls",
         metric = "pairwise_cosine",
         transform = None):
         self.transform = transform
         super().__init__(num_parameters, mu, sigma, observational_data, model, state0, t0, tmax, time_space, pooling_method, metric,)
         self.lower_bounds = mu 
         self.upper_bounds = sigma
-        self.logger.info("Transform: %s", getattr(transform, "__name__", str(transform)))
 
     def ode_system(self, t, state, parameters):
         # Lotka-Volterra equations
@@ -64,13 +69,13 @@ class Spatial2D(viaABC):
         mu = np.array( [0., 0., 0.]), # Lower Bound
         sigma = np.array([1., 1., 1.]),
         model = None, 
-        observational_data = None,
+        observational_data: np.ndarray = None,
         state0 = None,
         t0 = 0,
         tmax = 24,
         dt = 0.1,
         time_space = None,
-        pooling_method = "all",
+        pooling_method = "no_cls",
         metric = "pairwise_cosine",):
 
         def read_image_as_matrix(image_path):
@@ -80,8 +85,10 @@ class Spatial2D(viaABC):
             img_array = np.array(img)
             
             return img_array
-
-        raw = read_image_as_matrix("/home/jp4474/viaABC/data/spatial2D/raw/image1_processed.jpg")
+        
+        # Build full path relative to project root
+        image_path = PROJECT_ROOT / "data" / "spatial2D" / "image1_processed.jpg"
+        raw = read_image_as_matrix(image_path)
         img = raw.copy()
         
         # Define thresholds for color classification
@@ -155,7 +162,7 @@ class SpatialSIR3D(viaABC):
         mu = np.array( [0.2, 0.2]), # Lower Bound
         sigma = np.array([4.5, 4.5]),
         model = None, 
-        observational_data = None,
+        observational_data: np.ndarray = None,
         state0 = None,
         t0 = 0,
         tmax = 16,
@@ -168,7 +175,6 @@ class SpatialSIR3D(viaABC):
         radius = 5):
 
         observational_data = self.labels2map(observational_data) # Your observational data may not require this step
-
         super().__init__(num_parameters, mu, sigma, observational_data, model, state0, t0, tmax, time_space, pooling_method, metric)
         # observational_data = self.labels2map(observational_data) # Your observational data may not require this step
 
