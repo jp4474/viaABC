@@ -1,0 +1,22 @@
+# @package _global_
+defaults:
+ - override /system: spatial2D
+
+# --- Training Run / Checkpoint ---
+run_folder_path: ${paths.root_dir}/logs/train/runs/2025-12-30_23-01-12
+checkpoint_substr: last
+
+# --- System Overrides ---
+system:
+  pooling_method: no_cls
+  metric: pairwise_cosine
+
+# --- viaABC Parameters ---
+abc:
+  num_particles: 100
+  k: 5
+  q_threshold: 0.999
+  max_generations: 20
+
+# --- Output Folder ---
+folder_name: ${run_folder_path}/inference_output

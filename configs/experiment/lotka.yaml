@@ -1,0 +1,76 @@
+# @package _global_
+
+# to execute this experiment run:
+# python train.py experiment=example
+
+defaults:
+  - override /data: lotka
+  - override /model: lotka
+  - override /callbacks: default
+  - override /trainer: default
+
+# all parameters below will be merged with parameters from default configurations set above
+# this allows you to overwrite only specified parameters
+
+# change this to name output folder path
+hydra:
+  run:
+    dir: ${paths.log_dir}/${task_name}/runs/VAE
+
+tags: ["lotka", "tsmvae"]
+
+seed: 12345
+
+trainer:
+  max_steps: 300000
+  fast_dev_run: false
+  precision: 32-true
+  log_every_n_steps: 200
+  max_epochs: -1
+  gradient_clip_val: 10.0
+
+model:
+  net:
+    embed_dim: 64
+    depth: 6
+    num_heads: 4
+    decoder_embed_dim: 32
+    decoder_depth: 4
+    decoder_num_heads: 4
+    drop_path: 0.0
+    mask_ratio: 0.5
+    kld_weight: 1.0
+    noise_factor: 0.0
+    trainable_pos_emb: false
+
+  optimizer:
+    betas: [0.9, 0.95]
+    lr: 0.000001
+    weight_decay: 0.5
+
+  scheduler:
+    warmup_steps: 30000 
+    max_steps: ${trainer.max_steps}
+    min_lr: 0.000001
+    max_lr: 0.0004
+
+  compile: true
+  vae_warmup_steps: 60000
+  annealing: true # false means no annealing
+
+data:
+  batch_size: 256
+  transform:
+    _target_: src.data.transforms.abs_mean_scaling.AbsoluteMeanScaler
+    eps: 1e-5
+  num_workers: 8
+  pin_memory: true
+
+torch:
+  matmul_precision: high
+  allow_tf32: true
+
+model_checkpoint:
+  monitor: val/loss
+  every_n_train_steps: 50000
+  save_last: true

@@ -1,0 +1,8 @@
+# @package _global_
+# The system key is now wrapped in the _global_ package to ensure it overwrites 
+# the 'system' field in the main config.
+system:
+  _target_: src.viaABC.systems.Spatial2D
+  num_parameters: 3
+  pooling_method: all
+  metric: pairwise_cosine

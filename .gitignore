@@ -11,7 +11,6 @@ lightning_logs
 penv
 *.checkpoints
 *.ckpt
-*.yaml
 *.npz
 *.npy
 *.png

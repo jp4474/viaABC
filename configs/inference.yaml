@@ -1,0 +1,24 @@
+defaults:
+  - _self_
+  - system: lotka_volterra
+  - paths: default
+  - inference: null
+
+# --- Training Run Location ---
+run_folder_path: null
+checkpoint_substr: last
+
+# --- System Overrides (NO transform here) ---
+system:
+  pooling_method: no_cls
+  metric: pairwise_cosine
+
+# --- viaABC Parameters ---
+abc:
+  num_particles: 100
+  k: 10
+  q_threshold: 0.999
+  max_generations: 20
+
+# --- Output Folder ---
+folder_name: ${run_folder_path}/inference_output

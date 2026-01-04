@@ -1,0 +1,10 @@
+# @package _global_
+# The system key is now wrapped in the _global_ package to ensure it overwrites 
+# the 'system' field in the main config.
+system:
+  _target_: src.viaABC.systems.LotkaVolterra
+  num_parameters: 2
+  pooling_method: null
+  metric: null
+  transform:
+    _target_: src.data.transforms.gaf.GramianAngularField

@@ -1,0 +1,34 @@
+_target_: src.models.lightning_module.PreTrainLightning
+
+net:
+  _target_: src.models.MAE.model.MaskedAutoencoderViT
+  img_size: 1200
+  patch_size: 16
+  in_chans: 1
+  embed_dim: 512
+  depth: 12
+  num_heads: 8
+  decoder_embed_dim: 256
+  decoder_depth: 6
+  decoder_num_heads: 8
+  mlp_ratio: 4.0
+  norm_pix_loss: True
+  mask_ratio: 0.75
+  kld_weight: 1.0
+
+optimizer:
+  _target_: torch.optim.AdamW
+  _partial_: true
+  betas: [0.9, 0.995]
+  lr: 0.0004
+  weight_decay: 0.05
+
+scheduler:
+  _target_: src.models.components.schedulers.WarmupCosineScheduler
+  _partial_: true
+  warmup_steps: 53333
+  max_steps: 10   # resolved, not a reference
+  min_lr: 0.000001
+  max_lr: 0.0005
+
+compile: true

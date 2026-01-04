@@ -1,0 +1,4 @@
+# configs/transform/abs_mean_scaling.yaml
+transform:
+  _target_: src.data.transforms.abs_mean_scaling.AbsoluteMeanScaler
+  eps: 1e-8

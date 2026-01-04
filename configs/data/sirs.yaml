@@ -1,0 +1,10 @@
+# conf/data/lotka.yaml - Most common working version
+_target_: src.data.datamodule.SimulationDataModule
+data_dir: ${paths.data_dir}/sirs
+transform: null
+# ...
+dataset:
+  _target_: src.data.components.dataset.SpatialSIRDataset
+  data_dir: ${paths.data_dir}/sirs
+  prefix: train 
+  transform: ${..transform}

@@ -1,0 +1,22 @@
+# @package _global_
+defaults:
+ - override /system: lotka_volterra
+
+# --- Training Run / Checkpoint ---
+run_folder_path: ${paths.root_dir}/logs/train/runs/AE_0.25_bf16 
+checkpoint_substr: last
+
+# --- System Overrides --- 
+system:
+  pooling_method: all
+  metric: pairwise_cosine
+
+# --- viaABC Parameters ---
+abc:
+  num_particles: 1000
+  k: 5
+  q_threshold: 0.999
+  max_generations: 20
+
+# --- Output Folder ---
+folder_name: ${run_folder_path}/inference_output

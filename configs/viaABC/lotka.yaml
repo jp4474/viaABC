@@ -1,0 +1,14 @@
+defaults:
+  - model: lotka        
+
+system:
+  _target_: src.viaABC.systems.LotkaVolterra
+  num_parameters: 2
+  pooling_method: mean
+  metric: cosine
+
+num_particles: 1000
+k: 10
+q_threshold: 0.999
+
+folder_name: pretrained_models/lotka_volterra

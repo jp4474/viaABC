@@ -1,0 +1,8 @@
+# conf/data/lotka.yaml - Most common working version
+_target_: src.data.datamodule.SimulationDataModule
+data_dir: ${paths.data_dir}/spatial2D
+# ...
+dataset:
+  _target_: src.data.components.dataset.Spatial2DDataset
+  data_dir: ${..data_dir} 
+  prefix: train 

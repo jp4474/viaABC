@@ -1,0 +1,35 @@
+_target_: src.models.lightning_module.PreTrainLightning
+
+net:
+  _target_: src.models.TSMVAE.model.TSMVAE
+  seq_len: 8
+  in_chans: 2
+  embed_dim: 64
+  depth: 6
+  num_heads: 8
+  decoder_embed_dim: 64
+  decoder_depth: 6
+  decoder_num_heads: 8
+  mlp_ratio: 4.0
+  drop_path: 0.0
+  mask_ratio: 0.25
+  kld_weight: 0.00025
+  trainable_pos_emb: false
+  noise_factor: 0.0
+
+optimizer:
+  _target_: torch.optim.AdamW
+  _partial_: true
+  betas: [0.9, 0.95]
+  lr: 0.0004
+  weight_decay: 0.05
+
+scheduler:
+  _target_: src.models.components.schedulers.WarmupCosineScheduler
+  _partial_: true
+  warmup_steps: 53333
+  max_steps: 10   # resolved, not a reference
+  min_lr: 0.000001
+  max_lr: 0.0005
+
+compile: true
