@@ -145,6 +145,7 @@ Related configuration options are
     min_lr: 0.000001
     max_lr: 0.0002
 ```
+This linearly warms up the learning rate from 0 to 0.0002 over the first 30,000 steps, then applies cosine decay from 0.0002 to 0.000001 over the remaining {trainer.max_steps - 30000} steps.
 
 Please see `src/models/components/schedulers/WarmupCosineScheduler`
 
