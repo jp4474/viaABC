@@ -131,6 +131,8 @@ class Spatial2D(viaABC):
         params.t0 = self.t0
         params.t_end = self.tmax
 
+        TODO: #replace cpp with cython extension when ready
+
         g = cpp.Grid(self.observational_data_flattened, params)
         g.simulate()
 
