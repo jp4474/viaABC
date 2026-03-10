@@ -1,5 +1,6 @@
 # @package _global_
 defaults:
+ - override /data: spatial2D
  - override /system: spatial2D
 
 # --- Training Run / Checkpoint ---

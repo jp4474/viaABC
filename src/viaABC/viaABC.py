@@ -169,7 +169,7 @@ class viaABC:
         """
         raise NotImplementedError
 
-    def calculate_prior_log_prob(self, theta: np.ndarray) -> float:
+    def calculate_prior_log_prob(self, parameters: np.ndarray) -> float:
         """
         Calculate the prior probability of the given parameters.
 
@@ -882,6 +882,27 @@ class viaABC:
             )
 
         for prefix, count in simulation_plan:
+            if count < 0:
+                raise ValueError(f"num_simulations for {prefix} must be non-negative, got {count}.")
+
+            if count == 0:
+                self.logger.info(f"Skipping {prefix} data generation because num_simulations is 0")
+                continue
+
+            # check if training_dataset is already set
+            if os.path.exists(os.path.join(save_dir, f"{prefix}_data.npz")):
+                try:
+                    dataset = np.load(os.path.join(save_dir, f"{prefix}_data.npz"))
+                    # Check if the shapes of the loaded data match the expected shapes based on current configuration
+                    if count == dataset["params"].shape[0] and count == dataset["simulations"].shape[0]:
+                        self.logger.info(f"{prefix}_data.npz already exists in {save_dir} and matches configuration. Skipping generation.")
+                        return
+                    else:
+                        self.logger.warning(f"{prefix}_data.npz exists but shapes mismatch. Regenerating...")
+
+                except Exception as e:
+                    self.logger.error(f"Failed to load existing {os.path.join(save_dir, f'{prefix}_data.npz')}: {e}. Regenerating...")
+
             self.logger.info(f"Generating {count} simulations for {prefix} data")
             start = time.time()
             self.__batch_simulations(count, save_dir, prefix=prefix, num_threads=num_workers * 2)

@@ -5,9 +5,13 @@ from src.viaABC.systems import *
 from src.viaABC.metrics import *
 from scipy.ndimage import convolve
 from PIL import Image
+from typing import Optional
+from hydra import compose, initialize_config_dir
+from hydra.core.hydra_config import HydraConfig
 
 import sys
 import rootutils
+import hydra
 
 # Setup project root and add to PYTHONPATH
 rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
@@ -64,55 +68,53 @@ class LotkaVolterra(viaABC):
         return x
     
 class Spatial2D(viaABC):
+    """
+    Represents a 2D spatial simulation model for parameter inference and
+    data assimilation. Loads observational data from images or text files,
+    processes it into grid and one-hot formats, and supports simulation,
+    prior sampling, and prior probability calculation. Integrates with C++
+    extensions for efficient simulation.
+    """
     def __init__(self,
         num_parameters = 3, 
         mu = np.array( [0., 0., 0.]), # Lower Bound
         sigma = np.array([1., 1., 1.]),
         model = None, 
-        observational_data: np.ndarray = None,
+        observational_data: Optional[np.ndarray] = None,
         state0 = None,
         t0 = 0,
         tmax = 24,
         dt = 0.1,
         time_space = None,
         pooling_method = "no_cls",
-        metric = "pairwise_cosine",):
+        metric = "pairwise_cosine",
+        sample_id: str = "sample_1",):
 
-        def read_image_as_matrix(image_path):
-        # converts an image to a numpy array
-            img = Image.open(image_path)
-            # Convert to numpy array
-            img_array = np.array(img)
-            
-            return img_array
-        
-        # Build full path relative to project root
-        image_path = PROJECT_ROOT / "data" / "spatial2D" / "image1_processed.jpg"
-        raw = read_image_as_matrix(image_path)
-        img = raw.copy()
-        
-        # Define thresholds for color classification
-        red_threshold = 40
-        green_threshold = 40
-        blue_threshold = 50
+        sample_paths = self._load_spatial2d_samples()
+        if sample_id not in sample_paths:
+            raise ValueError(f"Unknown sample_id={sample_id!r}.")
 
-        # pixels that have both red and green high are yellow,
-        yellow_mask = (img[:, :, 0] > red_threshold) & (img[:, :, 1] > green_threshold) & (img[:, :, 2] < blue_threshold)
-        # no color mask
-        no_color_mask = (img[:, :, 0] < red_threshold) & (img[:, :, 1] < green_threshold) & (img[:, :, 2] < blue_threshold)
+        sample_cfg = sample_paths[sample_id]
+        image_path = sample_cfg.get("image")
+        txt_path = sample_cfg.get("txt")
 
-        # Create masks for each color
-        red_mask = (img[:, :, 0] > red_threshold) & (img[:, :, 1] < green_threshold) & (img[:, :, 2] < blue_threshold)
-        green_mask = (img[:, :, 0] < red_threshold) & (img[:, :, 1] > green_threshold) & (img[:, :, 2] < blue_threshold)
-        blue_mask = (img[:, :, 0] < red_threshold) & (img[:, :, 1] < green_threshold) & (img[:, :, 2] > blue_threshold)
+        if txt_path is None:
+            raise ValueError(f"Sample {sample_id!r} is missing a txt path.")
 
-        # intialize grid with pixels with red_mask as 0,  yellow_mask as 1, blue_mask as 2, no_color_mask as 3
-        grid = np.zeros(img.shape[:2], dtype=int)
-        grid[red_mask] = 0
-        grid[yellow_mask] = 1
-        grid[blue_mask] = 2
-        grid[no_color_mask] = 3
-        grid[green_mask] = 4
+        txt_path = Path(hydra.utils.to_absolute_path(txt_path))
+        img = None
+
+        if image_path is not None:
+            try:
+                img = self.read_image_as_matrix(Path(hydra.utils.to_absolute_path(image_path)))
+            except FileNotFoundError:
+                img = None
+
+        if img is None:
+            grid = self.read_txt_as_matrix(txt_path)
+        else:
+            grid = self.image_to_grid(img)
+
         self.observational_data = self.labels2map(grid)  # Shape: (num_classes, height, width) == (6, 1200, 1200)
 
         super().__init__(num_parameters, mu, sigma, self.observational_data, model, state0, t0, tmax, time_space, pooling_method, metric)
@@ -120,8 +122,55 @@ class Spatial2D(viaABC):
         self.upper_bounds = sigma
         self.dt = dt
         self.observational_data_flattened = grid.astype(int).tolist()
+
+    @staticmethod
+    def _load_spatial2d_samples():
+        data_name = "spatial2D"
+        if HydraConfig.initialized():
+            data_name = HydraConfig.get().runtime.choices.get("data", data_name)
+
+        overrides = [f"data={data_name}", "model=spatial2D"]
+
+        if hydra.core.global_hydra.GlobalHydra.instance().is_initialized():
+            cfg = compose(config_name="train", overrides=overrides)
+            return cfg.data.observation_samples
+
+        with initialize_config_dir(version_base="1.3", config_dir=str(PROJECT_ROOT / "configs")):
+            cfg = compose(config_name="train", overrides=overrides)
+            return cfg.data.observation_samples
+
+    def read_txt_as_matrix(self, txt_path: str) -> np.ndarray:
+    # converts a txt file to a numpy array
+        return np.loadtxt(txt_path, dtype=np.uint8)
+
+    def read_image_as_matrix(self, image_path: str) -> np.ndarray:
+    # converts an image to a numpy array
+        img = Image.open(image_path)
+        # Convert to numpy array
+        img_array = np.array(img)       
+        return img_array
+
+    def image_to_grid(self, img: np.ndarray) -> np.ndarray:
+        # Threshold an RGB segmentation image into simulator state IDs.
+        red_threshold = 40
+        green_threshold = 40
+        blue_threshold = 50
+
+        yellow_mask = (img[:, :, 0] > red_threshold) & (img[:, :, 1] > green_threshold) & (img[:, :, 2] < blue_threshold)
+        no_color_mask = (img[:, :, 0] < red_threshold) & (img[:, :, 1] < green_threshold) & (img[:, :, 2] < blue_threshold)
+        red_mask = (img[:, :, 0] > red_threshold) & (img[:, :, 1] < green_threshold) & (img[:, :, 2] < blue_threshold)
+        green_mask = (img[:, :, 0] < red_threshold) & (img[:, :, 1] > green_threshold) & (img[:, :, 2] < blue_threshold)
+        blue_mask = (img[:, :, 0] < red_threshold) & (img[:, :, 1] < green_threshold) & (img[:, :, 2] > blue_threshold)
+
+        grid = np.zeros(img.shape[:2], dtype=np.uint8)
+        grid[red_mask] = 0
+        grid[yellow_mask] = 1
+        grid[blue_mask] = 2
+        grid[no_color_mask] = 3
+        grid[green_mask] = 4
+        return grid
         
-    def simulate(self, parameters: np.ndarray):
+    def simulate(self, parameters: np.ndarray) -> tuple[np.ndarray, int]:
         """ Simulate the spatial 2D model using C++ extension. Output numpy array of shape (num_classes, height, width) and boolean indicating success. 0 means success, 1 means failure."""
         params = cpp.Parameters()
         params.alpha = parameters[0]
@@ -131,7 +180,7 @@ class Spatial2D(viaABC):
         params.t0 = self.t0
         params.t_end = self.tmax
 
-        TODO: #replace cpp with cython extension when ready
+        #TODO: replace cpp with cython extension when ready
 
         g = cpp.Grid(self.observational_data_flattened, params)
         g.simulate()
@@ -164,7 +213,7 @@ class SpatialSIR3D(viaABC):
         mu = np.array( [0.2, 0.2]), # Lower Bound
         sigma = np.array([4.5, 4.5]),
         model = None, 
-        observational_data: np.ndarray = None,
+        observational_data: Optional[np.ndarray] = None,
         state0 = None,
         t0 = 0,
         tmax = 16,

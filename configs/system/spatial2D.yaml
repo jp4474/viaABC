@@ -6,3 +6,4 @@ system:
   num_parameters: 3
   pooling_method: all
   metric: pairwise_cosine
+  sample_id: ${data.observation_sample}
