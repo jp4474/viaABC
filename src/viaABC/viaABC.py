@@ -169,7 +169,7 @@ class viaABC:
         """
         raise NotImplementedError
 
-    def calculate_prior_log_prob(self, theta: np.ndarray) -> float:
+    def calculate_prior_log_prob(self, parameters: np.ndarray) -> float:
         """
         Calculate the prior probability of the given parameters.
 
@@ -863,18 +863,53 @@ class viaABC:
         else:
             self.logger.warning("No valid simulations to save.")
 
-    def generate_training_data(self, num_simulations: int = 50000, save_dir: str = "data", seed: int = 1234, num_workers: int = 1):
+    def generate_training_data(self, num_simulations: Union[int, list, tuple] = 50000, save_dir: str = "data", seed: int = 1234, num_workers: int = 1):
         np.random.seed(seed)
         self.logger.info(f"Generating training data for training with seed {seed}")
 
         total_time = 0
-        self.logger.info(f"Generating {num_simulations} simulations for training data")
-        start = time.time()
-        self.__batch_simulations(num_simulations, save_dir, prefix='train', num_threads=num_workers * 2)
-        end = time.time()
-        elapsed = end - start
-        total_time += elapsed
-        self.logger.info(f"Generated {num_simulations} simulations for training data in {elapsed:.2f} seconds")
+        if isinstance(num_simulations, int):
+            simulation_plan = (("train", num_simulations),)
+        elif isinstance(num_simulations, (list, tuple)) and len(num_simulations) == 3:
+            simulation_plan = (
+                ("train", int(num_simulations[0])),
+                ("val", int(num_simulations[1])),
+                ("test", int(num_simulations[2])),
+            )
+        else:
+            raise ValueError(
+                "num_simulations must be an int or a list/tuple of three ints: [train, val, test]."
+            )
+
+        for prefix, count in simulation_plan:
+            if count < 0:
+                raise ValueError(f"num_simulations for {prefix} must be non-negative, got {count}.")
+
+            if count == 0:
+                self.logger.info(f"Skipping {prefix} data generation because num_simulations is 0")
+                continue
+
+            # check if training_dataset is already set
+            if os.path.exists(os.path.join(save_dir, f"{prefix}_data.npz")):
+                try:
+                    dataset = np.load(os.path.join(save_dir, f"{prefix}_data.npz"))
+                    # Check if the shapes of the loaded data match the expected shapes based on current configuration
+                    if count == dataset["params"].shape[0] and count == dataset["simulations"].shape[0]:
+                        self.logger.info(f"{prefix}_data.npz already exists in {save_dir} and matches configuration. Skipping generation.")
+                        return
+                    else:
+                        self.logger.warning(f"{prefix}_data.npz exists but shapes mismatch. Regenerating...")
+
+                except Exception as e:
+                    self.logger.error(f"Failed to load existing {os.path.join(save_dir, f'{prefix}_data.npz')}: {e}. Regenerating...")
+
+            self.logger.info(f"Generating {count} simulations for {prefix} data")
+            start = time.time()
+            self.__batch_simulations(count, save_dir, prefix=prefix, num_threads=num_workers * 2)
+            elapsed = time.time() - start
+            total_time += elapsed
+            self.logger.info(f"Generated {count} simulations for {prefix} data in {elapsed:.2f} seconds")
+
         self.logger.info(f"Training data generation completed and saved. Total time taken: {total_time:.2f} seconds")
 
     def update_train_dataset(self, train_dataset):

@@ -1,8 +1,23 @@
 # conf/data/lotka.yaml - Most common working version
-_target_: src.data.datamodule.SimulationDataModule
-data_dir: ${paths.data_dir}/spatial2D
-# ...
-dataset:
-  _target_: src.data.components.dataset.Spatial2DDataset
-  data_dir: ${..data_dir} 
-  prefix: train 
+datamodule:
+  _target_: src.data.datamodule.SimulationDataModule
+  data_dir: ${paths.data_dir}/spatial2D
+  # ...
+  dataset:
+    _target_: src.data.components.dataset.Spatial2DDataset
+    data_dir: ${..data_dir} 
+    prefix: train 
+observation_sample: sample_1
+observation_samples:
+  sample_1:
+    image: ${paths.data_dir}/spatial2D/image1_processed.jpg
+    txt: ${paths.data_dir}/spatial2D/initial_grid1_cpp.txt
+  sample_2:
+    image: ${paths.data_dir}/spatial2D/image2_processed.jpg
+    txt: ${paths.data_dir}/spatial2D/initial_grid2_cpp.txt
+  sample_3:
+    image: ${paths.data_dir}/spatial2D/image3_processed.jpg
+    txt: ${paths.data_dir}/spatial2D/initial_grid3_cpp.txt
+  sample_4:
+    image: ${paths.data_dir}/spatial2D/image4_processed.jpg
+    txt: ${paths.data_dir}/spatial2D/initial_grid4_cpp.txt
