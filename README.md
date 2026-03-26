@@ -154,7 +154,7 @@ use `fast_dev_run: true` for fast debugging purposes and turn this off for train
 
 ## TODO
 
-1. C++ code for spatial2D is slow when using pybind (~0.7 s per iteration). Consider using CPython instead.
+1. C++ code for spatial2D is slow when using pybind (~0.7 s per iteration). Consider using Cython instead.
 
 ```bibtex
 @misc{park2025spatiodynamicinferenceusingvisionbased,

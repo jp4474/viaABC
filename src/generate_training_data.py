@@ -46,4 +46,4 @@ def main(train_sizes: List[int], seed: int, num_workers: int, num_repeats: int) 
 
 if __name__ == "__main__":
     args = parse_arguments()
-    main(args.train_sizes, args.seed, args.num_workers, args.num_repeats)
+    main(args.train_sizes, args.seed, args.num_workers, args.num_repeats)  

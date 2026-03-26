@@ -4,6 +4,8 @@
 import numpy as np
 cimport numpy as np
 
+np.import_array()
+
 from libc.stdint cimport int32_t, uint8_t
 from libc.stddef cimport size_t
 

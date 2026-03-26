@@ -5,7 +5,7 @@ from src.viaABC.systems import *
 from src.viaABC.metrics import *
 from scipy.ndimage import convolve
 from PIL import Image
-from typing import Optional
+from typing import Optional, List
 from hydra import compose, initialize_config_dir
 from hydra.core.hydra_config import HydraConfig
 
@@ -21,7 +21,8 @@ from pathlib import Path
 PROJECT_ROOT = Path(rootutils.find_root())
 sys.path.append(str(PROJECT_ROOT / "src" / "viaABC" / "spatial2D" / "build"))
 
-import spatial2D_cpp as cpp
+# import spatial2D_cpp as cpp
+from src.viaABC.spatial2D import _grid_core as cpp
 
 class LotkaVolterra(viaABC):
     def __init__(self,
@@ -88,7 +89,7 @@ class Spatial2D(viaABC):
         time_space = None,
         pooling_method = "no_cls",
         metric = "pairwise_cosine",
-        sample_id: str = "sample_1",):
+        sample_id: str | List[str] | None = "sample_1",):
 
         sample_paths = self._load_spatial2d_samples()
         if sample_id not in sample_paths:
@@ -139,11 +140,11 @@ class Spatial2D(viaABC):
             cfg = compose(config_name="train", overrides=overrides)
             return cfg.data.observation_samples
 
-    def read_txt_as_matrix(self, txt_path: str) -> np.ndarray:
+    def read_txt_as_matrix(self, txt_path: str | Path) -> np.ndarray:
     # converts a txt file to a numpy array
         return np.loadtxt(txt_path, dtype=np.uint8)
 
-    def read_image_as_matrix(self, image_path: str) -> np.ndarray:
+    def read_image_as_matrix(self, image_path: str | Path) -> np.ndarray:
     # converts an image to a numpy array
         img = Image.open(image_path)
         # Convert to numpy array
@@ -170,22 +171,38 @@ class Spatial2D(viaABC):
         grid[green_mask] = 4
         return grid
         
-    def simulate(self, parameters: np.ndarray) -> tuple[np.ndarray, int]:
-        """ Simulate the spatial 2D model using C++ extension. Output numpy array of shape (num_classes, height, width) and boolean indicating success. 0 means success, 1 means failure."""
-        params = cpp.Parameters()
-        params.alpha = parameters[0]
-        params.beta = parameters[1]
-        params.gamma = parameters[2]
-        params.dt = self.dt
-        params.t0 = self.t0
-        params.t_end = self.tmax
+    def simulate(self, parameters: np.ndarray, time_space: np.ndarray | None = None) -> tuple[np.ndarray, int]:
+        """ 
+        Simulate the spatial 2D model using C++ extension. Output numpy array of shape (num_classes, height, width) and boolean indicating success. 0 means success, 1 means failure.
 
-        #TODO: replace cpp with cython extension when ready
+        Notes:
+            `time_space` is accepted for compatibility with the base viaABC interface, but is not used by Spatial2D because the simulator maps one initial state to one final state.
+        """
 
-        g = cpp.Grid(self.observational_data_flattened, params)
-        g.simulate()
+        # params = cpp.Parameters()
+        # params.alpha = parameters[0]
+        # params.beta = parameters[1]
+        # params.gamma = parameters[2]
+        # params.dt = self.dt
+        # params.t0 = self.t0
+        # params.t_end = self.tmax
 
-        return g.numpy(), 0
+        # g = cpp.Grid(self.observational_data_flattened, params)
+        # g.simulate()
+
+        # return g.numpy(), 0
+        if not hasattr(self, "_cython_initial_grid"):
+            self._cython_initial_grid = np.asarray(self.observational_data_flattened, dtype=np.int32)
+            self._cython_core = cpp.GridCore(self._cython_initial_grid)
+
+        return self._cython_core.simulation(
+            float(parameters[0]),
+            float(parameters[1]),
+            float(parameters[2]),
+            float(self.dt),
+            float(self.t0),
+            float(self.tmax),
+        ), 0
     
     def sample_priors(self):
         # Sample from the prior distribution
