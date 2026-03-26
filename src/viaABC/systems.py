@@ -1,23 +1,24 @@
-from src.viaABC.viaABC import viaABC
-from scipy.stats import uniform
+from pathlib import Path
+from typing import Any, Mapping, Optional, Sequence
+
 import numpy as np
-from src.viaABC.systems import *
-from src.viaABC.metrics import *
-from scipy.ndimage import convolve
+import torch
 from PIL import Image
-from typing import Optional, List
 from hydra import compose, initialize_config_dir
 from hydra.core.hydra_config import HydraConfig
-
 import sys
+
 import rootutils
 import hydra
+from scipy.ndimage import convolve
+from scipy.stats import uniform
+
+from src.viaABC.metrics import bert_score, bert_score_batch, cosine_similarity, l1_distance, l2_distance, maxSim, pairwise_cosine
+from src.viaABC.viaABC import viaABC
 
 # Setup project root and add to PYTHONPATH
 rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
 
-# Now add the build folder relative to root
-from pathlib import Path
 PROJECT_ROOT = Path(rootutils.find_root())
 sys.path.append(str(PROJECT_ROOT / "src" / "viaABC" / "spatial2D" / "build"))
 
@@ -26,25 +27,25 @@ from src.viaABC.spatial2D import _grid_core as cpp
 
 class LotkaVolterra(viaABC):
     def __init__(self,
-        num_parameters = 2, 
-        mu = np.array([0, 0]),
-        sigma = np.array([10, 10]),
-        model = None, 
-        observational_data = np.array([[1.87, 0.65, 0.22, 0.31, 1.64, 1.15, 0.24, 2.91],
-                                        [0.49, 2.62, 1.54, 0.02, 1.14, 1.68, 1.07, 0.88]]).T, 
-        state0 = np.array([1, 0.5]), 
-        t0 = 0,
-        tmax = 15, 
-        time_space = np.array([1.1, 2.4, 3.9, 5.6, 7.5, 9.6, 11.9, 14.4]),
-        pooling_method = "no_cls",
-        metric = "pairwise_cosine",
-        transform = None):
+        num_parameters: int = 2,
+        mu: np.ndarray = np.array([0, 0]),
+        sigma: np.ndarray = np.array([10, 10]),
+        model: Optional[torch.nn.Module] = None,
+        observational_data: np.ndarray = np.array([[1.87, 0.65, 0.22, 0.31, 1.64, 1.15, 0.24, 2.91],
+                                        [0.49, 2.62, 1.54, 0.02, 1.14, 1.68, 1.07, 0.88]]).T,
+        state0: np.ndarray = np.array([1, 0.5]),
+        t0: int = 0,
+        tmax: int = 15,
+        time_space: np.ndarray = np.array([1.1, 2.4, 3.9, 5.6, 7.5, 9.6, 11.9, 14.4]),
+        pooling_method: str = "no_cls",
+        metric: str = "pairwise_cosine",
+        transform: Any = None) -> None:
         self.transform = transform
         super().__init__(num_parameters, mu, sigma, observational_data, model, state0, t0, tmax, time_space, pooling_method, metric,)
         self.lower_bounds = mu 
         self.upper_bounds = sigma
 
-    def ode_system(self, t, state, parameters):
+    def ode_system(self, t: float, state: np.ndarray, parameters: np.ndarray) -> list[float]:
         # Lotka-Volterra equations
         alpha, delta = parameters
         beta, gamma = 1, 1
@@ -53,17 +54,17 @@ class LotkaVolterra(viaABC):
         dpredator = predator * (-gamma + delta * prey)
         return [dprey, dpredator]
 
-    def sample_priors(self):
+    def sample_priors(self) -> np.ndarray:
         # Sample from the prior distribution
         priors = np.random.uniform(self.lower_bounds, self.upper_bounds, self.num_parameters)
         return priors
     
-    def calculate_prior_log_prob(self, parameters):
+    def calculate_prior_log_prob(self, parameters: np.ndarray) -> float:
         probabilities = uniform.logpdf(parameters, loc=self.lower_bounds, scale=self.upper_bounds - self.lower_bounds)
         probabilities = np.sum(probabilities)
         return probabilities
     
-    def preprocess(self, x):
+    def preprocess(self, x: np.ndarray) -> np.ndarray:
         if self.transform is not None:
             x = self.transform(x)
         return x
@@ -77,58 +78,47 @@ class Spatial2D(viaABC):
     extensions for efficient simulation.
     """
     def __init__(self,
-        num_parameters = 3, 
-        mu = np.array( [0., 0., 0.]), # Lower Bound
-        sigma = np.array([1., 1., 1.]),
-        model = None, 
+        num_parameters: int = 3,
+        mu: np.ndarray = np.array( [0., 0., 0.]), # Lower Bound
+        sigma: np.ndarray = np.array([1., 1., 1.]),
+        model: Optional[torch.nn.Module] = None,
         observational_data: Optional[np.ndarray] = None,
-        state0 = None,
-        t0 = 0,
-        tmax = 24,
-        dt = 0.1,
-        time_space = None,
-        pooling_method = "no_cls",
-        metric = "pairwise_cosine",
-        sample_id: str | List[str] | None = "sample_1",):
+        state0: Optional[np.ndarray] = None,
+        t0: int = 0,
+        tmax: int = 24,
+        dt: float = 0.1,
+        time_space: Optional[np.ndarray] = None,
+        pooling_method: str = "no_cls",
+        metric: str = "pairwise_cosine",
+        sample_id: str | Sequence[str] | None = "sample_1",) -> None:
 
+        self._cython_cores: list[Any] | None = None
         sample_paths = self._load_spatial2d_samples()
-        if sample_id not in sample_paths:
-            raise ValueError(f"Unknown sample_id={sample_id!r}.")
+        sample_ids = [sample_id] if isinstance(sample_id, str) else list(sample_id or [])
+        if not sample_ids:
+            raise ValueError("sample_id must be a sample name or a non-empty list of sample names.")
 
-        sample_cfg = sample_paths[sample_id]
-        image_path = sample_cfg.get("image")
-        txt_path = sample_cfg.get("txt")
+        grids = [self._load_sample_grid(sample_paths, current_sample_id) for current_sample_id in sample_ids]
+        self._observation_grids = np.stack(grids, axis=0)
+        self._multiple_samples = len(grids) > 1
 
-        if txt_path is None:
-            raise ValueError(f"Sample {sample_id!r} is missing a txt path.")
-
-        txt_path = Path(hydra.utils.to_absolute_path(txt_path))
-        img = None
-
-        if image_path is not None:
-            try:
-                img = self.read_image_as_matrix(Path(hydra.utils.to_absolute_path(image_path)))
-            except FileNotFoundError:
-                img = None
-
-        if img is None:
-            grid = self.read_txt_as_matrix(txt_path)
+        if self._multiple_samples:
+            self.observational_data = np.stack([self.labels2map(grid) for grid in grids], axis=0)
+            self.observational_data_flattened = [grid.astype(int).tolist() for grid in grids]
         else:
-            grid = self.image_to_grid(img)
-
-        self.observational_data = self.labels2map(grid)  # Shape: (num_classes, height, width) == (6, 1200, 1200)
+            self.observational_data = self.labels2map(grids[0])
+            self.observational_data_flattened = grids[0].astype(int).tolist()
 
         super().__init__(num_parameters, mu, sigma, self.observational_data, model, state0, t0, tmax, time_space, pooling_method, metric)
         self.lower_bounds = mu
         self.upper_bounds = sigma
         self.dt = dt
-        self.observational_data_flattened = grid.astype(int).tolist()
 
     @staticmethod
-    def _load_spatial2d_samples():
+    def _load_spatial2d_samples() -> Mapping[str, Mapping[str, Any]]:
         data_name = "spatial2D"
         if HydraConfig.initialized():
-            data_name = HydraConfig.get().runtime.choices.get("data", data_name)
+            data_name = str(HydraConfig.get().runtime.choices.get("data", data_name))
 
         overrides = [f"data={data_name}", "model=spatial2D"]
 
@@ -150,6 +140,31 @@ class Spatial2D(viaABC):
         # Convert to numpy array
         img_array = np.array(img)       
         return img_array
+
+    def _load_sample_grid(self, sample_paths: Mapping[str, Mapping[str, Any]], sample_id: str) -> np.ndarray:
+        if sample_id not in sample_paths:
+            raise ValueError(f"Unknown sample_id={sample_id!r}.")
+
+        sample_cfg = sample_paths[sample_id]
+        image_path = sample_cfg.get("image")
+        txt_path = sample_cfg.get("txt")
+
+        if txt_path is None:
+            raise ValueError(f"Sample {sample_id!r} is missing a txt path.")
+
+        txt_path = Path(hydra.utils.to_absolute_path(txt_path))
+        img = None
+
+        if image_path is not None:
+            try:
+                img = self.read_image_as_matrix(Path(hydra.utils.to_absolute_path(image_path)))
+            except FileNotFoundError:
+                img = None
+
+        if img is None:
+            return self.read_txt_as_matrix(txt_path)
+
+        return self.image_to_grid(img)
 
     def image_to_grid(self, img: np.ndarray) -> np.ndarray:
         # Threshold an RGB segmentation image into simulator state IDs.
@@ -191,57 +206,130 @@ class Spatial2D(viaABC):
         # g.simulate()
 
         # return g.numpy(), 0
-        if not hasattr(self, "_cython_initial_grid"):
-            self._cython_initial_grid = np.asarray(self.observational_data_flattened, dtype=np.int32)
-            self._cython_core = cpp.GridCore(self._cython_initial_grid)
+        if self._cython_cores is None:
+            self._cython_cores = [
+                cpp.GridCore(np.asarray(grid, dtype=np.int32))
+                for grid in self._observation_grids
+            ]
 
-        return self._cython_core.simulation(
-            float(parameters[0]),
-            float(parameters[1]),
-            float(parameters[2]),
-            float(self.dt),
-            float(self.t0),
-            float(self.tmax),
-        ), 0
+        simulations = [
+            core.simulation(
+                float(parameters[0]),
+                float(parameters[1]),
+                float(parameters[2]),
+                float(self.dt),
+                float(self.t0),
+                float(self.tmax),
+            )
+            for core in self._cython_cores
+        ]
+
+        if self._multiple_samples:
+            return np.stack(simulations, axis=0), 0
+
+        return simulations[0], 0
     
-    def sample_priors(self):
+    def sample_priors(self) -> np.ndarray:
         # Sample from the prior distribution
         priors = np.random.uniform(self.lower_bounds, self.upper_bounds, self.num_parameters)
         return priors
             
-    def calculate_prior_log_prob(self, parameters):
+    def calculate_prior_log_prob(self, parameters: np.ndarray) -> float:
         # Calculate the prior log probability of the parameters
         # This must match the prior distribution used in sampling
         log_probabilities = uniform.logpdf(parameters, loc=self.lower_bounds, scale=self.upper_bounds - self.lower_bounds) 
         return np.sum(log_probabilities)
 
-    def labels2map(self, y):
+    def labels2map(self, y: np.ndarray) -> np.ndarray:
         # (1200, 1200) to (6, 1200, 1200) one-hot encoding
         return np.eye(6, dtype=np.float32)[y].transpose(2, 0, 1)
+
+    @torch.inference_mode()
+    def _encode_observational_data(self):
+        observation_input = self._observation_grids if self._multiple_samples else self._observation_grids[0]
+        scaled_data = self.preprocess(observation_input)
+        self.encoded_observational_data = self.get_latent(scaled_data)
+
+    @torch.inference_mode()
+    def get_latent(self, x: np.ndarray | torch.Tensor) -> np.ndarray:
+        if self.model is None:
+            raise ValueError("Model must be provided to encode the data and run the method.")
+
+        if isinstance(x, np.ndarray):
+            x = torch.from_numpy(x).float().to(self.model.device)
+        elif isinstance(x, torch.Tensor):
+            x = x.float().to(self.model.device)
+        else:
+            raise TypeError(f"Unsupported type for x: {type(x)}")
+
+        if x.ndim == 3:
+            x = x.unsqueeze(0)
+        elif x.ndim != 4:
+            raise ValueError(f"Unsupported input shape for Spatial2D latent extraction: {tuple(x.shape)}")
+
+        x = self.model.get_latent(x, self.pooling_method)
+
+        if isinstance(x, torch.Tensor):
+            x = x.cpu().numpy()
+
+        return x
+
+    def calculate_distance(self, y: np.ndarray) -> float | np.ndarray:
+        if not self._multiple_samples:
+            return super().calculate_distance(y)
+
+        x = self.encoded_observational_data
+        return float(np.mean([
+            self._calculate_sample_distance(x[i:i + 1], y[i:i + 1])
+            for i in range(x.shape[0])
+        ]))
+
+    def _calculate_sample_distance(self, x: np.ndarray, y: np.ndarray) -> float:
+        if self.metric == "cosine":
+            return float(1 - cosine_similarity(x, y))
+        if self.metric == "l1":
+            return float(l1_distance(x, y))
+        if self.metric == "l2":
+            return float(l2_distance(x, y))
+        if self.metric == "bertscore":
+            _, _, f1_scores = bert_score(x, y)
+            return float(1 - f1_scores)
+        if self.metric == "pairwise_cosine":
+            return float(1 - pairwise_cosine(x, y))
+        if self.metric == "bertscore_batch":
+            return float(1 - bert_score_batch(x, y))
+        if self.metric == "maxSim":
+            return float(maxSim(x, y))
+        raise ValueError(f"Unsupported metric: {self.metric}")
     
-    def preprocess(self, x):
+    def preprocess(self, x: np.ndarray) -> np.ndarray:
+        x = np.asarray(x)
         if x.ndim == 2:
-            x = x[None, ...]
+            return x[None, ...]
+        if x.ndim == 3 and self._multiple_samples:
+            return x[:, None, ...]
         return x
 
 class SpatialSIR3D(viaABC):
     def __init__(self,
-        num_parameters = 2, 
-        mu = np.array( [0.2, 0.2]), # Lower Bound
-        sigma = np.array([4.5, 4.5]),
-        model = None, 
+        num_parameters: int = 2,
+        mu: np.ndarray = np.array( [0.2, 0.2]), # Lower Bound
+        sigma: np.ndarray = np.array([4.5, 4.5]),
+        model: Optional[torch.nn.Module] = None,
         observational_data: Optional[np.ndarray] = None,
-        state0 = None,
-        t0 = 0,
-        tmax = 16,
-        interval = 1,
-        time_space = np.arange(1, 16, 1),
-        pooling_method = "no_cls",
-        metric = "pairwise_cosine",
-        grid_size = 80,
-        initial_infected = 5,
-        radius = 5):
+        state0: Optional[np.ndarray] = None,
+        t0: int = 0,
+        tmax: int = 16,
+        interval: int = 1,
+        time_space: np.ndarray = np.arange(1, 16, 1),
+        pooling_method: str = "no_cls",
+        metric: str = "pairwise_cosine",
+        grid_size: int = 80,
+        initial_infected: int = 5,
+        radius: int = 5) -> None:
 
+        if observational_data is None:
+            raise ValueError("observational_data must be provided for SpatialSIR3D.")
         observational_data = self.labels2map(observational_data) # Your observational data may not require this step
         super().__init__(num_parameters, mu, sigma, observational_data, model, state0, t0, tmax, time_space, pooling_method, metric)
         # observational_data = self.labels2map(observational_data) # Your observational data may not require this step
@@ -256,7 +344,7 @@ class SpatialSIR3D(viaABC):
         self.lower_bounds = mu
         self.upper_bounds = sigma
 
-    def simulate(self, parameters: np.ndarray):
+    def simulate(self, parameters: np.ndarray) -> tuple[np.ndarray, int]:
         SUSCEPTIBLE, INFECTED, RECOVERED = 0, 1, 2
 
         beta, tau_I = parameters
@@ -345,18 +433,18 @@ class SpatialSIR3D(viaABC):
         # TODO: use try and catch
         return output, 0
     
-    def sample_priors(self):
+    def sample_priors(self) -> np.ndarray:
         # Sample from the prior distribution
         priors = np.random.uniform(self.lower_bounds, self.upper_bounds, self.num_parameters)
         return priors
             
-    def calculate_prior_log_prob(self, parameters):
+    def calculate_prior_log_prob(self, parameters: np.ndarray) -> float:
         # Calculate the prior log probability of the parameters
         # This must match the prior distribution used in sampling
         log_probabilities = uniform.logpdf(parameters, loc=self.lower_bounds, scale=self.upper_bounds - self.lower_bounds) 
         return np.sum(log_probabilities)
 
-    def labels2map(self, y):
+    def labels2map(self, y: np.ndarray) -> np.ndarray:
         susceptible = (y == 0)
         infected = (y == 1)
         resistant = (y == 2)
@@ -365,7 +453,7 @@ class SpatialSIR3D(viaABC):
 
         return y_onehot
     
-    def preprocess(self, x):
+    def preprocess(self, x: np.ndarray) -> np.ndarray:
         # add a channel dimension at the beginning in numpy
         if x.shape[0] == 15:
             x = x.transpose(1, 0, 2, 3)

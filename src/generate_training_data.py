@@ -20,7 +20,7 @@ def parse_arguments() -> argparse.Namespace:
     
     parser.add_argument('--num_workers',
                         type=int,
-                        default=1,
+                        default=4,
                         help='Number of workers for parallel processing')
     
     # Number of trajectories for each parameter sampling
