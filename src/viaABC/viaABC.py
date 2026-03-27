@@ -11,16 +11,17 @@ Some code is referenced from https://github.com/elfi-dev/elfi
 # Standard library imports
 import logging
 import os
+import tempfile
 import time
 import numpy as np
 import torch
-from typing import Union, Callable
+from typing import Any, Callable, Optional, Union
 
 from scipy.integrate import solve_ivp
 from scipy.stats import qmc, multivariate_normal
 from scipy.special import logsumexp
 
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from tqdm import tqdm
 
 from src.viaABC.metrics import *
@@ -29,7 +30,18 @@ from src.utils.viaABC_utils.utils import weighted_var, calculate_densratio_basis
 from src.utils.viaABC_utils.ParticleWeight import particle_weight_cpp
 
 class viaABC:
-    """Implementation of the viaABC algorithm for approximate Bayesian computation."""
+    """
+    Generic ABC engine.
+
+    Subclasses provide three domain hooks:
+    1. `sample_priors`: how parameters are proposed
+    2. `simulate`: how one parameter vector generates synthetic data
+    3. `preprocess`/`get_latent`: how raw simulator outputs are turned into the
+       representation used for distance computation
+
+    Keeping the loop here lets each system focus on scientific/model-specific
+    logic instead of reimplementing the inference algorithm.
+    """
 
     @torch.inference_mode()
     def __init__(
@@ -42,10 +54,10 @@ class viaABC:
         state0: Union[np.ndarray, None],
         t0: Union[int, None],
         tmax: Union[int, None],
-        time_space: np.ndarray,
+        time_space: Optional[np.ndarray],
         pooling_method: str = "cls",
         metric: str = "cosine",
-        transform: Callable = None,
+        transform: Optional[Callable[..., Any]] = None,
     ) -> None:
         self.logger = logging.getLogger(__name__)
         logging.basicConfig(level=logging.INFO)
@@ -53,6 +65,12 @@ class viaABC:
 
         self.raw_observational_data = observational_data
         self.state0 = state0
+        self.model: Optional[torch.nn.Module] = None
+        self.time_space: Optional[np.ndarray] = None
+        self.train_dataset: Optional[torch.utils.data.Dataset[Any]] = None
+        self.num_particles: int = 0
+        self.max_generations: int = 0
+        self.encoded_observational_data: np.ndarray = np.array([])
 
         if state0 is None:
             self.logger.warning(
@@ -123,6 +141,8 @@ class viaABC:
                 "The class can be initialized without a model, but it will not\nbe able to run the algorithm."
             )
         else:
+            # Encoding the observation once up front keeps the later ABC loop
+            # focused on simulated samples only.
             self.update_model(model)
 
         self.generations = []
@@ -137,16 +157,18 @@ class viaABC:
         self.logger.info(f"pooling_method: {pooling_method}")
         self.logger.info(f"metric: {metric}")
 
-    def update_model(self, model: torch.nn.Module):
+    def update_model(self, model: torch.nn.Module) -> None:
         self.model = model
         self.model.eval()
         self.logger.info("Model updated")
         self._encode_observational_data()
 
-    def ode_system(self, t: int, state: np.ndarray, parameters: np.ndarray):
+    def ode_system(self, t: int, state: np.ndarray, parameters: np.ndarray) -> Any:
         raise NotImplementedError
 
-    def simulate(self, parameters: np.ndarray, time_space: Union[np.ndarray, None] = None) -> tuple:
+    def simulate(self, parameters: np.ndarray, time_space: Optional[np.ndarray] = None) -> tuple[np.ndarray, int]:
+        if self.time_space is None and time_space is None:
+            raise ValueError("time_space must be provided either during initialization or simulation.")
         if self.state0 is not None:
             if time_space is not None:
                 solution = solve_ivp(self.ode_system, [self.t0, self.tmax], y0=self.state0, t_eval=time_space, args=(parameters,))
@@ -195,7 +217,7 @@ class viaABC:
         proposed_theta = multivariate_normal.rvs(mean=theta, cov=cov)
         return proposed_theta
 
-    def calculate_distance(self, y: np.ndarray) -> np.ndarray:
+    def calculate_distance(self, y: np.ndarray) -> float | np.ndarray:
         """
         Calculate distances between encoded observational data and input vectors in y in a vectorized manner.
         
@@ -205,42 +227,47 @@ class viaABC:
         Returns:
             np.ndarray: Distance measures between 0 and 2 for each item in the batch
         """
-        x = self.encoded_observational_data 
+        x = np.asarray(self.encoded_observational_data)
+        y = np.asarray(y)
+
+        # Keep the public API backward compatible: callers that pass one encoded
+        # sample still receive a scalar, while batched initialization can consume
+        # one distance per sample from the same code path.
+        single_input = y.shape[0] == 1 if y.ndim > 0 else True
+        # Most metrics below are written against matching observation/simulation
+        # shapes. Broadcasting `x` here keeps batching a base-class concern
+        # instead of forcing every metric helper to know about it.
+        x_batch = np.broadcast_to(x, y.shape) if y.shape != x.shape else x
         
         if self.metric == "cosine":
-            # Compute cosine similarity for all items in the batch
-            cos_sim_values = cosine_similarity(x, y) # calculating the cosine similarity between z_sim and z_obs, -1 and 1 
-            distances = 1-cos_sim_values # 
+            x_flat = x_batch.reshape(x_batch.shape[0], -1)
+            y_flat = y.reshape(y.shape[0], -1)
+            denom = np.linalg.norm(x_flat, axis=1) * np.linalg.norm(y_flat, axis=1)
+            distances = 1 - (np.sum(x_flat * y_flat, axis=1) / (denom + 1e-8))
         elif self.metric == "l1":
-            # Compute L1 distance for all items in the batch
-            distances = l1_distance(x, y)
+            distances = np.abs(y - x_batch).reshape(y.shape[0], -1).mean(axis=1)
         elif self.metric == "l2":
-            # Compute L2 distance for all items in the batch
-            distances = l2_distance(x, y)
+            distances = np.linalg.norm((y - x_batch).reshape(y.shape[0], -1), axis=1)
         elif self.metric == "bertscore":
-            # # Compute similarity for all items in the batch using bert_score (assuming bert_score can handle batched inputs)
-            _, _, f1_scores = bert_score(x, y)
-            
-            # Calculate distances for all items in the batch
-            distances = 1-f1_scores
-
+            distances = np.array([1 - bert_score(x, sample[np.newaxis, ...])[2] for sample in y], dtype=np.float32)
         elif self.metric == "pairwise_cosine":
-            distances = 1 - pairwise_cosine(x, y)
-        
+            distances = np.array([1 - pairwise_cosine(x, sample[np.newaxis, ...]) for sample in y], dtype=np.float32)
         elif self.metric == "bertscore_batch":
-            # Compute bert_score for all items in the batch
-            mean_f1_score = bert_score_batch(x, y)
-
-            distances = 1 - mean_f1_score
-
+            distances = np.array([1 - bert_score_batch(x, sample[np.newaxis, ...]) for sample in y], dtype=np.float32)
         elif self.metric == "maxSim":
-            # Compute maxSim for all items in the batch
-            distances = maxSim(x, y)
+            distances = np.array([maxSim(x, sample[np.newaxis, ...]) for sample in y], dtype=np.float32)
+        else:
+            raise ValueError(f"Unsupported metric: {self.metric}")
 
-        return distances
+        if single_input:
+            return float(np.asarray(distances).reshape(-1)[0])
+        return np.asarray(distances, dtype=np.float32)
     
     @torch.inference_mode()
     def _encode_observational_data(self):
+        # Observation encoding is cached on the instance because the observed
+        # data is fixed during one inference run, while simulated samples change
+        # every iteration.
         scaled_data = self.preprocess(self.raw_observational_data)
         self.encoded_observational_data = self.get_latent(scaled_data)
     
@@ -260,7 +287,7 @@ class viaABC:
         self.logger.info(f"Median: {median:.4f}")
         self.logger.info(f"Variance: {var:.4f}")
 
-    def update_train_dataset(self, train_dataset):
+    def update_train_dataset(self, train_dataset: torch.utils.data.Dataset[Any]) -> None:
         # check if train_dataset is a torch Dataset
         if not isinstance(train_dataset, torch.utils.data.Dataset):
             raise ValueError("train_dataset must be a torch Dataset.")
@@ -288,37 +315,55 @@ class viaABC:
         
         # Get device once to avoid repeated attribute access
         device = self.model.device
+        max_workers = max(1, min(os.cpu_count() or 1, target_particles))
+        batch_size = max(max_workers, min(256, num_particles))
 
-        # TODO: this can be batched
         while accepted < target_particles:
-            perturbed_params = self.sample_priors()
+            remaining = target_particles - accepted
+            current_batch_size = min(batch_size, remaining * 2)
 
-            # Early exit for invalid priors
-            prior_log_pdf = self.calculate_prior_log_prob(perturbed_params)
-            if np.isneginf(prior_log_pdf):
+            candidate_params = []
+            # Filter invalid priors before simulation so the thread pool only
+            # spends time on candidates that have a chance to be accepted.
+            while len(candidate_params) < current_batch_size:
+                perturbed_params = self.sample_priors()
+                prior_log_pdf = self.calculate_prior_log_prob(perturbed_params)
+                if np.isfinite(prior_log_pdf):
+                    candidate_params.append(np.asarray(perturbed_params))
+
+            with ThreadPoolExecutor(max_workers=min(max_workers, len(candidate_params))) as executor:
+                futures = [executor.submit(self.simulate, params) for params in candidate_params]
+                simulation_results = [future.result() for future in futures]
+
+            total_num_simulations += len(candidate_params)
+
+            successful_params = []
+            successful_scaled = []
+            for params, (y, status) in zip(candidate_params, simulation_results):
+                if status != 0:
+                    continue
+                successful_params.append(params)
+                successful_scaled.append(self.preprocess(y))
+
+            if not successful_scaled:
                 continue
 
-            y, status = self.simulate(perturbed_params)
-            total_num_simulations += 1
-
-            # Early exit for failed simulations
-            if status != 0:
-                continue
-
-            # Optimized tensor operations
-            y_scaled = self.preprocess(y)
-            y_tensor = torch.as_tensor(
-                y_scaled,
+            # Preprocess/encode accepted simulations as one tensor so the model
+            # does one larger forward pass instead of many tiny ones. This is
+            # one of the main throughput wins in the current implementation.
+            y_batch = torch.as_tensor(
+                np.stack(successful_scaled, axis=0),
                 dtype=torch.float32,
-                device=self.model.device,
+                device=device,
             )
-            y_latent_np = self.get_latent(y_tensor)
-            dist = self.calculate_distance(y_latent_np)
-            
-            # Store results
-            particles[accepted] = perturbed_params
-            dists[accepted] = dist
-            accepted += 1
+            y_latent_np = self.get_latent(y_batch)
+            batch_dist_values = self.calculate_distance(y_latent_np)
+            batch_dists = np.atleast_1d(np.asarray(batch_dist_values, dtype=np.float32))
+
+            write_count = min(remaining, len(successful_params))
+            particles[accepted:accepted + write_count] = np.asarray(successful_params[:write_count])
+            dists[accepted:accepted + write_count] = batch_dists[:write_count]
+            accepted += write_count
 
         sorted_indices = np.argsort(dists)
         particles = particles[sorted_indices]
@@ -435,6 +480,8 @@ class viaABC:
             k: Number of nearest neighbors for distance calculation
             max_generations: Maximum number of generations to run
         """
+
+        # TODO: This can be optimized by concurrently simulating particles in batches. 
         if self.model is None:
             raise ValueError("Model must be provided to encode the data and run the algorithm.")
         
@@ -506,7 +553,7 @@ class viaABC:
         prev_weights: np.ndarray,
         prev_cov: np.ndarray,
         epsilon: float
-    ) -> tuple:
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, int]:
         """Run a single generation of the ABC PMC algorithm.
         
         Args:
@@ -635,7 +682,7 @@ class viaABC:
         prev_weights: np.ndarray,
         prev_sigma_max: float,
         simulations: int
-    ) -> dict:
+    ) -> dict[str, Any]:
         """Process and package generation results.
         
         Args:
@@ -713,7 +760,7 @@ class viaABC:
             device=self.model.device,
         )
         y_latent_np = self.get_latent(y_tensor) # z_sim
-        return self.calculate_distance(y_latent_np)
+        return float(self.calculate_distance(y_latent_np))
 
     def _should_stop(self, generation_num: int, qt: float, q_threshold: float) -> bool:
         """Determine if stopping conditions are met.
@@ -750,7 +797,7 @@ class viaABC:
             f"{total_simulations} total simulations over {num_generations} generations."
         )
 
-    def _compute_statistics(self, generation: int = 0):
+    def _compute_statistics(self, generation: int = 0) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """ Compute statistics of the particles at the given generation.
         Args:
             generation (int): Generation to compute statistics for. Defaults to the last generation.
@@ -778,7 +825,7 @@ class viaABC:
 
         return mean, median, var
     
-    def __sample_priors(self, n: int = 1):
+    def __sample_priors(self, n: int = 1) -> np.ndarray:
         """Sample from prior distribution using Latin Hypercube Sampling"""
         # Create LHS sampler
         sampler = qmc.LatinHypercube(d=self.num_parameters)
@@ -814,8 +861,15 @@ class viaABC:
         
         # Sample parameters for all simulations
         parameters = self.__sample_priors(n=num_simulations)
+
+        if num_threads <= 0:
+            num_threads = min(32, (os.cpu_count() or 1) + 4, max(1, num_simulations))
+        else:
+            num_threads = min(num_threads, max(1, num_simulations))
+
+        batch_size = min(256, max(32, num_threads * 8))
         
-        def run_simulation(i: int, param) -> tuple | None:
+        def run_simulation(i: int, param: np.ndarray) -> Optional[tuple[np.ndarray, np.ndarray]]:
             """Run a single simulation and return results or None on failure."""
             try:
                 simulation, status = self.simulate(parameters = param)
@@ -827,43 +881,119 @@ class viaABC:
                 self.logger.error(f"Simulation {i} failed with error: {e}")
             return None
         
-        # Run simulations in parallel
-        valid_results = []
-        with ThreadPoolExecutor(max_workers=num_threads) as executor:
-            # Submit all jobs
-            future_to_index = {
-                executor.submit(run_simulation, i, param): i 
-                for i, param in enumerate(parameters)
-            }
-            
-            # Collect results as they complete
-            for future in as_completed(future_to_index):
-                try:
-                    result = future.result()
-                    if result is not None:
-                        valid_results.append(result)
-                except Exception as e:
-                    idx = future_to_index[future]
-                    self.logger.error(f"Error processing simulation {idx}: {e}")
-        
-        # Save results if any valid simulations exist
-        if valid_results:
-            # Unpack results into separate arrays
-            valid_simulations, valid_params = zip(*valid_results)
-            valid_simulations = np.array(valid_simulations)
-            valid_params = np.array(valid_params)
-            
-            # Save to file
-            output_path = os.path.join(save_dir, f"{prefix}_data.npz")
-            np.savez(output_path, params=valid_params, simulations=valid_simulations)
-            
-            self.logger.info(
-                f"Successfully saved {len(valid_simulations)} simulations to {output_path}"
-            )
-        else:
-            self.logger.warning("No valid simulations to save.")
+        shard_paths: list[tuple[str, str]] = []
+        buffered_simulations: list[np.ndarray] = []
+        buffered_params: list[np.ndarray] = []
+        total_valid = 0
+        simulation_shape: Optional[tuple[int, ...]] = None
+        simulation_dtype: Optional[np.dtype[Any]] = None
+        param_shape: Optional[tuple[int, ...]] = None
+        param_dtype: Optional[np.dtype[Any]] = None
 
-    def generate_training_data(self, num_simulations: Union[int, list, tuple] = 50000, save_dir: str = "data", seed: int = 1234, num_workers: int = 1):
+        def flush_batch() -> None:
+            nonlocal total_valid
+            if not buffered_simulations:
+                return
+
+            batch_index = len(shard_paths)
+            sim_batch = np.asarray(buffered_simulations)
+            param_batch = np.asarray(buffered_params)
+            sim_path = os.path.join(save_dir, f".{prefix}_simulations_{batch_index}.npy")
+            param_path = os.path.join(save_dir, f".{prefix}_params_{batch_index}.npy")
+            np.save(sim_path, sim_batch)
+            np.save(param_path, param_batch)
+            shard_paths.append((sim_path, param_path))
+            total_valid += sim_batch.shape[0]
+            buffered_simulations.clear()
+            buffered_params.clear()
+
+        try:
+            with ThreadPoolExecutor(max_workers=num_threads) as executor:
+                future_to_index = {}
+                next_index = 0
+                max_pending = max(num_threads * 4, batch_size)
+
+                while next_index < num_simulations and len(future_to_index) < max_pending:
+                    future = executor.submit(run_simulation, next_index, parameters[next_index])
+                    future_to_index[future] = next_index
+                    next_index += 1
+
+                while future_to_index:
+                    done, _ = wait(future_to_index, return_when=FIRST_COMPLETED)
+                    for future in done:
+                        idx = future_to_index.pop(future)
+                        try:
+                            result = future.result()
+                            if result is not None:
+                                simulation, param = result
+                                simulation = np.asarray(simulation)
+                                param = np.asarray(param)
+
+                                if simulation_shape is None:
+                                    simulation_shape = simulation.shape
+                                    simulation_dtype = simulation.dtype
+                                    param_shape = param.shape
+                                    param_dtype = param.dtype
+
+                                buffered_simulations.append(simulation)
+                                buffered_params.append(param)
+                                if len(buffered_simulations) >= batch_size:
+                                    flush_batch()
+                        except Exception as e:
+                            self.logger.error(f"Error processing simulation {idx}: {e}")
+
+                        if next_index < num_simulations:
+                            new_future = executor.submit(run_simulation, next_index, parameters[next_index])
+                            future_to_index[new_future] = next_index
+                            next_index += 1
+
+            flush_batch()
+
+            if total_valid == 0 or simulation_shape is None or simulation_dtype is None or param_shape is None or param_dtype is None:
+                self.logger.warning("No valid simulations to save.")
+                return
+
+            with tempfile.TemporaryDirectory(dir=save_dir) as tmpdir:
+                sim_merged_path = os.path.join(tmpdir, f"{prefix}_simulations.npy")
+                param_merged_path = os.path.join(tmpdir, f"{prefix}_params.npy")
+
+                merged_simulations = np.lib.format.open_memmap(
+                    sim_merged_path,
+                    mode="w+",
+                    dtype=simulation_dtype,
+                    shape=(total_valid, *simulation_shape),
+                )
+                merged_params = np.lib.format.open_memmap(
+                    param_merged_path,
+                    mode="w+",
+                    dtype=param_dtype,
+                    shape=(total_valid, *param_shape),
+                )
+
+                start = 0
+                for sim_path, param_path in shard_paths:
+                    sim_batch = np.load(sim_path, mmap_mode="r")
+                    param_batch = np.load(param_path, mmap_mode="r")
+                    end = start + sim_batch.shape[0]
+                    merged_simulations[start:end] = sim_batch
+                    merged_params[start:end] = param_batch
+                    start = end
+
+                output_path = os.path.join(save_dir, f"{prefix}_data.npz")
+                np.savez(output_path, params=merged_params, simulations=merged_simulations)
+
+            self.logger.info(
+                f"Successfully saved {total_valid} simulations to {output_path} "
+                f"using {num_threads} threads and batch size {batch_size}"
+            )
+        finally:
+            for sim_path, param_path in shard_paths:
+                if os.path.exists(sim_path):
+                    os.remove(sim_path)
+                if os.path.exists(param_path):
+                    os.remove(param_path)
+
+    def generate_training_data(self, num_simulations: Union[int, list[int], tuple[int, int, int]] = 50000, save_dir: str = "data", seed: int = 1234, num_workers: int = 1) -> None:
         np.random.seed(seed)
         self.logger.info(f"Generating training data for training with seed {seed}")
 
@@ -912,7 +1042,7 @@ class viaABC:
 
         self.logger.info(f"Training data generation completed and saved. Total time taken: {total_time:.2f} seconds")
 
-    def update_train_dataset(self, train_dataset):
+    def update_train_dataset(self, train_dataset: torch.utils.data.Dataset[Any]) -> None:
         # check if train_dataset is a torch Dataset
         if not isinstance(train_dataset, torch.utils.data.Dataset):
             raise ValueError("train_dataset must be a torch Dataset.")
@@ -969,7 +1099,7 @@ class viaABC:
         return particles, weights
     
     @torch.inference_mode()
-    def get_latent(self, x):
+    def get_latent(self, x: np.ndarray | torch.Tensor) -> np.ndarray:
         if self.model is None:
             raise ValueError("Model must be provided to encode the data and run the method.")
         
@@ -980,7 +1110,10 @@ class viaABC:
         else:
             raise TypeError(f"Unsupported type for x: {type(x)}")
 
-        x = x.unsqueeze(0)
+        # Most callers pass a single sample without a batch dimension. Batched
+        # initialization passes a full batch and should keep that dimension.
+        if x.ndim == 2:
+            x = x.unsqueeze(0)
         x = self.model.get_latent(x, self.pooling_method)
 
         # if x is tensor convert to numpy, safeguard
@@ -989,7 +1122,7 @@ class viaABC:
         
         return x
     
-    def preprocess(self, x):
+    def preprocess(self, x: np.ndarray) -> np.ndarray:
         raise NotImplementedError
         
     

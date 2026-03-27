@@ -52,7 +52,7 @@ To train a Lotka–Volterra system using TSMVAE:
 
 First, simulate synthetic data using the script
 ```bash
-python src/generate_training_data.py # Change line 44 to LotkaVolterra()
+python src/generate_training_data.py --save_dir "data" # Change line 44 to LotkaVolterra()
 ```
 
 then run to start training
@@ -154,7 +154,7 @@ use `fast_dev_run: true` for fast debugging purposes and turn this off for train
 
 ## TODO
 
-1. C++ code for spatial2D is slow when using pybind (~0.7 s per iteration). Consider using CPython instead.
+1. C++ code for spatial2D is slow when using pybind (~0.7 s per iteration). Consider using Cython instead.
 
 ```bibtex
 @misc{park2025spatiodynamicinferenceusingvisionbased,

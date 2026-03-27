@@ -4,6 +4,8 @@
 import numpy as np
 cimport numpy as np
 
+np.import_array()
+
 from libc.stdint cimport int32_t, uint8_t
 from libc.stddef cimport size_t
 
@@ -28,7 +30,7 @@ cdef extern from "grid.hpp" namespace "":
 
     cdef cppclass Grid:
         Grid(const vector[vector[int]]& initial, const Parameters& params) except +
-        void simulate() except +
+        void simulate() except + nogil
         size_t getRows() const
         size_t getCols() const
         const vector[uint8_t]& raw() const
@@ -88,7 +90,8 @@ cdef class GridCore:
 
         g = new Grid(self._initial2d, p)
         try:
-            g.simulate()
+            with nogil:
+                g.simulate()
 
             r = g.getRows()
             c = g.getCols()

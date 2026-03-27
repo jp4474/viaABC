@@ -1,49 +1,51 @@
-from src.viaABC.viaABC import viaABC
-from scipy.stats import uniform
+from pathlib import Path
+from typing import Any, Mapping, Optional, Sequence
+
 import numpy as np
-from src.viaABC.systems import *
-from src.viaABC.metrics import *
-from scipy.ndimage import convolve
+import torch
 from PIL import Image
-from typing import Optional
 from hydra import compose, initialize_config_dir
 from hydra.core.hydra_config import HydraConfig
-
 import sys
+
 import rootutils
 import hydra
+from scipy.ndimage import convolve
+from scipy.stats import uniform
+
+from src.viaABC.metrics import bert_score, bert_score_batch, cosine_similarity, l1_distance, l2_distance, maxSim, pairwise_cosine
+from src.viaABC.viaABC import viaABC
 
 # Setup project root and add to PYTHONPATH
 rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
 
-# Now add the build folder relative to root
-from pathlib import Path
 PROJECT_ROOT = Path(rootutils.find_root())
 sys.path.append(str(PROJECT_ROOT / "src" / "viaABC" / "spatial2D" / "build"))
 
-import spatial2D_cpp as cpp
+# import spatial2D_cpp as cpp
+from src.viaABC.spatial2D import _grid_core as cpp
 
 class LotkaVolterra(viaABC):
     def __init__(self,
-        num_parameters = 2, 
-        mu = np.array([0, 0]),
-        sigma = np.array([10, 10]),
-        model = None, 
-        observational_data = np.array([[1.87, 0.65, 0.22, 0.31, 1.64, 1.15, 0.24, 2.91],
-                                        [0.49, 2.62, 1.54, 0.02, 1.14, 1.68, 1.07, 0.88]]).T, 
-        state0 = np.array([1, 0.5]), 
-        t0 = 0,
-        tmax = 15, 
-        time_space = np.array([1.1, 2.4, 3.9, 5.6, 7.5, 9.6, 11.9, 14.4]),
-        pooling_method = "no_cls",
-        metric = "pairwise_cosine",
-        transform = None):
+        num_parameters: int = 2,
+        mu: np.ndarray = np.array([0, 0]),
+        sigma: np.ndarray = np.array([10, 10]),
+        model: Optional[torch.nn.Module] = None,
+        observational_data: np.ndarray = np.array([[1.87, 0.65, 0.22, 0.31, 1.64, 1.15, 0.24, 2.91],
+                                        [0.49, 2.62, 1.54, 0.02, 1.14, 1.68, 1.07, 0.88]]).T,
+        state0: np.ndarray = np.array([1, 0.5]),
+        t0: int = 0,
+        tmax: int = 15,
+        time_space: np.ndarray = np.array([1.1, 2.4, 3.9, 5.6, 7.5, 9.6, 11.9, 14.4]),
+        pooling_method: str = "no_cls",
+        metric: str = "pairwise_cosine",
+        transform: Any = None) -> None:
         self.transform = transform
         super().__init__(num_parameters, mu, sigma, observational_data, model, state0, t0, tmax, time_space, pooling_method, metric,)
         self.lower_bounds = mu 
         self.upper_bounds = sigma
 
-    def ode_system(self, t, state, parameters):
+    def ode_system(self, t: float, state: np.ndarray, parameters: np.ndarray) -> list[float]:
         # Lotka-Volterra equations
         alpha, delta = parameters
         beta, gamma = 1, 1
@@ -52,17 +54,17 @@ class LotkaVolterra(viaABC):
         dpredator = predator * (-gamma + delta * prey)
         return [dprey, dpredator]
 
-    def sample_priors(self):
+    def sample_priors(self) -> np.ndarray:
         # Sample from the prior distribution
         priors = np.random.uniform(self.lower_bounds, self.upper_bounds, self.num_parameters)
         return priors
     
-    def calculate_prior_log_prob(self, parameters):
+    def calculate_prior_log_prob(self, parameters: np.ndarray) -> float:
         probabilities = uniform.logpdf(parameters, loc=self.lower_bounds, scale=self.upper_bounds - self.lower_bounds)
         probabilities = np.sum(probabilities)
         return probabilities
     
-    def preprocess(self, x):
+    def preprocess(self, x: np.ndarray) -> np.ndarray:
         if self.transform is not None:
             x = self.transform(x)
         return x
@@ -72,25 +74,90 @@ class Spatial2D(viaABC):
     Represents a 2D spatial simulation model for parameter inference and
     data assimilation. Loads observational data from images or text files,
     processes it into grid and one-hot formats, and supports simulation,
-    prior sampling, and prior probability calculation. Integrates with C++
-    extensions for efficient simulation.
+    prior sampling, and prior probability calculation.
+
+    Architecture note:
+        `viaABC` defines the generic inference loop, while this subclass owns
+        domain-specific concerns: how to load one observation, how to run one
+        spatial simulation, and how to compare multiple reference samples when
+        the experiment uses more than one observed grid.
     """
     def __init__(self,
-        num_parameters = 3, 
-        mu = np.array( [0., 0., 0.]), # Lower Bound
-        sigma = np.array([1., 1., 1.]),
-        model = None, 
+        num_parameters: int = 3,
+        mu: np.ndarray = np.array( [0., 0., 0.]), # Lower Bound
+        sigma: np.ndarray = np.array([1., 1., 1.]),
+        model: Optional[torch.nn.Module] = None,
         observational_data: Optional[np.ndarray] = None,
-        state0 = None,
-        t0 = 0,
-        tmax = 24,
-        dt = 0.1,
-        time_space = None,
-        pooling_method = "no_cls",
-        metric = "pairwise_cosine",
-        sample_id: str = "sample_1",):
+        state0: Optional[np.ndarray] = None,
+        t0: int = 0,
+        tmax: int = 24,
+        dt: float = 0.1,
+        time_space: Optional[np.ndarray] = None,
+        pooling_method: str = "no_cls",
+        metric: str = "pairwise_cosine",
+        sample_id: str | Sequence[str] | None = "sample_1",) -> None:
 
+        # Build the Cython simulator objects lazily so object construction stays
+        # cheap unless we actually run simulations.
+        self._cython_cores: list[Any] | None = None
         sample_paths = self._load_spatial2d_samples()
+        sample_ids = [sample_id] if isinstance(sample_id, str) else list(sample_id or [])
+        if not sample_ids:
+            raise ValueError("sample_id must be a sample name or a non-empty list of sample names.")
+
+        grids = [self._load_sample_grid(sample_paths, current_sample_id) for current_sample_id in sample_ids]
+        # Keep the raw label grids because the simulator evolves label states,
+        # while `observational_data` below preserves the original representation
+        # expected by the rest of the project.
+        self._observation_grids = np.stack(grids, axis=0)
+        self._multiple_samples = len(grids) > 1
+
+        if self._multiple_samples:
+            # Multi-sample Spatial2D stays a subclass concern: we store one
+            # observation tensor per sample and later aggregate distances here
+            # instead of teaching the generic viaABC base class about sample-wise
+            # simulator semantics.
+            self.observational_data = np.stack([self.labels2map(grid) for grid in grids], axis=0)
+            self.observational_data_flattened = [grid.astype(int).tolist() for grid in grids]
+        else:
+            self.observational_data = self.labels2map(grids[0])
+            self.observational_data_flattened = grids[0].astype(int).tolist()
+
+        super().__init__(num_parameters, mu, sigma, self.observational_data, model, state0, t0, tmax, time_space, pooling_method, metric)
+        self.lower_bounds = mu
+        self.upper_bounds = sigma
+        self.dt = dt
+
+    @staticmethod
+    def _load_spatial2d_samples() -> Mapping[str, Mapping[str, Any]]:
+        # Sample metadata lives in Hydra config so experiments can switch
+        # observations without hard-coding file paths in the system class.
+        data_name = "spatial2D"
+        if HydraConfig.initialized():
+            data_name = str(HydraConfig.get().runtime.choices.get("data", data_name))
+
+        overrides = [f"data={data_name}", "model=spatial2D"]
+
+        if hydra.core.global_hydra.GlobalHydra.instance().is_initialized():
+            cfg = compose(config_name="train", overrides=overrides)
+            return cfg.data.observation_samples
+
+        with initialize_config_dir(version_base="1.3", config_dir=str(PROJECT_ROOT / "configs")):
+            cfg = compose(config_name="train", overrides=overrides)
+            return cfg.data.observation_samples
+
+    def read_txt_as_matrix(self, txt_path: str | Path) -> np.ndarray:
+    # converts a txt file to a numpy array
+        return np.loadtxt(txt_path, dtype=np.uint8)
+
+    def read_image_as_matrix(self, image_path: str | Path) -> np.ndarray:
+    # converts an image to a numpy array
+        img = Image.open(image_path)
+        # Convert to numpy array
+        img_array = np.array(img)       
+        return img_array
+
+    def _load_sample_grid(self, sample_paths: Mapping[str, Mapping[str, Any]], sample_id: str) -> np.ndarray:
         if sample_id not in sample_paths:
             raise ValueError(f"Unknown sample_id={sample_id!r}.")
 
@@ -111,44 +178,11 @@ class Spatial2D(viaABC):
                 img = None
 
         if img is None:
-            grid = self.read_txt_as_matrix(txt_path)
-        else:
-            grid = self.image_to_grid(img)
+            # TXT is the simulator-native representation and therefore the
+            # reliable fallback when the processed image is unavailable.
+            return self.read_txt_as_matrix(txt_path)
 
-        self.observational_data = self.labels2map(grid)  # Shape: (num_classes, height, width) == (6, 1200, 1200)
-
-        super().__init__(num_parameters, mu, sigma, self.observational_data, model, state0, t0, tmax, time_space, pooling_method, metric)
-        self.lower_bounds = mu
-        self.upper_bounds = sigma
-        self.dt = dt
-        self.observational_data_flattened = grid.astype(int).tolist()
-
-    @staticmethod
-    def _load_spatial2d_samples():
-        data_name = "spatial2D"
-        if HydraConfig.initialized():
-            data_name = HydraConfig.get().runtime.choices.get("data", data_name)
-
-        overrides = [f"data={data_name}", "model=spatial2D"]
-
-        if hydra.core.global_hydra.GlobalHydra.instance().is_initialized():
-            cfg = compose(config_name="train", overrides=overrides)
-            return cfg.data.observation_samples
-
-        with initialize_config_dir(version_base="1.3", config_dir=str(PROJECT_ROOT / "configs")):
-            cfg = compose(config_name="train", overrides=overrides)
-            return cfg.data.observation_samples
-
-    def read_txt_as_matrix(self, txt_path: str) -> np.ndarray:
-    # converts a txt file to a numpy array
-        return np.loadtxt(txt_path, dtype=np.uint8)
-
-    def read_image_as_matrix(self, image_path: str) -> np.ndarray:
-    # converts an image to a numpy array
-        img = Image.open(image_path)
-        # Convert to numpy array
-        img_array = np.array(img)       
-        return img_array
+        return self.image_to_grid(img)
 
     def image_to_grid(self, img: np.ndarray) -> np.ndarray:
         # Threshold an RGB segmentation image into simulator state IDs.
@@ -170,61 +204,170 @@ class Spatial2D(viaABC):
         grid[green_mask] = 4
         return grid
         
-    def simulate(self, parameters: np.ndarray) -> tuple[np.ndarray, int]:
-        """ Simulate the spatial 2D model using C++ extension. Output numpy array of shape (num_classes, height, width) and boolean indicating success. 0 means success, 1 means failure."""
-        params = cpp.Parameters()
-        params.alpha = parameters[0]
-        params.beta = parameters[1]
-        params.gamma = parameters[2]
-        params.dt = self.dt
-        params.t0 = self.t0
-        params.t_end = self.tmax
+    def simulate(self, parameters: np.ndarray, time_space: np.ndarray | None = None) -> tuple[np.ndarray, int]:
+        """ 
+        Simulate the spatial 2D model using C++ extension. Output numpy array of shape (num_classes, height, width) and boolean indicating success. 0 means success, 1 means failure.
 
-        #TODO: replace cpp with cython extension when ready
+        Notes:
+            `time_space` is accepted for compatibility with the base viaABC interface, but is not used by Spatial2D because the simulator maps one initial state to one final state.
+        """
 
-        g = cpp.Grid(self.observational_data_flattened, params)
-        g.simulate()
+        # params = cpp.Parameters()
+        # params.alpha = parameters[0]
+        # params.beta = parameters[1]
+        # params.gamma = parameters[2]
+        # params.dt = self.dt
+        # params.t0 = self.t0
+        # params.t_end = self.tmax
 
-        return g.numpy(), 0
+        # g = cpp.Grid(self.observational_data_flattened, params)
+        # g.simulate()
+
+        # return g.numpy(), 0
+        if self._cython_cores is None:
+            # Reuse the compiled grid cores across calls; constructing them
+            # repeatedly adds overhead but does not change simulation results.
+            self._cython_cores = [
+                cpp.GridCore(np.asarray(grid, dtype=np.int32))
+                for grid in self._observation_grids
+            ]
+
+        simulations = [
+            core.simulation(
+                float(parameters[0]),
+                float(parameters[1]),
+                float(parameters[2]),
+                float(self.dt),
+                float(self.t0),
+                float(self.tmax),
+            )
+            for core in self._cython_cores
+        ]
+
+        if self._multiple_samples:
+            # Preserve one simulation per observation sample so the distance
+            # layer can compare aligned pairs and aggregate afterward.
+            return np.stack(simulations, axis=0), 0
+
+        return simulations[0], 0
     
-    def sample_priors(self):
+    def sample_priors(self) -> np.ndarray:
         # Sample from the prior distribution
         priors = np.random.uniform(self.lower_bounds, self.upper_bounds, self.num_parameters)
         return priors
             
-    def calculate_prior_log_prob(self, parameters):
+    def calculate_prior_log_prob(self, parameters: np.ndarray) -> float:
         # Calculate the prior log probability of the parameters
         # This must match the prior distribution used in sampling
         log_probabilities = uniform.logpdf(parameters, loc=self.lower_bounds, scale=self.upper_bounds - self.lower_bounds) 
         return np.sum(log_probabilities)
 
-    def labels2map(self, y):
+    def labels2map(self, y: np.ndarray) -> np.ndarray:
         # (1200, 1200) to (6, 1200, 1200) one-hot encoding
         return np.eye(6, dtype=np.float32)[y].transpose(2, 0, 1)
+
+    @torch.inference_mode()
+    def _encode_observational_data(self):
+        # Encode from the raw observation grids rather than `raw_observational_data`
+        # so that single-sample and multi-sample Spatial2D follow the same
+        # simulator-facing path before they hit the model.
+        observation_input = self._observation_grids if self._multiple_samples else self._observation_grids[0]
+        scaled_data = self.preprocess(observation_input)
+        self.encoded_observational_data = self.get_latent(scaled_data)
+
+    @torch.inference_mode()
+    def get_latent(self, x: np.ndarray | torch.Tensor) -> np.ndarray:
+        if self.model is None:
+            raise ValueError("Model must be provided to encode the data and run the method.")
+
+        if isinstance(x, np.ndarray):
+            x = torch.from_numpy(x).float().to(self.model.device)
+        elif isinstance(x, torch.Tensor):
+            x = x.float().to(self.model.device)
+        else:
+            raise TypeError(f"Unsupported type for x: {type(x)}")
+
+        # Spatial2D models consume [B, C, H, W]. Single maps usually arrive as
+        # [C, H, W], while batched initialization can already provide 4D input.
+        if x.ndim == 3:
+            x = x.unsqueeze(0)
+        elif x.ndim != 4:
+            raise ValueError(f"Unsupported input shape for Spatial2D latent extraction: {tuple(x.shape)}")
+
+        x = self.model.get_latent(x, self.pooling_method)
+
+        if isinstance(x, torch.Tensor):
+            x = x.cpu().numpy()
+
+        return x
+
+    def calculate_distance(self, y: np.ndarray) -> float | np.ndarray:
+        if not self._multiple_samples:
+            return super().calculate_distance(y)
+
+        x = self.encoded_observational_data
+        # For multi-sample observations we score each sample independently and
+        # average. This keeps the external ABC objective as "one scalar distance
+        # per parameter proposal", even though internally we now compare several
+        # observation/simulation pairs.
+        return float(np.mean([
+            self._calculate_sample_distance(x[i:i + 1], y[i:i + 1])
+            for i in range(x.shape[0])
+        ]))
+
+    def _calculate_sample_distance(self, x: np.ndarray, y: np.ndarray) -> float:
+        # We keep the metric dispatch local so multi-sample aggregation can score
+        # one observation/simulation pair at a time without mutating shared base
+        # state like `self.encoded_observational_data`.
+        if self.metric == "cosine":
+            return float(1 - cosine_similarity(x, y))
+        if self.metric == "l1":
+            return float(l1_distance(x, y))
+        if self.metric == "l2":
+            return float(l2_distance(x, y))
+        if self.metric == "bertscore":
+            _, _, f1_scores = bert_score(x, y)
+            return float(1 - f1_scores)
+        if self.metric == "pairwise_cosine":
+            return float(1 - pairwise_cosine(x, y))
+        if self.metric == "bertscore_batch":
+            return float(1 - bert_score_batch(x, y))
+        if self.metric == "maxSim":
+            return float(maxSim(x, y))
+        raise ValueError(f"Unsupported metric: {self.metric}")
     
-    def preprocess(self, x):
+    def preprocess(self, x: np.ndarray) -> np.ndarray:
+        x = np.asarray(x)
         if x.ndim == 2:
-            x = x[None, ...]
+            # Single simulator outputs are raw HxW grids; add a channel axis so
+            # downstream model code can treat them like images.
+            return x[None, ...]
+        if x.ndim == 3 and self._multiple_samples:
+            # Multiple samples arrive as [B, H, W]; convert to [B, C, H, W] with
+            # a singleton channel dimension for the encoder.
+            return x[:, None, ...]
         return x
 
 class SpatialSIR3D(viaABC):
     def __init__(self,
-        num_parameters = 2, 
-        mu = np.array( [0.2, 0.2]), # Lower Bound
-        sigma = np.array([4.5, 4.5]),
-        model = None, 
+        num_parameters: int = 2,
+        mu: np.ndarray = np.array( [0.2, 0.2]), # Lower Bound
+        sigma: np.ndarray = np.array([4.5, 4.5]),
+        model: Optional[torch.nn.Module] = None,
         observational_data: Optional[np.ndarray] = None,
-        state0 = None,
-        t0 = 0,
-        tmax = 16,
-        interval = 1,
-        time_space = np.arange(1, 16, 1),
-        pooling_method = "no_cls",
-        metric = "pairwise_cosine",
-        grid_size = 80,
-        initial_infected = 5,
-        radius = 5):
+        state0: Optional[np.ndarray] = None,
+        t0: int = 0,
+        tmax: int = 16,
+        interval: int = 1,
+        time_space: np.ndarray = np.arange(1, 16, 1),
+        pooling_method: str = "no_cls",
+        metric: str = "pairwise_cosine",
+        grid_size: int = 80,
+        initial_infected: int = 5,
+        radius: int = 5) -> None:
 
+        if observational_data is None:
+            raise ValueError("observational_data must be provided for SpatialSIR3D.")
         observational_data = self.labels2map(observational_data) # Your observational data may not require this step
         super().__init__(num_parameters, mu, sigma, observational_data, model, state0, t0, tmax, time_space, pooling_method, metric)
         # observational_data = self.labels2map(observational_data) # Your observational data may not require this step
@@ -239,7 +382,7 @@ class SpatialSIR3D(viaABC):
         self.lower_bounds = mu
         self.upper_bounds = sigma
 
-    def simulate(self, parameters: np.ndarray):
+    def simulate(self, parameters: np.ndarray) -> tuple[np.ndarray, int]:
         SUSCEPTIBLE, INFECTED, RECOVERED = 0, 1, 2
 
         beta, tau_I = parameters
@@ -328,18 +471,18 @@ class SpatialSIR3D(viaABC):
         # TODO: use try and catch
         return output, 0
     
-    def sample_priors(self):
+    def sample_priors(self) -> np.ndarray:
         # Sample from the prior distribution
         priors = np.random.uniform(self.lower_bounds, self.upper_bounds, self.num_parameters)
         return priors
             
-    def calculate_prior_log_prob(self, parameters):
+    def calculate_prior_log_prob(self, parameters: np.ndarray) -> float:
         # Calculate the prior log probability of the parameters
         # This must match the prior distribution used in sampling
         log_probabilities = uniform.logpdf(parameters, loc=self.lower_bounds, scale=self.upper_bounds - self.lower_bounds) 
         return np.sum(log_probabilities)
 
-    def labels2map(self, y):
+    def labels2map(self, y: np.ndarray) -> np.ndarray:
         susceptible = (y == 0)
         infected = (y == 1)
         resistant = (y == 2)
@@ -348,7 +491,7 @@ class SpatialSIR3D(viaABC):
 
         return y_onehot
     
-    def preprocess(self, x):
+    def preprocess(self, x: np.ndarray) -> np.ndarray:
         # add a channel dimension at the beginning in numpy
         if x.shape[0] == 15:
             x = x.transpose(1, 0, 2, 3)

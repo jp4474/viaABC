@@ -18,7 +18,13 @@ from timm.models.vision_transformer import PatchEmbed, Block
 from src.models.components import get_2d_sincos_pos_embed, Lambda
 
 class MaskedAutoencoderViT(nn.Module):
-    """ Masked Autoencoder with VisionTransformer backbone
+    """
+    Masked Autoencoder with a ViT backbone.
+
+    In this project the model serves two roles:
+    1. pretraining via masked reconstruction
+    2. feature extraction for viaABC, where latent tokens become the space in
+       which observed and simulated samples are compared
     """
     def __init__(self, img_size=1200, patch_size=16, in_chans=6, out_chans=6,
                  embed_dim=1024, depth=24, num_heads=16,
@@ -264,6 +270,8 @@ class MaskedAutoencoderViT(nn.Module):
         return loss, space_loss, pred
     
     def extract_features(self, x, pooling_method = None):
+        # viaABC calls this path instead of `forward`: we want a stable latent
+        # representation for distance computation, not a reconstruction loss.
         x, _, ids_restore = self.forward_encoder(x, 0.0)
         x = self.decoder_embed(x)
 
@@ -278,4 +286,7 @@ class MaskedAutoencoderViT(nn.Module):
         elif pooling_method == "mean":
             return torch.mean(x[:, 1:, :], dim=-1)
         elif pooling_method == "no_cls":
+            # Returning patch tokens without CLS preserves spatial detail, which
+            # is often more informative for simulator comparison than a single
+            # pooled vector.
             return x[:, 1:, :]

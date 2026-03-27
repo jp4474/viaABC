@@ -20,7 +20,7 @@ def parse_arguments() -> argparse.Namespace:
     
     parser.add_argument('--num_workers',
                         type=int,
-                        default=1,
+                        default=4,
                         help='Number of workers for parallel processing')
     
     # Number of trajectories for each parameter sampling
@@ -29,21 +29,30 @@ def parse_arguments() -> argparse.Namespace:
                         default=3,
                         help='Number of trajectories for each parameter sampling')
     
+    parser.add_argument('--save_dir',
+                        type=str,
+                        default="data/spatial2D",
+                        help='Directory to save the generated training data')
+    
     return parser.parse_args()
 
-def main(train_sizes: List[int], seed: int, num_workers: int, num_repeats: int) -> None:
+def main(train_sizes: List[int], seed: int, num_workers: int, num_repeats: int, save_dir: str) -> None:
     """
     Run the simulation with specified parameters.
     
     Args:
         train_sizes: List of three integers specifying training data sizes
         seed: Random seed for reproducibility
+        num_workers: Number of workers for parallel processing
+        num_repeats: Number of trajectories for each parameter sampling
+        save_dir: Directory to save the generated training data
     """
     
-    # Initialize and run simulation
+    # This script intentionally stays thin: dataset generation policy lives in
+    # the `Spatial2D` system class so training-data scripts and ABC inference
+    # reuse the same simulator/prior definitions.
     model = Spatial2D()
-    model.generate_training_data(train_sizes, seed=seed, num_workers=num_workers)
-
+    model.generate_training_data(train_sizes, seed=seed, num_workers=num_workers, save_dir=save_dir)
 if __name__ == "__main__":
     args = parse_arguments()
-    main(args.train_sizes, args.seed, args.num_workers, args.num_repeats)
+    main(args.train_sizes, args.seed, args.num_workers, args.num_repeats, args.save_dir)  

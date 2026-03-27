@@ -9,6 +9,11 @@ defaults:
   - override /callbacks: default
   - override /trainer: default
 
+# Reading this file top-down is the easiest way to understand the training
+# architecture: the data config chooses the observation/simulation domain,
+# the model config defines the MAE encoder used later by viaABC, and the
+# trainer block controls optimization/runtime policy.
+
 # all parameters below will be merged with parameters from default configurations set above
 # this allows you to overwrite only specified parameters
 
@@ -30,7 +35,10 @@ trainer:
 
 model:
   net:
-    patch_size: 16
+    # `in_chans=6` / `out_chans=6` matches Spatial2D's one-hot state maps.
+    # That alignment is what makes the same encoder reusable for both
+    # reconstruction pretraining and downstream simulator comparison.
+    patch_size: 16 
     embed_dim: 384
     depth: 12
     in_chans: 6

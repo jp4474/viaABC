@@ -3,6 +3,7 @@
 #include <vector>
 #include <random>
 #include <cstddef>
+#include <cstdint>
 
 // ---- Cell States ---- //
 enum CellState : uint8_t {

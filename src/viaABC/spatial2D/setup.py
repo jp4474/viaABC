@@ -15,7 +15,7 @@ CPP_SOURCES = [
 
 ext_modules = [
     Extension(
-        name="viaABC.spatial2D._grid_core",         
+        name="src.viaABC.spatial2D._grid_core",
         sources=[str(HERE / "grid_api.pyx"), *CPP_SOURCES],
         include_dirs=[
             np.get_include(),
