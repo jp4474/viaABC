@@ -52,7 +52,7 @@ To train a Lotka–Volterra system using TSMVAE:
 
 First, simulate synthetic data using the script
 ```bash
-python src/generate_training_data.py # Change line 44 to LotkaVolterra()
+python src/generate_training_data.py --save_dir "data" # Change line 44 to LotkaVolterra()
 ```
 
 then run to start training

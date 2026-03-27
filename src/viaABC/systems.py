@@ -74,8 +74,13 @@ class Spatial2D(viaABC):
     Represents a 2D spatial simulation model for parameter inference and
     data assimilation. Loads observational data from images or text files,
     processes it into grid and one-hot formats, and supports simulation,
-    prior sampling, and prior probability calculation. Integrates with C++
-    extensions for efficient simulation.
+    prior sampling, and prior probability calculation.
+
+    Architecture note:
+        `viaABC` defines the generic inference loop, while this subclass owns
+        domain-specific concerns: how to load one observation, how to run one
+        spatial simulation, and how to compare multiple reference samples when
+        the experiment uses more than one observed grid.
     """
     def __init__(self,
         num_parameters: int = 3,
@@ -92,6 +97,8 @@ class Spatial2D(viaABC):
         metric: str = "pairwise_cosine",
         sample_id: str | Sequence[str] | None = "sample_1",) -> None:
 
+        # Build the Cython simulator objects lazily so object construction stays
+        # cheap unless we actually run simulations.
         self._cython_cores: list[Any] | None = None
         sample_paths = self._load_spatial2d_samples()
         sample_ids = [sample_id] if isinstance(sample_id, str) else list(sample_id or [])
@@ -99,10 +106,17 @@ class Spatial2D(viaABC):
             raise ValueError("sample_id must be a sample name or a non-empty list of sample names.")
 
         grids = [self._load_sample_grid(sample_paths, current_sample_id) for current_sample_id in sample_ids]
+        # Keep the raw label grids because the simulator evolves label states,
+        # while `observational_data` below preserves the original representation
+        # expected by the rest of the project.
         self._observation_grids = np.stack(grids, axis=0)
         self._multiple_samples = len(grids) > 1
 
         if self._multiple_samples:
+            # Multi-sample Spatial2D stays a subclass concern: we store one
+            # observation tensor per sample and later aggregate distances here
+            # instead of teaching the generic viaABC base class about sample-wise
+            # simulator semantics.
             self.observational_data = np.stack([self.labels2map(grid) for grid in grids], axis=0)
             self.observational_data_flattened = [grid.astype(int).tolist() for grid in grids]
         else:
@@ -116,6 +130,8 @@ class Spatial2D(viaABC):
 
     @staticmethod
     def _load_spatial2d_samples() -> Mapping[str, Mapping[str, Any]]:
+        # Sample metadata lives in Hydra config so experiments can switch
+        # observations without hard-coding file paths in the system class.
         data_name = "spatial2D"
         if HydraConfig.initialized():
             data_name = str(HydraConfig.get().runtime.choices.get("data", data_name))
@@ -162,6 +178,8 @@ class Spatial2D(viaABC):
                 img = None
 
         if img is None:
+            # TXT is the simulator-native representation and therefore the
+            # reliable fallback when the processed image is unavailable.
             return self.read_txt_as_matrix(txt_path)
 
         return self.image_to_grid(img)
@@ -207,6 +225,8 @@ class Spatial2D(viaABC):
 
         # return g.numpy(), 0
         if self._cython_cores is None:
+            # Reuse the compiled grid cores across calls; constructing them
+            # repeatedly adds overhead but does not change simulation results.
             self._cython_cores = [
                 cpp.GridCore(np.asarray(grid, dtype=np.int32))
                 for grid in self._observation_grids
@@ -225,6 +245,8 @@ class Spatial2D(viaABC):
         ]
 
         if self._multiple_samples:
+            # Preserve one simulation per observation sample so the distance
+            # layer can compare aligned pairs and aggregate afterward.
             return np.stack(simulations, axis=0), 0
 
         return simulations[0], 0
@@ -246,6 +268,9 @@ class Spatial2D(viaABC):
 
     @torch.inference_mode()
     def _encode_observational_data(self):
+        # Encode from the raw observation grids rather than `raw_observational_data`
+        # so that single-sample and multi-sample Spatial2D follow the same
+        # simulator-facing path before they hit the model.
         observation_input = self._observation_grids if self._multiple_samples else self._observation_grids[0]
         scaled_data = self.preprocess(observation_input)
         self.encoded_observational_data = self.get_latent(scaled_data)
@@ -262,6 +287,8 @@ class Spatial2D(viaABC):
         else:
             raise TypeError(f"Unsupported type for x: {type(x)}")
 
+        # Spatial2D models consume [B, C, H, W]. Single maps usually arrive as
+        # [C, H, W], while batched initialization can already provide 4D input.
         if x.ndim == 3:
             x = x.unsqueeze(0)
         elif x.ndim != 4:
@@ -279,12 +306,19 @@ class Spatial2D(viaABC):
             return super().calculate_distance(y)
 
         x = self.encoded_observational_data
+        # For multi-sample observations we score each sample independently and
+        # average. This keeps the external ABC objective as "one scalar distance
+        # per parameter proposal", even though internally we now compare several
+        # observation/simulation pairs.
         return float(np.mean([
             self._calculate_sample_distance(x[i:i + 1], y[i:i + 1])
             for i in range(x.shape[0])
         ]))
 
     def _calculate_sample_distance(self, x: np.ndarray, y: np.ndarray) -> float:
+        # We keep the metric dispatch local so multi-sample aggregation can score
+        # one observation/simulation pair at a time without mutating shared base
+        # state like `self.encoded_observational_data`.
         if self.metric == "cosine":
             return float(1 - cosine_similarity(x, y))
         if self.metric == "l1":
@@ -305,8 +339,12 @@ class Spatial2D(viaABC):
     def preprocess(self, x: np.ndarray) -> np.ndarray:
         x = np.asarray(x)
         if x.ndim == 2:
+            # Single simulator outputs are raw HxW grids; add a channel axis so
+            # downstream model code can treat them like images.
             return x[None, ...]
         if x.ndim == 3 and self._multiple_samples:
+            # Multiple samples arrive as [B, H, W]; convert to [B, C, H, W] with
+            # a singleton channel dimension for the encoder.
             return x[:, None, ...]
         return x
 

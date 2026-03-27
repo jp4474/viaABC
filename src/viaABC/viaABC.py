@@ -30,7 +30,18 @@ from src.utils.viaABC_utils.utils import weighted_var, calculate_densratio_basis
 from src.utils.viaABC_utils.ParticleWeight import particle_weight_cpp
 
 class viaABC:
-    """Implementation of the viaABC algorithm for approximate Bayesian computation."""
+    """
+    Generic ABC engine.
+
+    Subclasses provide three domain hooks:
+    1. `sample_priors`: how parameters are proposed
+    2. `simulate`: how one parameter vector generates synthetic data
+    3. `preprocess`/`get_latent`: how raw simulator outputs are turned into the
+       representation used for distance computation
+
+    Keeping the loop here lets each system focus on scientific/model-specific
+    logic instead of reimplementing the inference algorithm.
+    """
 
     @torch.inference_mode()
     def __init__(
@@ -130,6 +141,8 @@ class viaABC:
                 "The class can be initialized without a model, but it will not\nbe able to run the algorithm."
             )
         else:
+            # Encoding the observation once up front keeps the later ABC loop
+            # focused on simulated samples only.
             self.update_model(model)
 
         self.generations = []
@@ -217,7 +230,13 @@ class viaABC:
         x = np.asarray(self.encoded_observational_data)
         y = np.asarray(y)
 
+        # Keep the public API backward compatible: callers that pass one encoded
+        # sample still receive a scalar, while batched initialization can consume
+        # one distance per sample from the same code path.
         single_input = y.shape[0] == 1 if y.ndim > 0 else True
+        # Most metrics below are written against matching observation/simulation
+        # shapes. Broadcasting `x` here keeps batching a base-class concern
+        # instead of forcing every metric helper to know about it.
         x_batch = np.broadcast_to(x, y.shape) if y.shape != x.shape else x
         
         if self.metric == "cosine":
@@ -246,6 +265,9 @@ class viaABC:
     
     @torch.inference_mode()
     def _encode_observational_data(self):
+        # Observation encoding is cached on the instance because the observed
+        # data is fixed during one inference run, while simulated samples change
+        # every iteration.
         scaled_data = self.preprocess(self.raw_observational_data)
         self.encoded_observational_data = self.get_latent(scaled_data)
     
@@ -301,6 +323,8 @@ class viaABC:
             current_batch_size = min(batch_size, remaining * 2)
 
             candidate_params = []
+            # Filter invalid priors before simulation so the thread pool only
+            # spends time on candidates that have a chance to be accepted.
             while len(candidate_params) < current_batch_size:
                 perturbed_params = self.sample_priors()
                 prior_log_pdf = self.calculate_prior_log_prob(perturbed_params)
@@ -324,6 +348,9 @@ class viaABC:
             if not successful_scaled:
                 continue
 
+            # Preprocess/encode accepted simulations as one tensor so the model
+            # does one larger forward pass instead of many tiny ones. This is
+            # one of the main throughput wins in the current implementation.
             y_batch = torch.as_tensor(
                 np.stack(successful_scaled, axis=0),
                 dtype=torch.float32,
@@ -1083,6 +1110,8 @@ class viaABC:
         else:
             raise TypeError(f"Unsupported type for x: {type(x)}")
 
+        # Most callers pass a single sample without a batch dimension. Batched
+        # initialization passes a full batch and should keep that dimension.
         if x.ndim == 2:
             x = x.unsqueeze(0)
         x = self.model.get_latent(x, self.pooling_method)
