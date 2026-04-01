@@ -54,9 +54,17 @@ assert_python_stack() {
   command -v python >/dev/null 2>&1 || die "python is not available in PATH."
 
   python - <<'PY'
-import importlib
 required = ["torch", "lightning", "hydra", "rootutils", "numpy", "Cython", "pybind11"]
-missing = [name for name in required if importlib.util.find_spec(name) is None]
+
+try:
+    from importlib.util import find_spec
+except Exception:
+    from pkgutil import find_loader
+
+    def find_spec(name):
+        return find_loader(name)
+
+missing = [name for name in required if find_spec(name) is None]
 if missing:
     raise SystemExit(f"Missing Python packages: {', '.join(missing)}")
 print("Python stack check passed.")
