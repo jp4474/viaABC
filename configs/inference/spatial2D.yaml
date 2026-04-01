@@ -4,7 +4,7 @@ defaults:
  - override /system: spatial2D
 
 # --- Training Run / Checkpoint ---
-run_folder_path: ${paths.root_dir}/logs/train/runs/2025-12-30_23-01-12
+run_folder_path: ${paths.root_dir}/logs/train/runs/2026-04-01_23-01-12
 checkpoint_substr: last
 
 # --- System Overrides ---

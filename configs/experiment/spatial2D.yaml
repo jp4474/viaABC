@@ -53,14 +53,14 @@ model:
 
   optimizer:
     betas: [0.9, 0.995]
-    lr: 0.000001
+    lr: 0.00001
     weight_decay: 0.05
 
   scheduler:
     warmup_steps: 30000
     max_steps: ${trainer.max_steps}
     min_lr: 0.000001
-    max_lr: 0.0002
+    max_lr: 0.002
 
   compile: true
   vae_warmup_steps: 60000
@@ -68,7 +68,7 @@ model:
 
 data:
   batch_size: 16
-  num_workers: 8
+  num_workers: 16
   pin_memory: true
 
 # torch:
