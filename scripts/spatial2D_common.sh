@@ -9,6 +9,17 @@ export PROJECT_ROOT
 export PYTHONUNBUFFERED=1
 export HYDRA_FULL_ERROR=1
 
+default_spatial2d_storage_root() {
+  local cluster_root="/insomnia001/depts/iicd/users/${USER}/viaABC"
+
+  if [[ -d "/insomnia001/depts/iicd/users/${USER}" ]] || [[ -d "/insomnia001/depts/iicd" ]]; then
+    printf '%s\n' "${cluster_root}"
+    return
+  fi
+
+  printf '%s\n' "${PROJECT_ROOT}"
+}
+
 log() {
   printf '[%s] %s\n' "$(date '+%F %T')" "$*"
 }
@@ -57,7 +68,8 @@ assert_python_stack() {
 required = ["torch", "lightning", "hydra", "rootutils", "numpy", "Cython", "pybind11"]
 
 try:
-    from importlib.util import find_spec
+    import importlib.util as importlib_util
+    find_spec = importlib_util.find_spec
 except Exception:
     from pkgutil import find_loader
 
@@ -72,7 +84,7 @@ PY
 }
 
 assert_spatial2d_data() {
-  local spatial2d_data_dir="${SPATIAL2D_DATA_DIR:-${PROJECT_ROOT}/data/spatial2D}"
+  local spatial2d_data_dir="${SPATIAL2D_SOURCE_DATA_DIR:-${SPATIAL2D_DATA_DIR:-${PROJECT_ROOT}/data/spatial2D}}"
   [[ -d "${spatial2d_data_dir}" ]] || die "Spatial2D data directory not found: ${spatial2d_data_dir}"
 
   local required_files=(
@@ -137,5 +149,14 @@ print_runtime_context() {
   log "Project root: ${PROJECT_ROOT}"
   log "Working directory: $(pwd)"
   log "Python: $(command -v python)"
+  if [[ -n "${SPATIAL2D_SOURCE_DATA_DIR:-}" ]]; then
+    log "Spatial2D source data dir: ${SPATIAL2D_SOURCE_DATA_DIR}"
+  fi
+  if [[ -n "${SPATIAL2D_DATA_DIR:-}" ]]; then
+    log "Spatial2D generated data dir: ${SPATIAL2D_DATA_DIR}"
+  fi
+  if [[ -n "${TRAIN_RUN_DIR:-}" ]]; then
+    log "Training run dir: ${TRAIN_RUN_DIR}"
+  fi
   python --version
 }

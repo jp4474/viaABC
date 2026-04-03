@@ -1035,7 +1035,7 @@ class viaABC:
 
             self.logger.info(f"Generating {count} simulations for {prefix} data")
             start = time.time()
-            self.__batch_simulations(count, save_dir, prefix=prefix, num_threads=num_workers * 2)
+            self.__batch_simulations(count, save_dir, prefix=prefix, num_threads=num_workers)
             elapsed = time.time() - start
             total_time += elapsed
             self.logger.info(f"Generated {count} simulations for {prefix} data in {elapsed:.2f} seconds")
