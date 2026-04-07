@@ -1,5 +1,0 @@
-Traceback (most recent call last):
-  File "<stdin>", line 3, in <module>
-  File "<stdin>", line 3, in <listcomp>
-AttributeError: module 'importlib' has no attribute 'util'
-srun: error: ins028: task 0: Exited with exit code 1

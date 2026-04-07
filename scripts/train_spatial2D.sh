@@ -29,6 +29,7 @@ ensure_spatial2d_extension
 print_runtime_context
 
 mkdir -p "${TRAIN_RUN_DIR}" "${TRAIN_RUN_BASE}"
+reuse_spatial2d_generated_data
 
 cmd=(
   python src/train.py
@@ -37,7 +38,7 @@ cmd=(
   hydra.run.dir="${TRAIN_RUN_DIR}"
   trainer.default_root_dir="${TRAIN_RUN_DIR}"
   data.datamodule.data_dir="${SPATIAL2D_DATA_DIR}"
-  data.dataset.data_dir="${SPATIAL2D_DATA_DIR}"
+  data.datamodule.dataset.data_dir="${SPATIAL2D_DATA_DIR}"
   data.num_workers="${SLURM_CPUS_PER_TASK:-8}"
 )
 

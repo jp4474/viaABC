@@ -83,9 +83,9 @@ class Spatial2D(viaABC):
         the experiment uses more than one observed grid.
     """
     def __init__(self,
-        num_parameters: int = 3,
-        mu: np.ndarray = np.array( [0., 0., 0.]), # Lower Bound
-        sigma: np.ndarray = np.array([1., 1., 1.]),
+        num_parameters: int = 2,
+        mu: np.ndarray = np.array( [0., 0.]), # Lower Bound
+        sigma: np.ndarray = np.array([1., 1.]), # Upper Bound
         model: Optional[torch.nn.Module] = None,
         observational_data: Optional[np.ndarray] = None,
         state0: Optional[np.ndarray] = None,

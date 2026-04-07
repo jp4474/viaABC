@@ -100,6 +100,32 @@ assert_spatial2d_data() {
   done
 }
 
+reuse_spatial2d_generated_data() {
+  local source_dir="${SPATIAL2D_SOURCE_DATA_DIR:-}"
+  local generated_dir="${SPATIAL2D_DATA_DIR:-}"
+
+  [[ -n "${source_dir}" ]] || return 0
+  [[ -n "${generated_dir}" ]] || return 0
+  [[ -d "${source_dir}" ]] || return 0
+
+  mkdir -p "${generated_dir}"
+
+  local prefix
+  for prefix in train val test; do
+    local source_npz="${source_dir}/${prefix}_data.npz"
+    local generated_npz="${generated_dir}/${prefix}_data.npz"
+
+    if [[ -f "${generated_npz}" ]]; then
+      continue
+    fi
+
+    if [[ -f "${source_npz}" ]]; then
+      log "Reusing existing ${prefix}_data.npz from source data dir."
+      cp -n "${source_npz}" "${generated_npz}"
+    fi
+  done
+}
+
 ensure_spatial2d_extension() {
   if python - <<'PY'
 from src.viaABC.spatial2D import GridCore
@@ -125,7 +151,7 @@ PY
 }
 
 assert_gpu_memory() {
-  local min_gpu_mem_mib="${MIN_GPU_MEM_MIB:-80000}"
+  local min_gpu_mem_mib="${MIN_GPU_MEM_MIB:-40000}"
 
   command -v nvidia-smi >/dev/null 2>&1 || die "nvidia-smi is unavailable. This job requires a GPU node."
 
@@ -141,7 +167,7 @@ assert_gpu_memory() {
   [[ -n "${max_mem}" ]] || die "Failed to parse GPU memory from nvidia-smi."
 
   if (( max_mem < min_gpu_mem_mib )); then
-    die "Largest visible GPU has ${max_mem} MiB, but spatial2D training requires at least ${min_gpu_mem_mib} MiB. Submit to an 80GB GPU partition or add the correct cluster-specific constraint."
+    die "Largest visible GPU has ${max_mem} MiB, but spatial2D training requires at least ${min_gpu_mem_mib} MiB. Submit to an total 80GB GPU partition or add the correct cluster-specific constraint."
   fi
 }
 

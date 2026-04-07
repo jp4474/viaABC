@@ -28,6 +28,7 @@ ensure_spatial2d_extension
 print_runtime_context
 
 mkdir -p "${SPATIAL2D_DATA_DIR}" "${DATA_RUN_DIR}"
+reuse_spatial2d_generated_data
 
 cmd=(
   python src/generate_training_data.py

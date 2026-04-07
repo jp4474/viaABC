@@ -2,6 +2,9 @@
 datamodule:
   _target_: src.data.datamodule.SimulationDataModule
   data_dir: ${paths.data_dir}/spatial2D
+  batch_size: ${..batch_size}
+  num_workers: ${..num_workers}
+  pin_memory: ${..pin_memory}
   # ...
   dataset:
     _target_: src.data.components.dataset.Spatial2DDataset
