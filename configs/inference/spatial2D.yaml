@@ -18,6 +18,9 @@ abc:
   k: 5
   q_threshold: 0.999
   max_generations: 20
+  num_workers: 16
+  simulation_batch_size: 4
+  max_pending_simulations: 32
 
 # --- Output Folder ---
 folder_name: ${run_folder_path}/inference_output

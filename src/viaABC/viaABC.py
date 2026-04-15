@@ -69,6 +69,9 @@ class viaABC:
         self.time_space: Optional[np.ndarray] = None
         self.train_dataset: Optional[torch.utils.data.Dataset[Any]] = None
         self.num_particles: int = 0
+        self.num_workers: Optional[int] = None
+        self.simulation_batch_size: Optional[int] = None
+        self.max_pending_simulations: Optional[int] = None
         self.max_generations: int = 0
         self.encoded_observational_data: np.ndarray = np.array([])
 
@@ -295,6 +298,24 @@ class viaABC:
         self.train_dataset = train_dataset
         self.logger.info("Training dataset updated.")
 
+    def _resolve_num_workers(self, limit: int) -> int:
+        cpu_count = os.cpu_count() or 1
+        configured_workers = self.num_workers if self.num_workers is not None else cpu_count
+        configured_workers = int(configured_workers)
+        if configured_workers <= 0:
+            configured_workers = cpu_count
+        return max(1, min(configured_workers, cpu_count, max(1, limit)))
+
+    def _resolve_simulation_batch_size(self, max_workers: int) -> int:
+        if self.simulation_batch_size is not None:
+            return max(1, min(int(self.simulation_batch_size), self.num_particles))
+        return min(self.num_particles, max(32, max_workers * 2))
+
+    def _resolve_max_pending_simulations(self, batch_size: int, max_workers: int) -> int:
+        if self.max_pending_simulations is not None:
+            return max(batch_size, int(self.max_pending_simulations))
+        return max(batch_size, min(self.num_particles * 2, max_workers * 8))
+
     @torch.inference_mode()
     def _run_init(self, num_particles: int, k: int = 5):
         self.densratio = dre_cpp.DensityRatioEstimation(n=100, epsilon=0.001, max_iter=1000, abs_tol=1e-4, fold=5, optimize=False)
@@ -315,7 +336,7 @@ class viaABC:
         
         # Get device once to avoid repeated attribute access
         device = self.model.device
-        max_workers = max(1, min(os.cpu_count() or 1, target_particles))
+        max_workers = self._resolve_num_workers(target_particles)
         batch_size = max(max_workers, min(256, num_particles))
 
         while accepted < target_particles:
@@ -471,6 +492,9 @@ class viaABC:
         q_threshold: float = 0.99,
         max_generations: int = 20,
         k: int = 5,
+        num_workers: Optional[int] = None,
+        simulation_batch_size: Optional[int] = None,
+        max_pending_simulations: Optional[int] = None,
     ) -> None:
         """Run the viaABC algorithm.
         
@@ -479,20 +503,29 @@ class viaABC:
             q_threshold: Threshold for stopping criterion (qt >= q_threshold)
             k: Number of nearest neighbors for distance calculation
             max_generations: Maximum number of generations to run
+            num_workers: Number of worker threads for particle simulations. Uses
+                all available CPUs when None or non-positive.
+            simulation_batch_size: Number of successful simulations to encode
+                together on the model device.
+            max_pending_simulations: Maximum number of submitted simulations
+                waiting to complete or be processed.
         """
 
-        # TODO: This can be optimized by concurrently simulating particles in batches. 
         if self.model is None:
             raise ValueError("Model must be provided to encode the data and run the algorithm.")
         
         self.generations = []
         self.num_particles = num_particles
+        self.num_workers = num_workers
+        self.simulation_batch_size = simulation_batch_size
+        self.max_pending_simulations = max_pending_simulations
         self.max_generations = max_generations - 1
         total_num_simulations = 0
         
         # Cache logger and reduce string formatting overhead
         logger = self.logger
         logger.info(f"Starting viaABC run with Q Threshold: {q_threshold}")
+        logger.info(f"Using {self._resolve_num_workers(num_particles)} worker threads for particle simulations")
         start_time = time.perf_counter()  # More precise timing
 
         # Initial generation
@@ -565,43 +598,144 @@ class viaABC:
         Returns:
             Tuple of (particles, weights, distances, num_simulations)
         """
-        particles = []
-        weights = []
-        distances = []
+        particles = np.empty((self.num_particles, self.num_parameters))
+        weights = np.empty(self.num_particles, dtype=np.float64)
+        distances = np.empty(self.num_particles, dtype=np.float32)
         accepted = 0
         running_num_simulations = 0
+        device = self.model.device
+        max_workers = self._resolve_num_workers(self.num_particles)
+        batch_size = self._resolve_simulation_batch_size(max_workers)
+        max_pending = self._resolve_max_pending_simulations(batch_size, max_workers)
+        executor = ThreadPoolExecutor(max_workers=max_workers)
+        pending = {}
 
-        with tqdm(total=self.num_particles, miniters=self.num_particles // 10, maxinterval=float('inf')) as pbar:
-            while accepted < self.num_particles:
+        def submit_simulations(num_to_submit: int) -> None:
+            nonlocal running_num_simulations
+            if num_to_submit <= 0:
+                return
+            theta_batch = self._propose_particles_fast(
+                prev_particles=prev_particles,
+                prev_weights=prev_weights,
+                prev_cov=prev_cov,
+                num_particles=num_to_submit,
+            )
+            for theta in theta_batch:
+                pending[executor.submit(self.simulate, theta)] = theta
+            running_num_simulations += len(theta_batch)
 
-                theta = self._propose_particle_fast(
-                    prev_particles=prev_particles,
-                    prev_weights=prev_weights,
-                    prev_cov=prev_cov
-                )
-                    
-                y, status = self.simulate(theta)
-                running_num_simulations += 1
-                
-                if status != 0:
-                    continue
-                    
-                dist = self._calculate_particle_distance(y)
-                if dist >= epsilon:
-                    continue
-                    
-                # Only calculate weight for accepted particles
-                new_weight = self._calculate_particle_weight(
-                    theta, prev_particles, prev_weights, prev_cov
-                )
-                
-                accepted += 1
-                pbar.update(1)
-                particles.append(theta)
-                weights.append(new_weight)
-                distances.append(dist)
-        
-        return np.array(particles), np.array(weights), np.array(distances), running_num_simulations
+        try:
+            with tqdm(total=self.num_particles, miniters=max(1, self.num_particles // 10), maxinterval=float('inf')) as pbar:
+                submit_simulations(min(max_pending, max(1, self.num_particles * 2)))
+
+                while accepted < self.num_particles:
+                    done, _ = wait(pending, return_when=FIRST_COMPLETED)
+                    successful_theta = []
+                    successful_scaled = []
+
+                    for future in done:
+                        theta = pending.pop(future)
+                        try:
+                            y, status = future.result()
+                        except Exception as e:
+                            self.logger.error(f"Simulation failed with error: {e}")
+                            continue
+                        if status != 0:
+                            continue
+                        successful_theta.append(theta)
+                        successful_scaled.append(self.preprocess(y))
+
+                    while len(successful_scaled) < batch_size and pending:
+                        ready = [future for future in pending if future.done()]
+                        if not ready:
+                            break
+                        for future in ready[:batch_size - len(successful_scaled)]:
+                            theta = pending.pop(future)
+                            try:
+                                y, status = future.result()
+                            except Exception as e:
+                                self.logger.error(f"Simulation failed with error: {e}")
+                                continue
+                            if status != 0:
+                                continue
+                            successful_theta.append(theta)
+                            successful_scaled.append(self.preprocess(y))
+
+                    submit_simulations(max_pending - len(pending))
+
+                    if not successful_scaled:
+                        continue
+
+                    y_batch = torch.as_tensor(
+                        np.stack(successful_scaled, axis=0),
+                        dtype=torch.float32,
+                        device=device,
+                    )
+                    y_latent_np = self.get_latent(y_batch)
+                    batch_dist_values = self.calculate_distance(y_latent_np)
+                    batch_distances = np.atleast_1d(np.asarray(batch_dist_values, dtype=np.float32))
+                    accepted_mask = batch_distances < epsilon
+
+                    if not np.any(accepted_mask):
+                        continue
+
+                    accepted_theta = np.asarray(successful_theta)[accepted_mask]
+                    accepted_distances = batch_distances[accepted_mask]
+                    remaining = self.num_particles - accepted
+                    write_count = min(remaining, len(accepted_theta))
+                    write_slice = slice(accepted, accepted + write_count)
+
+                    particles[write_slice] = accepted_theta[:write_count]
+                    distances[write_slice] = accepted_distances[:write_count]
+                    weights[write_slice] = [
+                        self._calculate_particle_weight(theta, prev_particles, prev_weights, prev_cov)
+                        for theta in accepted_theta[:write_count]
+                    ]
+
+                    accepted += write_count
+                    pbar.update(write_count)
+        finally:
+            for future in pending:
+                future.cancel()
+            executor.shutdown(wait=False, cancel_futures=True)
+
+        return particles, weights, distances, running_num_simulations
+
+    def _propose_particles_fast(
+        self,
+        prev_particles: np.ndarray,
+        prev_weights: np.ndarray,
+        prev_cov: np.ndarray,
+        num_particles: int,
+        max_attempts: int = 250
+    ) -> np.ndarray:
+        """Propose a batch of valid particles."""
+        proposed = []
+        proposal_batch_size = max(4, num_particles)
+
+        for _ in range(max_attempts):
+            remaining = num_particles - len(proposed)
+            if remaining <= 0:
+                break
+
+            current_batch_size = max(remaining, proposal_batch_size)
+            idxs = np.random.choice(len(prev_particles), size=current_batch_size, p=prev_weights)
+            candidates = prev_particles[idxs]
+            perturbed = np.array([self.perturb_parameters(theta, prev_cov) for theta in candidates])
+            priors = np.array([self.calculate_prior_log_prob(p) for p in perturbed])
+            valid = perturbed[np.isfinite(priors)]
+
+            if len(valid) > 0:
+                proposed.extend(valid[:remaining])
+
+        if len(proposed) < num_particles:
+            raise RuntimeError(
+                f"Unable to generate {num_particles} valid particles after "
+                f"{max_attempts * proposal_batch_size} proposals. "
+                "Consider adjusting prior bounds or covariance matrix."
+            )
+
+        return np.asarray(proposed)
 
     def _propose_particle_fast(
         self,

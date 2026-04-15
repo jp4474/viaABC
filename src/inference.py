@@ -218,7 +218,8 @@ def run_inference(cfg: DictConfig) -> None:
     # -------------------------------------------------------------------------
     log.info(
         f"Starting viaABC | particles={cfg.abc.num_particles}, "
-        f"k={cfg.abc.k}, q={cfg.abc.q_threshold}"
+        f"k={cfg.abc.k}, q={cfg.abc.q_threshold}, "
+        f"num_workers={cfg.abc.get('num_workers', None)}"
     )
 
     abc_results = system.run(
@@ -226,6 +227,9 @@ def run_inference(cfg: DictConfig) -> None:
         k=cfg.abc.k,
         q_threshold=cfg.abc.q_threshold,
         max_generations=cfg.abc.max_generations,
+        num_workers=cfg.abc.get("num_workers", None),
+        simulation_batch_size=cfg.abc.get("simulation_batch_size", None),
+        max_pending_simulations=cfg.abc.get("max_pending_simulations", None),
     )
 
     # -------------------------------------------------------------------------

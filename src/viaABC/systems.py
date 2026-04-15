@@ -83,9 +83,9 @@ class Spatial2D(viaABC):
         the experiment uses more than one observed grid.
     """
     def __init__(self,
-        num_parameters: int = 2,
-        mu: np.ndarray = np.array( [0., 0.]), # Lower Bound
-        sigma: np.ndarray = np.array([1., 1.]), # Upper Bound
+        num_parameters: int = 3,
+        mu: np.ndarray = np.array([0.0, 0.0, 0.0]), # Lower Bound
+        sigma: np.ndarray = np.array([1.0, 1.0, 1.0]), # Upper Bound
         model: Optional[torch.nn.Module] = None,
         observational_data: Optional[np.ndarray] = None,
         state0: Optional[np.ndarray] = None,
@@ -105,28 +105,47 @@ class Spatial2D(viaABC):
         if not sample_ids:
             raise ValueError("sample_id must be a sample name or a non-empty list of sample names.")
 
-        grids = [self._load_sample_grid(sample_paths, current_sample_id) for current_sample_id in sample_ids]
-        # Keep the raw label grids because the simulator evolves label states,
-        # while `observational_data` below preserves the original representation
-        # expected by the rest of the project.
-        self._observation_grids = np.stack(grids, axis=0)
-        self._multiple_samples = len(grids) > 1
+        sample_pairs = [
+            self._load_sample_grids(sample_paths, current_sample_id)
+            for current_sample_id in sample_ids
+        ]
+        initial_grids = [initial_grid for initial_grid, _ in sample_pairs]
+        observation_grids = [observation_grid for _, observation_grid in sample_pairs]
+
+        # Keep simulator initial states and observed final states separate.
+        # The simulator evolves the TXT grid forward, while the encoder compares
+        # against the image-derived observation grid.
+        self._initial_grids = np.stack(initial_grids, axis=0)
+        self._observation_grids = np.stack(observation_grids, axis=0)
+        self._multiple_samples = len(sample_pairs) > 1
 
         if self._multiple_samples:
             # Multi-sample Spatial2D stays a subclass concern: we store one
             # observation tensor per sample and later aggregate distances here
             # instead of teaching the generic viaABC base class about sample-wise
             # simulator semantics.
-            self.observational_data = np.stack([self.labels2map(grid) for grid in grids], axis=0)
-            self.observational_data_flattened = [grid.astype(int).tolist() for grid in grids]
+            self.observational_data = np.stack(
+                [self.labels2map(grid) for grid in observation_grids],
+                axis=0,
+            )
+            self.observational_data_flattened = [
+                grid.astype(int).tolist() for grid in initial_grids
+            ]
         else:
-            self.observational_data = self.labels2map(grids[0])
-            self.observational_data_flattened = grids[0].astype(int).tolist()
+            self.observational_data = self.labels2map(observation_grids[0])
+            self.observational_data_flattened = initial_grids[0].astype(int).tolist()
 
         super().__init__(num_parameters, mu, sigma, self.observational_data, model, state0, t0, tmax, time_space, pooling_method, metric)
         self.lower_bounds = mu
         self.upper_bounds = sigma
         self.dt = dt
+
+        if len(self.lower_bounds) != self.num_parameters or len(self.upper_bounds) != self.num_parameters:
+            raise ValueError(
+                "Spatial2D prior bounds must match num_parameters. "
+                f"Received num_parameters={self.num_parameters}, "
+                f"len(mu)={len(self.lower_bounds)}, len(sigma)={len(self.upper_bounds)}."
+            )
 
     @staticmethod
     def _load_spatial2d_samples() -> Mapping[str, Mapping[str, Any]]:
@@ -157,7 +176,11 @@ class Spatial2D(viaABC):
         img_array = np.array(img)       
         return img_array
 
-    def _load_sample_grid(self, sample_paths: Mapping[str, Mapping[str, Any]], sample_id: str) -> np.ndarray:
+    def _load_sample_grids(
+        self,
+        sample_paths: Mapping[str, Mapping[str, Any]],
+        sample_id: str,
+    ) -> tuple[np.ndarray, np.ndarray]:
         if sample_id not in sample_paths:
             raise ValueError(f"Unknown sample_id={sample_id!r}.")
 
@@ -169,6 +192,7 @@ class Spatial2D(viaABC):
             raise ValueError(f"Sample {sample_id!r} is missing a txt path.")
 
         txt_path = Path(hydra.utils.to_absolute_path(txt_path))
+        initial_grid = self.read_txt_as_matrix(txt_path)
         img = None
 
         if image_path is not None:
@@ -180,9 +204,9 @@ class Spatial2D(viaABC):
         if img is None:
             # TXT is the simulator-native representation and therefore the
             # reliable fallback when the processed image is unavailable.
-            return self.read_txt_as_matrix(txt_path)
+            return initial_grid, initial_grid.copy()
 
-        return self.image_to_grid(img)
+        return initial_grid, self.image_to_grid(img)
 
     def image_to_grid(self, img: np.ndarray) -> np.ndarray:
         # Threshold an RGB segmentation image into simulator state IDs.
@@ -224,12 +248,20 @@ class Spatial2D(viaABC):
         # g.simulate()
 
         # return g.numpy(), 0
+        parameters = np.asarray(parameters, dtype=np.float64)
+        if parameters.shape[0] != 3:
+            raise ValueError(
+                "Spatial2D simulator expects exactly 3 parameters: "
+                "[alpha, beta, gamma]. "
+                f"Received shape {parameters.shape} with values {parameters!r}."
+            )
+
         if self._cython_cores is None:
             # Reuse the compiled grid cores across calls; constructing them
             # repeatedly adds overhead but does not change simulation results.
             self._cython_cores = [
                 cpp.GridCore(np.asarray(grid, dtype=np.int32))
-                for grid in self._observation_grids
+                for grid in self._initial_grids
             ]
 
         simulations = [
@@ -339,13 +371,14 @@ class Spatial2D(viaABC):
     def preprocess(self, x: np.ndarray) -> np.ndarray:
         x = np.asarray(x)
         if x.ndim == 2:
-            # Single simulator outputs are raw HxW grids; add a channel axis so
-            # downstream model code can treat them like images.
-            return x[None, ...]
-        if x.ndim == 3 and self._multiple_samples:
-            # Multiple samples arrive as [B, H, W]; convert to [B, C, H, W] with
-            # a singleton channel dimension for the encoder.
-            return x[:, None, ...]
+            # Spatial2D encoders are trained on one-hot state maps.
+            return self.labels2map(x)
+        if x.ndim == 3:
+            if x.shape[0] == 6:
+                return x
+            # Batched raw simulator outputs arrive as [B, H, W]; convert each
+            # label grid into the 6-channel representation expected by the MAE.
+            return np.stack([self.labels2map(grid) for grid in x], axis=0)
         return x
 
 class SpatialSIR3D(viaABC):
