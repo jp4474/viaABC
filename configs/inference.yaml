@@ -4,6 +4,7 @@ defaults:
   - system: lotka_volterra
   - paths: default
   - inference: null
+  - optional debug: null
 
 # --- Training Run Location ---
 run_folder_path: null

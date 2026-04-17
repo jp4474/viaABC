@@ -1,0 +1,33 @@
+# @package _global_
+
+# Small, numerically valid Spatial2D debugging setup for deep inference/system
+# issues. Keeps the run tiny enough for inspection while still exercising the
+# real viaABC proposal, weighting, and simulator code paths.
+
+defaults:
+  - default
+
+task_name: "debug_spatial2d"
+
+system:
+  pooling_method: no_cls
+  metric: pairwise_cosine
+  sample_id: sample_1
+
+data:
+  observation_sample: sample_1
+  num_workers: 0
+  pin_memory: False
+
+abc:
+  num_particles: 2
+  k: 1
+  q_threshold: 0.90
+  max_generations: 1
+  num_workers: 2
+  simulation_batch_size: 1
+  max_pending_simulations: 1
+
+hydra:
+  job:
+    name: debug_spatial2d
