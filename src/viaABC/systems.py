@@ -1,6 +1,7 @@
 from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence
 
+import logging
 import numpy as np
 import torch
 from PIL import Image
@@ -15,6 +16,8 @@ from scipy.stats import uniform
 
 from src.viaABC.metrics import bert_score, bert_score_batch, cosine_similarity, l1_distance, l2_distance, maxSim, pairwise_cosine
 from src.viaABC.viaABC import viaABC
+
+log = logging.getLogger(__name__)
 
 # Setup project root and add to PYTHONPATH
 rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
@@ -102,6 +105,7 @@ class Spatial2D(viaABC):
         # Build the Cython simulator objects lazily so object construction stays
         # cheap unless we actually run simulations.
         self._cython_cores: list[Any] | None = None
+        self._sample_source_info: list[dict[str, Any]] = []
         sample_paths = self._load_spatial2d_samples()
         sample_ids = [sample_id] if isinstance(sample_id, str) else list(sample_id or [])
         if not sample_ids:
@@ -208,20 +212,61 @@ class Spatial2D(viaABC):
 
         txt_path = Path(hydra.utils.to_absolute_path(txt_path))
         initial_grid = self.read_txt_as_matrix(txt_path)
+        resolved_image_path = None
         img = None
 
         if image_path is not None:
+            resolved_image_path = Path(hydra.utils.to_absolute_path(image_path))
             try:
-                img = self.read_image_as_matrix(Path(hydra.utils.to_absolute_path(image_path)))
+                img = self.read_image_as_matrix(resolved_image_path)
             except FileNotFoundError:
                 img = None
 
         if img is None:
             # TXT is the simulator-native representation and therefore the
             # reliable fallback when the processed image is unavailable.
+            self._sample_source_info.append(
+                {
+                    "sample_id": sample_id,
+                    "initial_txt_path": str(txt_path),
+                    "observed_raw_image_path": str(resolved_image_path) if resolved_image_path is not None else None,
+                    "observed_grid_source": "txt_fallback",
+                    "initial_grid_shape": tuple(initial_grid.shape),
+                    "observed_grid_shape": tuple(initial_grid.shape),
+                }
+            )
+            log.info(
+                "Spatial2D sample %s: initial txt=%s, observed raw image=%s, "
+                "observed final grid source=txt fallback, shape=%s",
+                sample_id,
+                txt_path,
+                resolved_image_path,
+                initial_grid.shape,
+            )
             return initial_grid, initial_grid.copy()
 
-        return initial_grid, self.image_to_grid(img)
+        observed_grid = self.image_to_grid(img)
+        self._sample_source_info.append(
+            {
+                "sample_id": sample_id,
+                "initial_txt_path": str(txt_path),
+                "observed_raw_image_path": str(resolved_image_path),
+                "observed_grid_source": "raw_image",
+                "initial_grid_shape": tuple(initial_grid.shape),
+                "raw_image_shape": tuple(img.shape),
+                "observed_grid_shape": tuple(observed_grid.shape),
+            }
+        )
+        log.info(
+            "Spatial2D sample %s: initial txt=%s, observed raw image=%s, "
+            "observed final grid source=raw image -> grid, raw image shape=%s, grid shape=%s",
+            sample_id,
+            txt_path,
+            resolved_image_path,
+            img.shape,
+            observed_grid.shape,
+        )
+        return initial_grid, observed_grid
 
     def image_to_grid(self, img: np.ndarray) -> np.ndarray:
         # Threshold an RGB segmentation image into simulator state IDs.

@@ -29,6 +29,32 @@ die() {
   exit 1
 }
 
+latest_completed_train_run() {
+  local base_dir="$1"
+  local candidate
+  local newest=""
+  local newest_mtime=0
+  local mtime
+
+  [[ -d "${base_dir}" ]] || return 1
+
+  for candidate in "${base_dir}"/*; do
+    [[ -d "${candidate}" ]] || continue
+    [[ -f "${candidate}/.hydra/config.yaml" ]] || continue
+    [[ -d "${candidate}/checkpoints" ]] || continue
+    compgen -G "${candidate}/checkpoints/*.ckpt" >/dev/null || continue
+
+    mtime="$(stat -c %Y "${candidate}" 2>/dev/null || printf '0')"
+    if (( mtime >= newest_mtime )); then
+      newest_mtime="${mtime}"
+      newest="${candidate}"
+    fi
+  done
+
+  [[ -n "${newest}" ]] || return 1
+  printf '%s\n' "${newest}"
+}
+
 activate_env() {
   local venv_activate="${VENV_ACTIVATE:-}"
   local conda_env_name="${CONDA_ENV_NAME:-}"

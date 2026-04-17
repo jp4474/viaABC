@@ -1,5 +1,7 @@
 import logging
+from datetime import datetime
 from pathlib import Path
+from uuid import uuid4
 
 import hydra
 import rootutils
@@ -7,7 +9,6 @@ import torch
 import numpy as np
 from omegaconf import DictConfig, OmegaConf
 from hydra.utils import instantiate
-import namer
 import matplotlib.pyplot as plt
 
 # -----------------------------------------------------------------------------
@@ -22,6 +23,11 @@ from src.viaABC.systems import *
 from src.models.lightning_module import PreTrainLightning
 
 log = logging.getLogger(__name__)
+
+
+def make_run_name() -> str:
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    return f"{timestamp}_{uuid4().hex[:8]}"
 
 
 # -----------------------------------------------------------------------------
@@ -162,7 +168,7 @@ def run_inference(cfg: DictConfig) -> None:
     # -------------------------------------------------------------------------
     # 0. Create save dir + setup logging FIRST
     # -------------------------------------------------------------------------
-    save_dir = Path(cfg.folder_name) / namer.generate()
+    save_dir = Path(cfg.folder_name) / make_run_name()
     save_dir.mkdir(parents=True, exist_ok=True)
 
     setup_file_logging(save_dir)
@@ -188,21 +194,25 @@ def run_inference(cfg: DictConfig) -> None:
 
     log.info(f"viaABC System initialized: {system_name}")
     log.info(f"Metric: {system.metric}")
+    if hasattr(system, "_sample_source_info"):
+        for source_info in system._sample_source_info:
+            log.info(f"Spatial2D observation source: {source_info}")
 
     # -------------------------------------------------------------------------
     if str(system_name) == "Spatial2D":
         fig, ax = plt.subplots(1, 2, figsize=(8, 4))
 
-        torch_obs_data = torch.from_numpy(system.observational_data).to(model.device).unsqueeze(0).float()
-        obs_data = torch_obs_data.cpu().numpy()[0]
+        obs_grid = system._observation_grids[0] if hasattr(system, "_observation_grids") else system.observational_data
+        obs_input = system.preprocess(obs_grid)
+        torch_obs_data = torch.from_numpy(obs_input).to(model.device).unsqueeze(0).float()
 
         with torch.no_grad():
-            recon_data = model.model.forward(torch_obs_data)[-1]
+            recon_data = model.model.forward(torch_obs_data, mask_ratio=0.0)[-1]
             recon_data = model.model.unpatchify(recon_data).cpu().numpy()[0].argmax(axis=0)
-        vmin = min(obs_data.min(), recon_data.min())
-        vmax = max(obs_data.max(), recon_data.max())
+        vmin = min(obs_grid.min(), recon_data.min())
+        vmax = max(obs_grid.max(), recon_data.max())
 
-        ax[0].imshow(obs_data.squeeze(0), cmap="viridis", vmin=vmin, vmax=vmax)
+        ax[0].imshow(obs_grid, cmap="viridis", vmin=vmin, vmax=vmax)
         ax[1].imshow(recon_data, cmap="viridis", vmin=vmin, vmax=vmax)
 
         ax[0].set_title("Observation")

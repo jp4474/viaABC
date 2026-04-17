@@ -5,7 +5,7 @@ defaults:
 
 # --- Training Run / Checkpoint ---
 run_folder_path: ${paths.root_dir}/logs/train/runs/2026-04-01_23-01-12
-checkpoint_substr: last
+checkpoint_substr: epoch_019
 
 # --- System Overrides ---
 system:
@@ -18,9 +18,9 @@ abc:
   k: 5
   q_threshold: 0.999
   max_generations: 20
-  num_workers: 16
+  num_workers: 64
   simulation_batch_size: 4
-  max_pending_simulations: 32
+  max_pending_simulations: 128
 
 # --- Output Folder ---
 folder_name: ${run_folder_path}/inference_output
