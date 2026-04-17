@@ -93,3 +93,35 @@ def test_particle_weight_matches_scipy():
         rtol=1e-6,   # relative tolerance
         atol=1e-12,  # absolute tolerance
     )
+
+
+def test_particle_weight_regularizes_singular_covariance():
+    rng = np.random.default_rng(1)
+    N = 20
+    d = 3
+
+    prev_particles = rng.normal(size=(N, d))
+    prev_weights = rng.random(N)
+    prev_weights /= prev_weights.sum()
+    theta = rng.normal(size=d)
+
+    # Rank-deficient covariance used to trigger "Covariance matrix not SPD".
+    prev_cov = np.diag([0.0, 1e-14, 0.5])
+
+    def prior_log_prob(theta):
+        return multivariate_normal.logpdf(
+            theta,
+            mean=np.zeros(d),
+            cov=np.eye(d),
+        )
+
+    w_cpp = particle_weight_cpp.calculate_particle_weight(
+        theta,
+        prev_particles,
+        prev_weights,
+        prev_cov,
+        prior_log_prob,
+    )
+
+    assert np.isfinite(w_cpp)
+    assert w_cpp >= 0.0

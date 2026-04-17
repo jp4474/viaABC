@@ -95,8 +95,10 @@ class Spatial2D(viaABC):
         time_space: Optional[np.ndarray] = None,
         pooling_method: str = "no_cls",
         metric: str = "pairwise_cosine",
+        transform: Any = None,
         sample_id: str | Sequence[str] | None = "sample_1",) -> None:
 
+        self.transform = transform
         # Build the Cython simulator objects lazily so object construction stays
         # cheap unless we actually run simulations.
         self._cython_cores: list[Any] | None = None
@@ -135,7 +137,20 @@ class Spatial2D(viaABC):
             self.observational_data = self.labels2map(observation_grids[0])
             self.observational_data_flattened = initial_grids[0].astype(int).tolist()
 
-        super().__init__(num_parameters, mu, sigma, self.observational_data, model, state0, t0, tmax, time_space, pooling_method, metric)
+        super().__init__(
+            num_parameters,
+            mu,
+            sigma,
+            self.observational_data,
+            model,
+            state0,
+            t0,
+            tmax,
+            time_space,
+            pooling_method,
+            metric,
+            transform,
+        )
         self.lower_bounds = mu
         self.upper_bounds = sigma
         self.dt = dt
@@ -372,13 +387,14 @@ class Spatial2D(viaABC):
         x = np.asarray(x)
         if x.ndim == 2:
             # Spatial2D encoders are trained on one-hot state maps.
-            return self.labels2map(x)
-        if x.ndim == 3:
-            if x.shape[0] == 6:
-                return x
-            # Batched raw simulator outputs arrive as [B, H, W]; convert each
-            # label grid into the 6-channel representation expected by the MAE.
-            return np.stack([self.labels2map(grid) for grid in x], axis=0)
+            x = self.labels2map(x)
+        elif x.ndim == 3:
+            if x.shape[0] != 6:
+                # Batched raw simulator outputs arrive as [B, H, W]; convert each
+                # label grid into the 6-channel representation expected by the MAE.
+                x = np.stack([self.labels2map(grid) for grid in x], axis=0)
+        if self.transform is not None:
+            x = self.transform(x)
         return x
 
 class SpatialSIR3D(viaABC):

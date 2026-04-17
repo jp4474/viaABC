@@ -216,9 +216,46 @@ class viaABC:
         Returns:
             np.ndarray: Perturbed parameters.
         """
-
-        proposed_theta = multivariate_normal.rvs(mean=theta, cov=cov)
+        stabilized_cov = self._stabilize_covariance(cov)
+        proposed_theta = multivariate_normal.rvs(mean=theta, cov=stabilized_cov)
         return proposed_theta
+
+    @staticmethod
+    def _stabilize_covariance(
+        cov: np.ndarray,
+        min_variance: float = 1e-8,
+        initial_jitter: float = 1e-10,
+        max_attempts: int = 8,
+    ) -> np.ndarray:
+        """Return a symmetric positive definite covariance matrix."""
+        stabilized = np.array(np.atleast_2d(cov), dtype=np.float64, copy=True)
+        if stabilized.shape[0] != stabilized.shape[1]:
+            raise ValueError(
+                f"Covariance matrix must be square, got shape {stabilized.shape}."
+            )
+
+        stabilized = 0.5 * (stabilized + stabilized.T)
+        diag_idx = np.diag_indices_from(stabilized)
+        diag = np.nan_to_num(stabilized[diag_idx], nan=0.0, neginf=0.0, posinf=0.0)
+        scale = float(np.max(np.abs(diag))) if diag.size else 1.0
+        variance_floor = max(float(min_variance), scale * 1e-12)
+        stabilized[diag_idx] = np.maximum(diag, variance_floor)
+
+        jitter = max(float(initial_jitter), variance_floor * 1e-6)
+        for _ in range(max_attempts):
+            try:
+                np.linalg.cholesky(stabilized)
+                return stabilized
+            except np.linalg.LinAlgError:
+                stabilized[diag_idx] += jitter
+                jitter *= 10.0
+
+        min_eig = float(np.min(np.linalg.eigvalsh(stabilized)))
+        if min_eig < variance_floor:
+            stabilized[diag_idx] += variance_floor - min_eig
+
+        np.linalg.cholesky(stabilized)
+        return stabilized
 
     def calculate_distance(self, y: np.ndarray) -> float | np.ndarray:
         """
@@ -400,11 +437,13 @@ class viaABC:
         epsilon = dists[num_particles-1]
 
         # Optimized covariance calculation
-        sample_cov = np.atleast_2d(np.cov(particles.reshape(num_particles, -1), rowvar=False))
+        sample_cov = self._stabilize_covariance(
+            np.cov(particles.reshape(num_particles, -1), rowvar=False)
+        )
         sigma_max = np.min(np.sqrt(np.diag(sample_cov)))
         
         # More efficient diagonal operations
-        cov = 2 * np.diag(sample_cov)
+        cov = self._stabilize_covariance(2 * np.diag(np.diag(sample_cov)))
 
         # Store first generation
         self.generations.append({
@@ -454,10 +493,12 @@ class viaABC:
 
         total_num_simulations = len(train_loader) * 1000
         
-        sample_cov = np.atleast_2d(np.cov(particles.reshape(self.num_particles, -1), rowvar=False))
+        sample_cov = self._stabilize_covariance(
+            np.cov(particles.reshape(self.num_particles, -1), rowvar=False)
+        )
         sigma_max = np.min(np.sqrt(np.diag(sample_cov)))
         
-        cov = 2 * np.diag(sample_cov)
+        cov = self._stabilize_covariance(2 * np.diag(np.diag(sample_cov)))
 
         # Store first generation
         self.generations.append({
@@ -604,11 +645,21 @@ class viaABC:
         accepted = 0
         running_num_simulations = 0
         device = self.model.device
+        prev_cov = self._stabilize_covariance(prev_cov)
         max_workers = self._resolve_num_workers(self.num_particles)
         batch_size = self._resolve_simulation_batch_size(max_workers)
         max_pending = self._resolve_max_pending_simulations(batch_size, max_workers)
         executor = ThreadPoolExecutor(max_workers=max_workers)
         pending = {}
+        wait_timeout = 30.0
+        synchronous_fallback = False
+
+        if epsilon <= 0:
+            self.logger.warning(
+                "Generation epsilon is %.6g. Using <= for acceptance so zero-distance "
+                "candidates do not get rejected forever.",
+                epsilon,
+            )
 
         def submit_simulations(num_to_submit: int) -> None:
             nonlocal running_num_simulations
@@ -629,27 +680,49 @@ class viaABC:
                 submit_simulations(min(max_pending, max(1, self.num_particles * 2)))
 
                 while accepted < self.num_particles:
-                    done, _ = wait(pending, return_when=FIRST_COMPLETED)
                     successful_theta = []
                     successful_scaled = []
 
-                    for future in done:
-                        theta = pending.pop(future)
-                        try:
-                            y, status = future.result()
-                        except Exception as e:
-                            self.logger.error(f"Simulation failed with error: {e}")
-                            continue
-                        if status != 0:
-                            continue
-                        successful_theta.append(theta)
-                        successful_scaled.append(self.preprocess(y))
+                    if synchronous_fallback:
+                        theta_batch = self._propose_particles_fast(
+                            prev_particles=prev_particles,
+                            prev_weights=prev_weights,
+                            prev_cov=prev_cov,
+                            num_particles=max(1, min(batch_size, self.num_particles - accepted)),
+                        )
+                        running_num_simulations += len(theta_batch)
+                        for theta in theta_batch:
+                            try:
+                                y, status = self.simulate(theta)
+                            except Exception as e:
+                                self.logger.error(f"Simulation failed with error: {e}")
+                                continue
+                            if status != 0:
+                                continue
+                            successful_theta.append(theta)
+                            successful_scaled.append(self.preprocess(y))
+                    else:
+                        if not pending:
+                            submit_simulations(min(max_pending, max(1, self.num_particles - accepted)))
 
-                    while len(successful_scaled) < batch_size and pending:
-                        ready = [future for future in pending if future.done()]
-                        if not ready:
-                            break
-                        for future in ready[:batch_size - len(successful_scaled)]:
+                        done, _ = wait(tuple(pending), timeout=wait_timeout, return_when=FIRST_COMPLETED)
+                        if not done:
+                            stalled_parameters = [
+                                np.asarray(theta).tolist()
+                                for theta in list(pending.values())[: min(3, len(pending))]
+                            ]
+                            self.logger.warning(
+                                "No simulation finished after %.1f seconds with %d pending futures. "
+                                "Switching to synchronous fallback for this generation. "
+                                "Example pending parameters: %s",
+                                wait_timeout,
+                                len(pending),
+                                stalled_parameters,
+                            )
+                            synchronous_fallback = True
+                            continue
+
+                        for future in done:
                             theta = pending.pop(future)
                             try:
                                 y, status = future.result()
@@ -661,7 +734,23 @@ class viaABC:
                             successful_theta.append(theta)
                             successful_scaled.append(self.preprocess(y))
 
-                    submit_simulations(max_pending - len(pending))
+                        while len(successful_scaled) < batch_size and pending:
+                            ready = [future for future in pending if future.done()]
+                            if not ready:
+                                break
+                            for future in ready[:batch_size - len(successful_scaled)]:
+                                theta = pending.pop(future)
+                                try:
+                                    y, status = future.result()
+                                except Exception as e:
+                                    self.logger.error(f"Simulation failed with error: {e}")
+                                    continue
+                                if status != 0:
+                                    continue
+                                successful_theta.append(theta)
+                                successful_scaled.append(self.preprocess(y))
+
+                        submit_simulations(max_pending - len(pending))
 
                     if not successful_scaled:
                         continue
@@ -674,7 +763,7 @@ class viaABC:
                     y_latent_np = self.get_latent(y_batch)
                     batch_dist_values = self.calculate_distance(y_latent_np)
                     batch_distances = np.atleast_1d(np.asarray(batch_dist_values, dtype=np.float32))
-                    accepted_mask = batch_distances < epsilon
+                    accepted_mask = batch_distances <= epsilon
 
                     if not np.any(accepted_mask):
                         continue
@@ -793,8 +882,7 @@ class viaABC:
         """Calculate weight for an accepted particle."""
         
         prev_particles = np.atleast_2d(prev_particles)
-        prev_cov = np.atleast_2d(prev_cov)
-        prev_cov += 1e-6 * np.eye(prev_cov.shape[0])
+        prev_cov = self._stabilize_covariance(prev_cov)
 
         new_weight = particle_weight_cpp.calculate_particle_weight(
             theta,
@@ -833,12 +921,39 @@ class viaABC:
         """
         # Normalize weights
         weights_normalized = weights / np.sum(weights)
+
+        num_reference_samples = min(len(prev_particles), len(particles))
+        densratio_n = max(1, min(100, num_reference_samples))
+        densratio_fold = max(1, min(5, num_reference_samples))
+        if (
+            not hasattr(self, "densratio")
+            or num_reference_samples < 100
+        ):
+            self.densratio = dre_cpp.DensityRatioEstimation(
+                n=densratio_n,
+                epsilon=0.001,
+                max_iter=1000,
+                abs_tol=1e-4,
+                fold=densratio_fold,
+                optimize=False,
+            )
+            if num_reference_samples < 100:
+                self.logger.warning(
+                    "Using adaptive density-ratio settings for %d samples: n=%d, fold=%d.",
+                    num_reference_samples,
+                    densratio_n,
+                    densratio_fold,
+                )
         
         # Calculate statistics
-        sample_cov = np.atleast_2d(np.diag(weighted_var(particles, weights=weights_normalized)))
+        variances = np.maximum(
+            np.asarray(weighted_var(particles, weights=weights_normalized), dtype=np.float64),
+            1e-8,
+        )
+        sample_cov = self._stabilize_covariance(np.diag(variances))
         sample_sigma = np.sqrt(np.diag(sample_cov))
         sigma_max = np.min(sample_sigma)
-        meta_cov = 2 * np.diag(sample_cov)
+        meta_cov = self._stabilize_covariance(2 * np.diag(np.diag(sample_cov)))
         
         # Calculate qt and epsilon
         if self.densratio.optimize:
