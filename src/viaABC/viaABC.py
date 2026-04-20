@@ -763,9 +763,10 @@ class viaABC:
                     y_latent_np = self.get_latent(y_batch)
                     batch_dist_values = self.calculate_distance(y_latent_np)
                     batch_distances = np.atleast_1d(np.asarray(batch_dist_values, dtype=np.float32))
-                    accepted_mask = batch_distances <= epsilon
-
-                    if not np.any(accepted_mask):
+                    try:
+                        accepted_mask = batch_distances < epsilon # Bug Here
+                    except Exception as e:
+                        self.logger.error(f"Distance calculation failed with error: {e}")
                         continue
 
                     accepted_theta = np.asarray(successful_theta)[accepted_mask]
@@ -1112,11 +1113,11 @@ class viaABC:
         parameters = self.__sample_priors(n=num_simulations)
 
         if num_threads <= 0:
-            num_threads = min(32, (os.cpu_count() or 1) + 4, max(1, num_simulations))
+            num_threads = min(64, (os.cpu_count() or 1) + 4, max(1, num_simulations))
         else:
             num_threads = min(num_threads, max(1, num_simulations))
 
-        batch_size = min(256, max(32, num_threads * 8))
+        batch_size = max(32, num_threads * 8)
         
         def run_simulation(i: int, param: np.ndarray) -> Optional[tuple[np.ndarray, np.ndarray]]:
             """Run a single simulation and return results or None on failure."""
