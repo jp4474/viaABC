@@ -26,7 +26,7 @@ hydra:
 seed: 12345
 
 trainer:
-  max_steps: 300000
+  max_steps: 100000
   fast_dev_run: false 
   precision: bf16-mixed
   log_every_n_steps: 10
@@ -60,7 +60,7 @@ model:
     warmup_steps: 30000
     max_steps: ${trainer.max_steps}
     min_lr: 0.000001
-    max_lr: 0.002
+    max_lr: 0.0005
 
   compile: true
   vae_warmup_steps: 60000
@@ -77,5 +77,5 @@ data:
 
 model_checkpoint:
   monitor: val/loss
-  every_n_train_steps: 50000
+  every_n_train_steps: 5000
   save_last: true
