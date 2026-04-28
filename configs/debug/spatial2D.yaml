@@ -12,21 +12,21 @@ task_name: "debug_spatial2d"
 system:
   pooling_method: no_cls
   metric: pairwise_cosine
-  sample_id: sample_1
+  sample_id: sample_2
 
 data:
-  observation_sample: sample_1
+  observation_sample: sample_2
   num_workers: 0
   pin_memory: False
 
 abc:
-  num_particles: 2
-  k: 1
+  num_particles: 100
+  k: 10
   q_threshold: 0.90
-  max_generations: 1
-  num_workers: 2
-  simulation_batch_size: 1
-  max_pending_simulations: 1
+  max_generations: 20
+  num_workers: 16
+  simulation_batch_size: 10
+  max_pending_simulations: 20
 
 hydra:
   job:

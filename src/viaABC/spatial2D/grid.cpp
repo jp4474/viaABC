@@ -52,7 +52,8 @@ void Grid::simulate()
             if (data[k] == STATE_G && dist(rng) < p_hotspot)
                 next[k] = STATE_H;
 
-        data.swap(next);
+        data = next;
+        next = data;
 
         // STEP 2b — neighbor-induced hotspot
         for (std::size_t i = 0; i < rows; ++i)
@@ -82,6 +83,6 @@ void Grid::simulate()
             }
         }
 
-        data.swap(next);
+        data = next;
     }
 }
