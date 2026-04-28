@@ -35,3 +35,6 @@ run/monitor_dashboard.py:Zone.Identifier
 run/monitor.ipynb
 run/monitor.ipynb:Zone.Identifier
 run
+.vscode/
+data/spatial2D/.*
+turorials/tutorial_spatial2D/debug_temp.ipynb
