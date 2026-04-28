@@ -3,6 +3,7 @@ defaults:
   # - early_stopping
   - model_summary
   - lr_monitor
+  - gpu_memory_monitor
   # - rich_progress_bar
   - _self_
 
@@ -16,7 +17,7 @@ model_checkpoint:
 
 early_stopping:
   monitor: "val/loss"
-  patience: 100
+  patience: 10
   mode: "min"
 
 model_summary:

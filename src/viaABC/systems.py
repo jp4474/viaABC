@@ -94,7 +94,7 @@ class Spatial2D(viaABC):
         state0: Optional[np.ndarray] = None,
         t0: int = 0,
         tmax: int = 24,
-        dt: float = 0.1,
+        dt: float = 0.4,
         time_space: Optional[np.ndarray] = None,
         pooling_method: str = "no_cls",
         metric: str = "pairwise_cosine",
