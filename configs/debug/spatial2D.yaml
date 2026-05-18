@@ -13,9 +13,20 @@ system:
   pooling_method: no_cls
   metric: pairwise_cosine
   sample_id: sample_2
+  time_space: [0, 6, 12, 18, 24]
+
+model:
+  net:
+    in_chans: 6
+    num_frames: 5
+    t_patch_size: 1
+    pred_t_dim: 5
+    img_size: 1200
+    patch_size: 16
 
 data:
   observation_sample: sample_2
+  batch_size: 1
   num_workers: 0
   pin_memory: False
 

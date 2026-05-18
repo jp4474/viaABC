@@ -7,7 +7,7 @@ defaults:
   - override /data: spatial2D
   - override /model: spatial2D
   - override /callbacks: default
-  - override /trainer: default
+  - override /trainer: ddp
 
 # Reading this file top-down is the easiest way to understand the training
 # architecture: the data config chooses the observation/simulation domain,
@@ -26,11 +26,16 @@ hydra:
 seed: 12345
 
 trainer:
-  max_steps: 100000
+  max_steps: 40000
   fast_dev_run: false 
-  precision: fp32
+  precision: bf16-mixed
   log_every_n_steps: 10
   max_epochs: -1
+  devices: 2
+  strategy: ddp
+  num_nodes: 1
+  sync_batchnorm: true
+  accumulate_grad_batches: 2
   gradient_clip_val: 10.0
 
 model:
@@ -50,6 +55,7 @@ model:
     mlp_ratio: 4.0
     mask_ratio: 0.75
     kld_weight: 1.0
+    z_type: vae
 
   optimizer:
     betas: [0.9, 0.995]
@@ -57,19 +63,23 @@ model:
     weight_decay: 0.05
 
   scheduler:
-    warmup_steps: 30000
+    warmup_steps: 12000
     max_steps: ${trainer.max_steps}
     min_lr: 0.000001
     max_lr: 0.0005
 
-  compile: true
-  vae_warmup_steps: 60000
+  compile: false
+  vae_warmup_steps: 24000
   annealing: true # false means no annealing
 
 data:
-  batch_size: 16 #16
-  num_workers: 16
-  pin_memory: true
+  batch_size: 10
+  num_workers: 2
+  pin_memory: false
+
+callbacks:
+  gpu_memory_monitor:
+    every_n_train_steps: 10
 
 # torch:
 #   matmul_precision: high

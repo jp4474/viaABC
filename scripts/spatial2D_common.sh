@@ -58,11 +58,19 @@ latest_completed_train_run() {
 activate_env() {
   local venv_activate="${VENV_ACTIVATE:-}"
   local conda_env_name="${CONDA_ENV_NAME:-}"
+  local micromamba_env_path="${MICROMAMBA_ENV_PATH:-}"
 
   if [[ -n "${venv_activate}" ]]; then
     [[ -f "${venv_activate}" ]] || die "VENV_ACTIVATE points to a missing file: ${venv_activate}"
     # shellcheck disable=SC1090
     source "${venv_activate}"
+    return
+  fi
+
+  if [[ -n "${micromamba_env_path}" ]]; then
+    [[ -d "${micromamba_env_path}" ]] || die "MICROMAMBA_ENV_PATH points to a missing directory: ${micromamba_env_path}"
+    export CONDA_PREFIX="${micromamba_env_path}"
+    export PATH="${micromamba_env_path}/bin:${PATH}"
     return
   fi
 

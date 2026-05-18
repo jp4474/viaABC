@@ -19,7 +19,7 @@ from typing import Any, Callable, Optional, Union
 
 from scipy.integrate import solve_ivp
 from scipy.stats import qmc, multivariate_normal
-from scipy.special import logsumexp
+from scipy.special import logsumexp, ndtri
 
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from tqdm import tqdm
@@ -58,6 +58,7 @@ class viaABC:
         pooling_method: str = "cls",
         metric: str = "cosine",
         transform: Optional[Callable[..., Any]] = None,
+        encode_observational_data: bool = True,
     ) -> None:
         self.logger = logging.getLogger(__name__)
         logging.basicConfig(level=logging.INFO)
@@ -143,6 +144,10 @@ class viaABC:
                 "Model is None. The model must be provided to encode the data and run the algorithm.\n" \
                 "The class can be initialized without a model, but it will not\nbe able to run the algorithm."
             )
+        elif not encode_observational_data:
+            self.model = model
+            self.model.eval()
+            self.logger.info("Model initialized without encoding observational data")
         else:
             # Encoding the observation once up front keeps the later ABC loop
             # focused on simulated samples only.
@@ -1075,7 +1080,7 @@ class viaABC:
 
         return mean, median, var
     
-    def __sample_priors(self, n: int = 1) -> np.ndarray:
+    def __sample_priors_old(self, n: int = 1) -> np.ndarray:
         """Sample from prior distribution using Latin Hypercube Sampling"""
         # Create LHS sampler
         sampler = qmc.LatinHypercube(d=self.num_parameters)
@@ -1086,6 +1091,50 @@ class viaABC:
         # Scale samples to parameter bounds
         scaled_samples = qmc.scale(samples, self.lower_bounds, self.upper_bounds)
         return scaled_samples
+    
+    def __sample_priors(self, n: int = 1) -> np.ndarray:
+        """Sample Spatial2D training priors from a QMC lognormal distribution."""
+        if self.__class__.__name__ != "Spatial2D" or self.num_parameters != 3:
+            return self.__sample_priors_old(n=n)
+
+        prior_mean = np.array([0.05, 0.0001, 0.2], dtype=np.float64)
+        prior_var = np.array([6.25e-4, 1.0, 1.0e-1], dtype=np.float64)
+
+        lower_bounds = np.asarray(self.lower_bounds, dtype=np.float64)
+        upper_bounds = np.asarray(self.upper_bounds, dtype=np.float64)
+        if (
+            lower_bounds.shape[0] != self.num_parameters
+            or upper_bounds.shape[0] != self.num_parameters
+        ):
+            return self.__sample_priors_old(n=n)
+
+        log_sigma_sq = np.log1p(prior_var / np.square(prior_mean))
+        log_sigma = np.sqrt(log_sigma_sq)
+        log_mu = np.log(prior_mean) - 0.5 * log_sigma_sq
+        eps = np.finfo(np.float64).eps
+
+        quantile_bands = (
+            np.array([[eps, 0.12], [0.01, 0.70], [0.01, 0.99]], dtype=np.float64),
+            np.array([[0.55, 0.95], [0.01, 0.35], [0.01, 0.70]], dtype=np.float64),
+            np.array([[0.70, 0.995], [0.9995, 1.0 - eps], [0.70, 0.995]], dtype=np.float64),
+        )
+        group_counts = np.full(3, n // 3, dtype=int)
+        group_counts[: n % 3] += 1
+
+        samples_by_group = []
+        for count, band in zip(group_counts, quantile_bands):
+            if count == 0:
+                continue
+            sampler_seed = int(np.random.randint(0, np.iinfo(np.int32).max))
+            sampler = qmc.LatinHypercube(d=self.num_parameters, seed=sampler_seed)
+            unit_samples = sampler.random(n=count)
+            unit_samples = band[:, 0] + unit_samples * (band[:, 1] - band[:, 0])
+            normal_quantiles = ndtri(np.clip(unit_samples, eps, 1.0 - eps))
+            samples_by_group.append(np.exp(log_mu + normal_quantiles * log_sigma))
+
+        samples = np.vstack(samples_by_group)
+        np.random.shuffle(samples)
+        return np.clip(samples, lower_bounds, upper_bounds)
 
     def __batch_simulations(
         self, 

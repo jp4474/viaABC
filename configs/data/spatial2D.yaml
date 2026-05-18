@@ -10,6 +10,8 @@ datamodule:
     _target_: src.data.components.dataset.Spatial2DDataset
     data_dir: ${..data_dir} 
     prefix: train 
+    temporal: ${...temporal}
+temporal: true
 observation_sample: sample_1
 observation_samples:
   sample_1:

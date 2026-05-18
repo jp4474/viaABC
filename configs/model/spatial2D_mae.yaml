@@ -1,13 +1,11 @@
 _target_: src.models.lightning_module.PreTrainLightning
 
 net:
-  _target_: src.models.MAEST.spatial2d_model.Spatial2DMaskedAutoencoderViT3D
+  _target_: src.models.MAE.model.MaskedAutoencoderViT
   img_size: 1200
   patch_size: 16
   in_chans: 6
-  num_frames: 5
-  t_patch_size: 1
-  pred_t_dim: 5
+  out_chans: 6
   embed_dim: 512
   depth: 12
   num_heads: 8
@@ -30,7 +28,7 @@ scheduler:
   _target_: src.models.components.schedulers.WarmupCosineScheduler
   _partial_: true
   warmup_steps: 53333
-  max_steps: 10   # resolved, not a reference
+  max_steps: 10
   min_lr: 0.000001
   max_lr: 0.0005
 
