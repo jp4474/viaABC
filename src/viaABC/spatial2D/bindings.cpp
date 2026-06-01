@@ -13,7 +13,6 @@ PYBIND11_MODULE(spatial2D_cpp, m)
         .def(py::init<>())
         .def_readwrite("alpha", &Parameters::alpha)
         .def_readwrite("beta",  &Parameters::beta)
-        .def_readwrite("gamma", &Parameters::gamma)
         .def_readwrite("dt",    &Parameters::dt)
         .def_readwrite("t0",    &Parameters::t0)
         .def_readwrite("t_end", &Parameters::t_end);

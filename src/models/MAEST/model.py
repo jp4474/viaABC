@@ -245,6 +245,12 @@ class MaskedAutoencoderViT3D(nn.Module):
         N, L, D = x.shape  # batch, length, dim
         len_keep = int(L * (1 - mask_ratio))
 
+        if len_keep == L:
+            ids_restore = torch.arange(L, device=x.device).unsqueeze(0).expand(N, -1)
+            ids_keep = ids_restore
+            mask = torch.zeros((N, L), device=x.device)
+            return x, mask, ids_restore, ids_keep
+
         noise = torch.rand(N, L, device=x.device)  # noise in [0, 1]
 
         # sort noise for each sample
@@ -291,11 +297,12 @@ class MaskedAutoencoderViT3D(nn.Module):
                 dim=1,
             )
             pos_embed = pos_embed.expand(x.shape[0], -1, -1)
-            pos_embed = torch.gather(
-                pos_embed,
-                dim=1,
-                index=ids_keep.unsqueeze(-1).repeat(1, 1, pos_embed.shape[2]),
-            )
+            if ids_keep.shape[1] != pos_embed.shape[1]:
+                pos_embed = torch.gather(
+                    pos_embed,
+                    dim=1,
+                    index=ids_keep.unsqueeze(-1).repeat(1, 1, pos_embed.shape[2]),
+                )
             if self.cls_embed:
                 pos_embed = torch.cat(
                     [
@@ -310,11 +317,12 @@ class MaskedAutoencoderViT3D(nn.Module):
             else:
                 cls_ind = 0
             pos_embed = self.pos_embed[:, cls_ind:, :].expand(x.shape[0], -1, -1)
-            pos_embed = torch.gather(
-                pos_embed,
-                dim=1,
-                index=ids_keep.unsqueeze(-1).repeat(1, 1, pos_embed.shape[2]),
-            )
+            if ids_keep.shape[1] != pos_embed.shape[1]:
+                pos_embed = torch.gather(
+                    pos_embed,
+                    dim=1,
+                    index=ids_keep.unsqueeze(-1).repeat(1, 1, pos_embed.shape[2]),
+                )
             if self.cls_embed:
                 pos_embed = torch.cat(
                     [
@@ -461,7 +469,12 @@ class MaskedAutoencoderViT3D(nn.Module):
         return loss, space_loss, pred
     
     def get_latent(self, x, pooling_method = None):
-        _ = self.patchify(x)
+        N, _, T, H, W = x.shape
+        p = self.patch_embed.patch_size[0]
+        u = self.t_pred_patch_size
+        assert H == W and H % p == 0 and T % u == 0
+        self.patch_info = (N, T, H, W, p, u, T // u, H // p, W // p)
+
         x, mask, ids_restore = self.forward_encoder(x, 0.0)
 
         N = x.shape[0]
@@ -471,15 +484,7 @@ class MaskedAutoencoderViT3D(nn.Module):
         # embed tokens
         x = self.decoder_embed(x)
         C = x.shape[-1]
-
-        # append mask tokens to sequence
-        mask_tokens = self.mask_token.repeat(N, T * H * W + 0 - x.shape[1], 1)
-        x_ = torch.cat([x[:, :, :], mask_tokens], dim=1)  # no cls token
-        x_ = x_.view([N, T * H * W, C])
-        x_ = torch.gather(
-            x_, dim=1, index=ids_restore.unsqueeze(-1).repeat(1, 1, x_.shape[2])
-        )  # unshuffle
-        x = x_.view([N, T * H * W, C])
+        x = x.view([N, T * H * W, C])
         # append cls token
         
         if self.cls_embed:

@@ -4,6 +4,7 @@
 # python train.py experiment=example
 
 defaults:
+  - override /system: spatial2D
   - override /data: spatial2D
   - override /model: spatial2D
   - override /callbacks: default
@@ -43,11 +44,11 @@ model:
     # `in_chans=6` / `out_chans=6` matches Spatial2D's one-hot state maps.
     # That alignment is what makes the same encoder reusable for both
     # reconstruction pretraining and downstream simulator comparison.
-    patch_size: 16 
-    embed_dim: 384
-    depth: 12
+    patch_size: 16
     in_chans: 6
     out_chans: 6
+    embed_dim: 384
+    depth: 12
     num_heads: 6
     decoder_embed_dim: 256
     decoder_depth: 4
@@ -85,7 +86,8 @@ callbacks:
 #   matmul_precision: high
 #   allow_tf32: true
 
-model_checkpoint:
-  monitor: val/loss
-  every_n_train_steps: 5000
-  save_last: true
+# callbacks:
+#   model_checkpoint:
+#     monitor: val/loss
+#     every_n_train_steps: 5000
+#     save_last: true

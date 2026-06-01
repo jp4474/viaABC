@@ -86,11 +86,10 @@ class Spatial2D(viaABC):
         the experiment uses more than one observed grid.
     """
     def __init__(self,
-        num_parameters: int = 3,
-        mu: np.ndarray = np.array([0.0, 0.0, 0.0]), # Lower Bound
-        sigma: np.ndarray = np.array([1.0, 1.0, 1.0]), # Upper Bound
+        num_parameters: int = 2,
+        mu: np.ndarray = np.array([0.0, 0.0]), # Lower Bound
+        sigma: np.ndarray = np.array([1.0, 1.0]), # Upper Bound
         model: Optional[torch.nn.Module] = None,
-        observational_data: Optional[np.ndarray] = None,
         state0: Optional[np.ndarray] = None,
         t0: int = 0,
         tmax: int = 24,
@@ -100,10 +99,12 @@ class Spatial2D(viaABC):
         metric: str = "pairwise_cosine",
         transform: Any = None,
         use_time_series: bool = True,
+        num_frames: int | None = None,
         sample_id: str | Sequence[str] | None = ["sample_1", "sample_2", "sample_3", "sample_4"]) -> None:
 
         self.transform = transform
         self.use_time_series = use_time_series
+        self.num_frames = num_frames
         # Build the Cython simulator objects lazily so object construction stays
         # cheap unless we actually run simulations.
         self._cython_cores: list[Any] | None = None
@@ -164,12 +165,8 @@ class Spatial2D(viaABC):
         self.dt = dt
         if time_space is not None:
             self.time_space = np.asarray(time_space, dtype=np.float64)
-            if self.time_space.ndim != 1 or self.time_space.size == 0:
-                raise ValueError("time_space must be a non-empty 1D array.")
-            if self.tmax < self.time_space[-1]:
-                raise ValueError("tmax must be greater than or equal to the last element of time_space")
-            if self.t0 > self.time_space[0]:
-                raise ValueError("t0 must be less than or equal to the first element of time_space")
+            if self.num_frames is not None and len(self.time_space) != self.num_frames:
+                raise ValueError("system.num_frames must match len(system.time_space).")
 
         if len(self.lower_bounds) != self.num_parameters or len(self.upper_bounds) != self.num_parameters:
             raise ValueError(
@@ -295,17 +292,21 @@ class Spatial2D(viaABC):
         )
         return initial_grid, observed_grid
 
-    def image_to_grid(self, img: np.ndarray) -> np.ndarray:
+    def image_to_grid(self,img: np.ndarray) -> np.ndarray:   
         # Threshold an RGB segmentation image into simulator state IDs.
-        red_threshold = 40
-        green_threshold = 40
+        red_threshold = 50
+        green_threshold = 45
         blue_threshold = 50
+        hotspot_green_threshold = 120
+
 
         yellow_mask = (img[:, :, 0] > red_threshold) & (img[:, :, 1] > green_threshold) & (img[:, :, 2] < blue_threshold)
         no_color_mask = (img[:, :, 0] < red_threshold) & (img[:, :, 1] < green_threshold) & (img[:, :, 2] < blue_threshold)
         red_mask = (img[:, :, 0] > red_threshold) & (img[:, :, 1] < green_threshold) & (img[:, :, 2] < blue_threshold)
         green_mask = (img[:, :, 0] < red_threshold) & (img[:, :, 1] > green_threshold) & (img[:, :, 2] < blue_threshold)
         blue_mask = (img[:, :, 0] < red_threshold) & (img[:, :, 1] < green_threshold) & (img[:, :, 2] > blue_threshold)
+        # hotspot mask
+        hotspot_mask = (img[:, :, 0] < red_threshold) & (img[:, :, 1] > hotspot_green_threshold) & (img[:, :, 2] < blue_threshold)
 
         grid = np.zeros(img.shape[:2], dtype=np.uint8)
         grid[red_mask] = 0
@@ -313,9 +314,11 @@ class Spatial2D(viaABC):
         grid[blue_mask] = 2
         grid[no_color_mask] = 3
         grid[green_mask] = 4
+        grid[hotspot_mask] = 5
+
         return grid
         
-    def simulate(self, parameters: np.ndarray, time_space: np.ndarray | None = np.array(range(0, 25, 6))) -> tuple[np.ndarray, int]:
+    def simulate(self, parameters: np.ndarray, time_space: np.ndarray | None = None) -> tuple[np.ndarray, int]:
         """ 
         Simulate the spatial 2D model using C++ extension. Output numpy array of
         shape (height, width), or (time, height, width) when time_space is set.
@@ -325,7 +328,6 @@ class Spatial2D(viaABC):
         # params = cpp.Parameters()
         # params.alpha = parameters[0]
         # params.beta = parameters[1]
-        # params.gamma = parameters[2]
         # params.dt = self.dt
         # params.t0 = self.t0
         # params.t_end = self.tmax
@@ -335,10 +337,10 @@ class Spatial2D(viaABC):
 
         # return g.numpy(), 0
         parameters = np.asarray(parameters, dtype=np.float64)
-        if parameters.shape[0] != 3:
+        if parameters.shape[0] != 2:
             raise ValueError(
-                "Spatial2D simulator expects exactly 3 parameters: "
-                "[alpha, beta, gamma]. "
+                "Spatial2D simulator expects exactly 2 parameters: "
+                "[alpha, beta]. "
                 f"Received shape {parameters.shape} with values {parameters!r}."
             )
 
@@ -359,22 +361,66 @@ class Spatial2D(viaABC):
         core = self._cython_cores[core_index]
         alpha = float(parameters[0])
         beta = float(parameters[1])
-        gamma = float(parameters[2])
         dt = float(self.dt)
         t0 = float(self.t0)
         target_times = self.time_space if time_space is None else np.asarray(time_space, dtype=np.float64)
 
         if not self.use_time_series or target_times is None:
-            return core.simulation(alpha, beta, gamma, dt, t0, float(self.tmax)), 0
-
-        target_times = np.asarray(target_times, dtype=np.float64)
-        if target_times.ndim != 1 or target_times.size == 0:
-            raise ValueError("time_space must be a non-empty 1D array.")
+            return core.simulation(alpha, beta, dt, t0, float(self.tmax)), 0
 
         return np.stack([
-            core.simulation(alpha, beta, gamma, dt, t0, float(t_end))
+            core.simulation(alpha, beta, dt, t0, float(t_end))
             for t_end in target_times
         ], axis=0), 0
+    
+    def simulate_for_inference(self, parameters: np.ndarray) -> tuple[np.ndarray, int]:
+        parameters = np.asarray(parameters, dtype=np.float64)
+        if parameters.shape[0] != 2:
+            raise ValueError(
+                "Spatial2D simulator expects exactly 2 parameters: "
+                "[alpha, beta]. "
+                f"Received shape {parameters.shape} with values {parameters!r}."
+            )
+
+        if not self._multiple_samples:
+            return self.simulate(parameters)
+
+        alpha = float(parameters[0])
+        beta = float(parameters[1])
+        dt = float(self.dt)
+        t0 = float(self.t0)
+        target_times = self.time_space
+
+        if self._cython_cores is None:
+            # Reuse the compiled grid cores across calls; constructing them
+            # repeatedly adds overhead but does not change simulation results.
+            self._cython_cores = [
+                cpp.GridCore(np.asarray(grid, dtype=np.int32))
+                for grid in self._initial_grids
+            ]
+
+        if not self.use_time_series or target_times is None:
+            return np.stack(
+                [
+                    core.simulation(alpha, beta, dt, t0, float(self.tmax))
+                    for core in self._cython_cores
+                ],
+                axis=0,
+            ), 0
+
+        simulations = [
+            np.stack(
+                [
+                    core.simulation(alpha, beta, dt, t0, float(t_end))
+                    for t_end in target_times
+                ],
+                axis=0,
+            )
+            for core in self._cython_cores
+        ]
+        return np.stack(simulations, axis=0), 0
+
+
 
     def sample_priors(self) -> np.ndarray:
         # Sample from the prior distribution
@@ -400,59 +446,77 @@ class Spatial2D(viaABC):
 
     @torch.inference_mode()
     def _encode_observational_data(self):
-        # Encode from the raw observation grids rather than `raw_observational_data`
-        # so that single-sample and multi-sample Spatial2D follow the same
-        # simulator-facing path before they hit the model.
-        observation_input = self._observation_grids if self._multiple_samples else self._observation_grids[0]
+        observation_input = self._observation_input()
         scaled_data = self.preprocess(observation_input)
         self.encoded_observational_data = self.get_latent(scaled_data)
+
+    def _observation_input(self) -> np.ndarray:
+        if not self._uses_temporal_encoder():
+            return self._observation_grids if self._multiple_samples else self._observation_grids[0]
+
+        if self._temporal_frame_count() != 2:
+            raise ValueError("Spatial2D temporal observations currently require exactly two frames.")
+
+        observations = np.stack([self._initial_grids, self._observation_grids], axis=1)
+        return observations if self._multiple_samples else observations[0]
 
     @torch.inference_mode()
     def get_latent(self, x: np.ndarray | torch.Tensor) -> np.ndarray:
         if self.model is None:
             raise ValueError("Model must be provided to encode the data and run the method.")
 
-        if isinstance(x, np.ndarray):
-            x = torch.from_numpy(x).float().to(self.model.device)
-        elif isinstance(x, torch.Tensor):
-            x = x.float().to(self.model.device)
-        else:
-            raise TypeError(f"Unsupported type for x: {type(x)}")
+        x = torch.as_tensor(x, dtype=torch.float32, device=self.model.device)
+        expected_ndim = 5 if self._uses_temporal_encoder() else 4
 
-        uses_temporal_encoder = self._uses_temporal_encoder()
-        temporal_shape = None
-        if uses_temporal_encoder:
-            if x.ndim == 4:
-                x = x.unsqueeze(0)
-            elif x.ndim != 5:
-                raise ValueError(f"Unsupported temporal Spatial2D input shape: {tuple(x.shape)}")
-        else:
-            if x.ndim == 5:
-                temporal_shape = tuple(x.shape[:2])
-                x = x.reshape(temporal_shape[0] * temporal_shape[1], *x.shape[2:])
-            elif (
-                x.ndim == 4
-                and self.time_space is not None
-                and x.shape[0] == len(self.time_space)
-                and x.shape[1] == 6
-            ):
-                temporal_shape = (1, x.shape[0])
-
-            # Spatial2D 2D encoders consume [B, C, H, W]. Single maps usually arrive as
-            # [C, H, W], while batched initialization can already provide 4D input.
-            if x.ndim == 3:
-                x = x.unsqueeze(0)
-            elif x.ndim != 4:
-                raise ValueError(f"Unsupported input shape for Spatial2D latent extraction: {tuple(x.shape)}")
+        sample_batch_shape: tuple[int, int] | None = None
+        if self._multiple_samples and x.ndim == expected_ndim + 1:
+            sample_batch_shape = (int(x.shape[0]), int(x.shape[1]))
+            x = x.reshape(-1, *x.shape[2:])
+        elif x.ndim == expected_ndim - 1:
+            x = x.unsqueeze(0)
+        elif x.ndim != expected_ndim:
+            raise ValueError(f"Expected Spatial2D model input with {expected_ndim - 1} or {expected_ndim} dims, got {tuple(x.shape)}")
 
         x = self.model.get_latent(x, self.pooling_method)
+        if sample_batch_shape is not None:
+            x = x.reshape(*sample_batch_shape, *x.shape[1:])
+        return x.cpu().numpy() if isinstance(x, torch.Tensor) else x
 
-        if isinstance(x, torch.Tensor):
-            x = x.cpu().numpy()
+    def _temporal_frame_count(self) -> int:
+        if self.num_frames is not None:
+            return int(self.num_frames)
+        if self.time_space is not None:
+            return len(self.time_space)
+        return 1
 
-        if temporal_shape is not None:
-            x = x.reshape(*temporal_shape, *x.shape[1:])
+    def preprocess(self, x: np.ndarray) -> np.ndarray:
+        x = np.asarray(x)
+        if self._uses_temporal_encoder():
+            if x.ndim == 3 and x.shape[0] == self._temporal_frame_count():
+                x = np.eye(6, dtype=np.float32)[x].transpose(3, 0, 1, 2)
+            elif x.ndim == 4:
+                if x.shape[:2] == (6, self._temporal_frame_count()):
+                    pass
+                elif x.shape[1] == self._temporal_frame_count():
+                    batch_size, time_steps = x.shape[:2]
+                    x = np.stack(
+                        [self.labels2map(grid) for grid in x.reshape(-1, *x.shape[2:])],
+                        axis=0,
+                    ).reshape(batch_size, time_steps, 6, *x.shape[2:]).transpose(0, 2, 1, 3, 4)
+                else:
+                    raise ValueError(f"Temporal Spatial2D input must be [T,H,W], [B,T,H,W], [6,T,H,W], or [B,6,T,H,W], got {x.shape}.")
+            elif x.ndim != 5 or x.shape[2] != self._temporal_frame_count():
+                raise ValueError(f"Temporal Spatial2D input must include a time dimension, got {x.shape}.")
+            return x.astype(np.float32)
 
+        if x.ndim == 2:
+            x = self.labels2map(x)
+        elif x.ndim == 3:
+            x = np.stack([self.labels2map(grid) for grid in x], axis=0)
+        elif x.ndim != 4:
+            raise ValueError(f"Non-temporal Spatial2D input must be [H,W], [B,H,W], [6,H,W], or [B,6,H,W], got {x.shape}.")
+        if self.transform is not None:
+            x = self.transform(x)
         return x
 
     def calculate_distance(self, y: np.ndarray) -> float | np.ndarray:
@@ -461,6 +525,20 @@ class Spatial2D(viaABC):
 
         x = self.encoded_observational_data
         y = np.asarray(y)
+        if y.ndim >= 3 and y.shape[1] == x.shape[0]:
+            return np.asarray(
+                [
+                    np.mean(
+                        [
+                            self._calculate_sample_distance(x[i:i + 1], y[j, i:i + 1])
+                            for i in range(x.shape[0])
+                        ]
+                    )
+                    for j in range(y.shape[0])
+                ],
+                dtype=np.float32,
+            )
+
         if y.shape[0] != x.shape[0]:
             sample_index = self._last_simulation_sample_index
             return self._calculate_sample_distance(
@@ -498,54 +576,6 @@ class Spatial2D(viaABC):
             return float(maxSim(x, y))
         raise ValueError(f"Unsupported metric: {self.metric}")
     
-    def preprocess(self, x: np.ndarray) -> np.ndarray:
-        x = np.asarray(x)
-        if self._uses_temporal_encoder():
-            frame_count = len(self.time_space) if self.time_space is not None else 1
-            if x.ndim == 2:
-                x = np.repeat(self.labels2map(x)[:, np.newaxis, ...], frame_count, axis=1)
-            elif x.ndim == 3:
-                if x.shape[0] == 6:
-                    x = np.repeat(x[:, np.newaxis, ...], frame_count, axis=1)
-                else:
-                    x = np.eye(6, dtype=np.float32)[x].transpose(3, 0, 1, 2)
-            elif x.ndim == 4:
-                if self.time_space is not None and x.shape[0] == len(self.time_space) and x.shape[1] == 6:
-                    x = x.transpose(1, 0, 2, 3)
-                elif x.shape[1] == 6:
-                    x = np.repeat(x[:, :, np.newaxis, ...], frame_count, axis=2)
-                elif x.shape[2] == 6:
-                    x = x.transpose(0, 2, 1, 3, 4)
-                else:
-                    batch_size, time_steps = x.shape[:2]
-                    x = np.stack(
-                        [self.labels2map(grid) for grid in x.reshape(-1, *x.shape[2:])],
-                        axis=0,
-                    ).reshape(batch_size, time_steps, 6, *x.shape[2:]).transpose(0, 2, 1, 3, 4)
-            elif x.ndim == 5:
-                pass
-            else:
-                raise ValueError(f"Unsupported Spatial2D temporal input shape: {x.shape}")
-            x = x.astype(np.float32)
-        elif x.ndim == 2:
-            # Spatial2D encoders are trained on one-hot state maps.
-            x = self.labels2map(x)
-        elif x.ndim == 3:
-            if x.shape[0] != 6:
-                # Batched raw simulator outputs arrive as [B, H, W]; convert each
-                # label grid into the 6-channel representation expected by the MAE.
-                x = np.stack([self.labels2map(grid) for grid in x], axis=0)
-        elif x.ndim == 4:
-            if x.shape[1] != 6:
-                batch_size, time_steps = x.shape[:2]
-                x = np.stack(
-                    [self.labels2map(grid) for grid in x.reshape(-1, *x.shape[2:])],
-                    axis=0,
-                ).reshape(batch_size, time_steps, 6, *x.shape[2:])
-        if self.transform is not None:
-            x = self.transform(x)
-        return x
-
 class SpatialSIR3D(viaABC):
     def __init__(self,
         num_parameters: int = 2,

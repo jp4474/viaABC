@@ -13,6 +13,7 @@ import logging
 import os
 import tempfile
 import time
+import zipfile
 import numpy as np
 import torch
 from typing import Any, Callable, Optional, Union
@@ -186,6 +187,9 @@ class viaABC:
         else:
             raise ValueError("Initial state (state0) must be set before simulation.")
 
+    def simulate_for_inference(self, parameters: np.ndarray) -> tuple[np.ndarray, int]:
+        return self.simulate(parameters)
+
     def sample_priors(self) -> np.ndarray:
         """
         Sample from the prior distributions.
@@ -356,7 +360,7 @@ class viaABC:
     def _resolve_max_pending_simulations(self, batch_size: int, max_workers: int) -> int:
         if self.max_pending_simulations is not None:
             return max(batch_size, int(self.max_pending_simulations))
-        return max(batch_size, min(self.num_particles * 2, max_workers * 8))
+        return max(batch_size, min(self.num_particles, max_workers * 2))
 
     @torch.inference_mode()
     def _run_init(self, num_particles: int, k: int = 5):
@@ -379,7 +383,11 @@ class viaABC:
         # Get device once to avoid repeated attribute access
         device = self.model.device
         max_workers = self._resolve_num_workers(target_particles)
-        batch_size = max(max_workers, min(256, num_particles))
+        batch_size = self._resolve_simulation_batch_size(max_workers)
+        self.logger.info(
+            "Initialization encoding batch size: %d successful simulations",
+            batch_size,
+        )
 
         while accepted < target_particles:
             remaining = target_particles - accepted
@@ -395,7 +403,7 @@ class viaABC:
                     candidate_params.append(np.asarray(perturbed_params))
 
             with ThreadPoolExecutor(max_workers=min(max_workers, len(candidate_params))) as executor:
-                futures = [executor.submit(self.simulate, params) for params in candidate_params]
+                futures = [executor.submit(self.simulate_for_inference, params) for params in candidate_params]
                 simulation_results = [future.result() for future in futures]
 
             total_num_simulations += len(candidate_params)
@@ -654,6 +662,13 @@ class viaABC:
         max_workers = self._resolve_num_workers(self.num_particles)
         batch_size = self._resolve_simulation_batch_size(max_workers)
         max_pending = self._resolve_max_pending_simulations(batch_size, max_workers)
+        self.logger.info(
+            "Generation encoding batch size: %d successful simulations; "
+            "max pending simulations: %d; workers: %d",
+            batch_size,
+            max_pending,
+            max_workers,
+        )
         executor = ThreadPoolExecutor(max_workers=max_workers)
         pending = {}
         wait_timeout = 30.0
@@ -677,7 +692,7 @@ class viaABC:
                 num_particles=num_to_submit,
             )
             for theta in theta_batch:
-                pending[executor.submit(self.simulate, theta)] = theta
+                pending[executor.submit(self.simulate_for_inference, theta)] = theta
             running_num_simulations += len(theta_batch)
 
         try:
@@ -698,7 +713,7 @@ class viaABC:
                         running_num_simulations += len(theta_batch)
                         for theta in theta_batch:
                             try:
-                                y, status = self.simulate(theta)
+                                y, status = self.simulate_for_inference(theta)
                             except Exception as e:
                                 self.logger.error(f"Simulation failed with error: {e}")
                                 continue
@@ -727,7 +742,16 @@ class viaABC:
                             synchronous_fallback = True
                             continue
 
-                        for future in done:
+                        ready_futures = list(done)[:batch_size]
+                        deferred_done_count = len(done) - len(ready_futures)
+                        if deferred_done_count > 0:
+                            self.logger.debug(
+                                "Deferring %d completed simulations to keep encoding batch <= %d",
+                                deferred_done_count,
+                                batch_size,
+                            )
+
+                        for future in ready_futures:
                             theta = pending.pop(future)
                             try:
                                 y, status = future.result()
@@ -759,6 +783,15 @@ class viaABC:
 
                     if not successful_scaled:
                         continue
+
+                    if len(successful_scaled) > batch_size:
+                        self.logger.warning(
+                            "Truncating generation encoding batch from %d to %d simulations",
+                            len(successful_scaled),
+                            batch_size,
+                        )
+                        successful_theta = successful_theta[:batch_size]
+                        successful_scaled = successful_scaled[:batch_size]
 
                     y_batch = torch.as_tensor(
                         np.stack(successful_scaled, axis=0),
@@ -925,8 +958,38 @@ class viaABC:
         Returns:
             Dictionary containing generation results
         """
+        particles = np.asarray(particles)
+        weights = np.asarray(weights, dtype=np.float64)
+        distances = np.asarray(distances, dtype=np.float64)
+        valid_mask = (
+            np.isfinite(weights)
+            & (weights > 0)
+            & np.isfinite(distances)
+            & np.all(np.isfinite(particles), axis=1)
+        )
+        if not np.all(valid_mask):
+            self.logger.warning(
+                "Dropping %d invalid accepted particles before generation %d statistics.",
+                int(np.size(valid_mask) - np.count_nonzero(valid_mask)),
+                generation_num,
+            )
+            particles = particles[valid_mask]
+            weights = weights[valid_mask]
+            distances = distances[valid_mask]
+        if len(distances) == 0:
+            raise RuntimeError(
+                f"Generation {generation_num} produced no finite accepted particles. "
+                "Check simulator output, distance values, and particle weights."
+            )
+
         # Normalize weights
-        weights_normalized = weights / np.sum(weights)
+        weight_sum = np.sum(weights)
+        if not np.isfinite(weight_sum) or weight_sum <= 0:
+            raise RuntimeError(
+                f"Generation {generation_num} has invalid particle weights "
+                f"with sum={weight_sum}."
+            )
+        weights_normalized = weights / weight_sum
 
         num_reference_samples = min(len(prev_particles), len(particles))
         densratio_n = max(1, min(100, num_reference_samples))
@@ -975,7 +1038,15 @@ class viaABC:
             sigma=sigma
         )
         
-        max_value = max(self.densratio.max_ratio(), 1.0)
+        ratio_max = self.densratio.max_ratio()
+        if not np.isfinite(ratio_max) or ratio_max <= 0:
+            self.logger.warning(
+                "Invalid density-ratio max %s in generation %d; using 1.0.",
+                ratio_max,
+                generation_num,
+            )
+            ratio_max = 1.0
+        max_value = max(ratio_max, 1.0)
         qt = max(1 / max_value, 0.05)
         epsilon = weighted_sample_quantile(distances, qt, weights=weights_normalized)
         epsilon = np.float32(epsilon)
@@ -1319,18 +1390,22 @@ class viaABC:
                 continue
 
             # check if training_dataset is already set
-            if os.path.exists(os.path.join(save_dir, f"{prefix}_data.npz")):
+            dataset_path = os.path.join(save_dir, f"{prefix}_data.npz")
+            if os.path.exists(dataset_path):
                 try:
-                    dataset = np.load(os.path.join(save_dir, f"{prefix}_data.npz"))
-                    # Check if the shapes of the loaded data match the expected shapes based on current configuration
-                    if count == dataset["params"].shape[0] and count == dataset["simulations"].shape[0]:
+                    shapes = self._npz_array_shapes(dataset_path)
+                    params_shape = shapes["params.npy"]
+                    simulations_shape = shapes["simulations.npy"]
+                    frame_count = getattr(self, "num_frames", None)
+                    uses_time_series = getattr(self, "use_time_series", False)
+                    frame_matches = not uses_time_series or frame_count is None or simulations_shape[1] == frame_count
+                    if count == params_shape[0] and count == simulations_shape[0] and frame_matches:
                         self.logger.info(f"{prefix}_data.npz already exists in {save_dir} and matches configuration. Skipping generation.")
                         return
-                    else:
-                        self.logger.warning(f"{prefix}_data.npz exists but shapes mismatch. Regenerating...")
+                    self.logger.warning(f"{prefix}_data.npz exists but shapes mismatch. Regenerating...")
 
                 except Exception as e:
-                    self.logger.error(f"Failed to load existing {os.path.join(save_dir, f'{prefix}_data.npz')}: {e}. Regenerating...")
+                    self.logger.error(f"Failed to inspect existing {dataset_path}: {e}. Regenerating...")
 
             self.logger.info(f"Generating {count} simulations for {prefix} data")
             start = time.time()
@@ -1340,6 +1415,16 @@ class viaABC:
             self.logger.info(f"Generated {count} simulations for {prefix} data in {elapsed:.2f} seconds")
 
         self.logger.info(f"Training data generation completed and saved. Total time taken: {total_time:.2f} seconds")
+
+    def _npz_array_shapes(self, path: str) -> dict[str, tuple[int, ...]]:
+        with zipfile.ZipFile(path) as archive:
+            shapes = {}
+            for name in ("params.npy", "simulations.npy"):
+                with archive.open(name) as member:
+                    version = np.lib.format.read_magic(member)
+                    shape, _, _ = np.lib.format._read_array_header(member, version)
+                    shapes[name] = shape
+            return shapes
 
     def update_train_dataset(self, train_dataset: torch.utils.data.Dataset[Any]) -> None:
         # check if train_dataset is a torch Dataset

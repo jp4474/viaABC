@@ -53,36 +53,36 @@ void Grid::simulate()
                 next[k] = STATE_H;
 
         data = next;
-        next = data;
+        // next = data;
 
         // STEP 2b — neighbor-induced hotspot
-        for (std::size_t i = 0; i < rows; ++i)
-        {
-            for (std::size_t j = 0; j < cols; ++j)
-            {
-                const std::size_t k = idx(i, j);
-                if (data[k] != STATE_G) continue;
+        // for (std::size_t i = 0; i < rows; ++i)
+        // {
+        //     for (std::size_t j = 0; j < cols; ++j)
+        //     {
+        //         const std::size_t k = idx(i, j);
+        //         if (data[k] != STATE_G) continue;
 
-                bool has_hotspot = false;
-                for (int di = -1; di <= 1 && !has_hotspot; ++di)
-                for (int dj = -1; dj <= 1 && !has_hotspot; ++dj)
-                {
-                    if (di == 0 && dj == 0) continue;
-                    const int ni = int(i) + di;
-                    const int nj = int(j) + dj;
-                    if (ni >= 0 && nj >= 0 &&
-                        ni < int(rows) && nj < int(cols))
-                    {
-                        has_hotspot |=
-                            (data[idx(ni, nj)] == STATE_H);
-                    }
-                }
+        //         bool has_hotspot = false;
+        //         for (int di = -1; di <= 1 && !has_hotspot; ++di)
+        //         for (int dj = -1; dj <= 1 && !has_hotspot; ++dj)
+        //         {
+        //             if (di == 0 && dj == 0) continue;
+        //             const int ni = int(i) + di;
+        //             const int nj = int(j) + dj;
+        //             if (ni >= 0 && nj >= 0 &&
+        //                 ni < int(rows) && nj < int(cols))
+        //             {
+        //                 has_hotspot |=
+        //                     (data[idx(ni, nj)] == STATE_H);
+        //             }
+        //         }
 
-                if (has_hotspot && dist(rng) < params.gamma)
-                    next[k] = STATE_H;
-            }
-        }
+        //         if (has_hotspot && dist(rng) < params.gamma)
+        //             next[k] = STATE_H;
+        //     }
+        // }
 
-        data = next;
+        // data = next;
     }
 }

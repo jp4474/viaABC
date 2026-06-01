@@ -4,13 +4,12 @@ defaults:
  - override /system: spatial2D
 
 # --- Training Run / Checkpoint ---
-run_folder_path: ${paths.root_dir}/logs/train/runs/2026-04-01_23-01-12
-checkpoint_substr: epoch_019
+run_folder_path: /insomnia001/depts/iicd/users/kz2537/viaABC/run/train/spatial2D/2026-05-07_14-19-08_bs10_acc2_nw2
+checkpoint_substr: last
 
 # --- System Overrides ---
 system:
   pooling_method: no_cls
-  metric: pairwise_cosine
 
 # --- viaABC Parameters ---
 abc:
@@ -20,7 +19,7 @@ abc:
   max_generations: 20
   num_workers: 64
   simulation_batch_size: 4
-  max_pending_simulations: 128
+  max_pending_simulations: 16
 
 # --- Output Folder ---
 folder_name: ${run_folder_path}/inference_output

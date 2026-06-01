@@ -5,9 +5,9 @@ net:
   img_size: 1200
   patch_size: 16
   in_chans: 6
-  num_frames: 5
+  num_frames: ${system.num_frames}
   t_patch_size: 1
-  pred_t_dim: 5
+  pred_t_dim: ${system.num_frames}
   embed_dim: 512
   depth: 12
   num_heads: 8

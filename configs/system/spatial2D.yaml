@@ -3,8 +3,10 @@
 # the 'system' field in the main config.
 system:
   _target_: src.viaABC.systems.Spatial2D
-  num_parameters: 3
+  num_parameters: 2
   pooling_method: all
   metric: pairwise_cosine
   use_time_series: true
+  time_space: [0, 24]
+  num_frames: 2
   sample_id: ${data.observation_sample}

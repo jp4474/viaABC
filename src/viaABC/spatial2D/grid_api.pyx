@@ -23,7 +23,6 @@ cdef extern from "grid.hpp" namespace "":
     cdef cppclass Parameters:
         double alpha
         double beta
-        double gamma
         double dt
         double t0
         double t_end
@@ -39,7 +38,7 @@ cdef class GridCore:
     """
     Python-facing wrapper around C++ Grid.
     We keep the initial condition as vector<vector<int>> so we can rebuild Grid
-    for each parameter set (alpha,beta,gamma,dt,t0,t_end).
+    for each parameter set (alpha,beta,dt,t0,t_end).
     """
     cdef vector[vector[int]] _initial2d
     cdef size_t _rows
@@ -67,7 +66,7 @@ cdef class GridCore:
                 self._initial2d[i][j] = <int>initial[i, j]
 
     def simulation(self,
-                double alpha, double beta, double gamma,
+                double alpha, double beta,
                 double dt, double t0, double t_end):
         """
         Returns:
@@ -83,7 +82,6 @@ cdef class GridCore:
 
         p.alpha = alpha
         p.beta = beta
-        p.gamma = gamma
         p.dt = dt
         p.t0 = t0
         p.t_end = t_end

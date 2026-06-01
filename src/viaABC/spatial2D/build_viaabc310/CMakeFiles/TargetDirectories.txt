@@ -1,0 +1,3 @@
+/insomnia001/home/kz2537/viaABC/src/viaABC/spatial2D/build_viaabc310/CMakeFiles/rebuild_cache.dir
+/insomnia001/home/kz2537/viaABC/src/viaABC/spatial2D/build_viaabc310/CMakeFiles/edit_cache.dir
+/insomnia001/home/kz2537/viaABC/src/viaABC/spatial2D/build_viaabc310/CMakeFiles/spatial2D_cpp.dir

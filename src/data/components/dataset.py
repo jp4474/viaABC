@@ -228,17 +228,22 @@ class LotkaVolterraDataset(BaseNumpyDataset):
         return x
     
 class Spatial2DDataset(BaseNumpyDataset):
-    def __init__(self, data_dir, prefix="train", temporal=True):
+    def __init__(self, data_dir, prefix="train", temporal=True, expected_num_frames=None):
         super().__init__(data_dir, prefix,)
         self.temporal = temporal
+        self.expected_num_frames = expected_num_frames
 
     def _transform(self, x):
         x = np.asarray(x)
         if x.ndim == 2:
+            if self.temporal and self.expected_num_frames is not None:
+                raise ValueError(f"Expected {self.expected_num_frames} Spatial2D frames, got a single grid.")
             return np.eye(6, dtype=np.float32)[x].transpose(2, 0, 1)
         if x.ndim == 3:
+            if self.expected_num_frames is not None and x.shape[0] != self.expected_num_frames:
+                raise ValueError(f"Expected {self.expected_num_frames} Spatial2D frames, got {x.shape[0]}.")
             if not self.temporal:
-                return np.eye(6, dtype=np.float32)[x[-1]].transpose(2, 0, 1)
+                raise ValueError(f"Non-temporal Spatial2D data must be [H,W], got {x.shape}.")
             return np.eye(6, dtype=np.float32)[x].transpose(3, 0, 1, 2)
         raise ValueError(f"Unsupported Spatial2D simulation shape: {x.shape}")
 
