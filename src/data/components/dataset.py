@@ -166,20 +166,65 @@ class BaseNumpyDataset(Dataset):
         param_path = cache_dir / "params.npy"
         lock_path = cache_dir / ".cache.lock"
 
-        if simulation_path.exists() and param_path.exists():
+        if self._cache_matches_npz(npz_file, simulation_path, param_path):
             return str(simulation_path), str(param_path)
 
         cache_dir.mkdir(parents=True, exist_ok=True)
         with self._cache_lock(lock_path):
             # Another process may have completed the cache while we were waiting
             # on the lock, so re-check inside the critical section.
-            if simulation_path.exists() and param_path.exists():
+            if self._cache_matches_npz(npz_file, simulation_path, param_path):
                 return str(simulation_path), str(param_path)
 
+            self._clear_stale_cache(simulation_path, param_path)
             self._extract_npz_member(npz_file, "simulations.npy", simulation_path)
             self._extract_npz_member(npz_file, "params.npy", param_path)
 
         return str(simulation_path), str(param_path)
+
+    def _cache_matches_npz(self, npz_file: Path, simulation_path: Path, param_path: Path) -> bool:
+        if not simulation_path.exists() or not param_path.exists():
+            return False
+
+        npz_mtime = npz_file.stat().st_mtime
+        if simulation_path.stat().st_mtime < npz_mtime or param_path.stat().st_mtime < npz_mtime:
+            return False
+
+        try:
+            expected = self._npz_member_headers(npz_file)
+            actual = {
+                "simulations.npy": self._npy_header(simulation_path),
+                "params.npy": self._npy_header(param_path),
+            }
+        except Exception:
+            return False
+
+        return expected == actual
+
+    def _npz_member_headers(self, npz_file: Path) -> dict[str, tuple[tuple[int, ...], bool, str]]:
+        headers = {}
+        with zipfile.ZipFile(npz_file) as archive:
+            for name in ("simulations.npy", "params.npy"):
+                with archive.open(name) as member:
+                    headers[name] = self._read_npy_header(member)
+        return headers
+
+    def _npy_header(self, path: Path) -> tuple[tuple[int, ...], bool, str]:
+        with open(path, "rb") as file:
+            return self._read_npy_header(file)
+
+    def _read_npy_header(self, file_obj) -> tuple[tuple[int, ...], bool, str]:
+        version = np.lib.format.read_magic(file_obj)
+        shape, fortran_order, dtype = np.lib.format._read_array_header(file_obj, version)
+        return tuple(shape), bool(fortran_order), np.dtype(dtype).str
+
+    def _clear_stale_cache(self, simulation_path: Path, param_path: Path) -> None:
+        for path in (simulation_path, param_path):
+            tmp_path = path.with_suffix(path.suffix + ".tmp")
+            if tmp_path.exists():
+                os.remove(tmp_path)
+            if path.exists():
+                os.remove(path)
 
     def _extract_npz_member(self, npz_file: Path, member_name: str, target_path: Path) -> None:
         if target_path.exists():

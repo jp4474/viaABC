@@ -173,7 +173,7 @@ def inject_training_observation_samples(cfg: DictConfig, train_cfg: DictConfig) 
     )
     OmegaConf.update(
         cfg,
-        "system.observation_samples",
+        "data.observation_samples",
         observation_samples,
         merge=False,
     )
@@ -231,7 +231,13 @@ def run_inference(cfg: DictConfig) -> None:
         fig, ax = plt.subplots(1, 2, figsize=(8, 4))
 
         obs_grid = system._observation_grids[0] if hasattr(system, "_observation_grids") else system.observational_data
-        obs_input = system.preprocess(obs_grid)
+        if hasattr(system, "_observation_input"):
+            obs_input = system._observation_input()
+            if getattr(system, "_multiple_samples", False):
+                obs_input = obs_input[0]
+        else:
+            obs_input = obs_grid
+        obs_input = system.preprocess(obs_input)
         torch_obs_data = torch.from_numpy(obs_input).to(model.device).unsqueeze(0).float()
 
         with torch.no_grad():

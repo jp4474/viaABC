@@ -5,6 +5,8 @@ set -Eeuo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
+unset SLURM_TRES_PER_TASK
+
 export PROJECT_ROOT
 export PYTHONUNBUFFERED=1
 export HYDRA_FULL_ERROR=1
@@ -58,7 +60,9 @@ latest_completed_train_run() {
 activate_env() {
   local venv_activate="${VENV_ACTIVATE:-}"
   local conda_env_name="${CONDA_ENV_NAME:-}"
+  local micromamba_env_name="${MICROMAMBA_ENV_NAME:-}"
   local micromamba_env_path="${MICROMAMBA_ENV_PATH:-}"
+  local micromamba_root="${MICROMAMBA_ROOT_PREFIX:-${MAMBA_ROOT_PREFIX:-}}"
 
   if [[ -n "${venv_activate}" ]]; then
     [[ -f "${venv_activate}" ]] || die "VENV_ACTIVATE points to a missing file: ${venv_activate}"
@@ -67,10 +71,32 @@ activate_env() {
     return
   fi
 
-  if [[ -n "${micromamba_env_path}" ]]; then
-    [[ -d "${micromamba_env_path}" ]] || die "MICROMAMBA_ENV_PATH points to a missing directory: ${micromamba_env_path}"
-    export CONDA_PREFIX="${micromamba_env_path}"
-    export PATH="${micromamba_env_path}/bin:${PATH}"
+  if [[ -n "${micromamba_env_name}" ]] || [[ -n "${micromamba_env_path}" ]]; then
+    if [[ -n "${micromamba_env_path}" ]]; then
+      [[ -d "${micromamba_env_path}" ]] || die "MICROMAMBA_ENV_PATH points to a missing directory: ${micromamba_env_path}"
+    fi
+    if [[ -z "${micromamba_env_name}" ]]; then
+      micromamba_env_name="$(basename "${micromamba_env_path}")"
+    fi
+    if [[ -z "${micromamba_root}" ]] && [[ -n "${micromamba_env_path}" ]]; then
+      micromamba_root="$(dirname "$(dirname "${micromamba_env_path}")")"
+    fi
+    if [[ -z "${micromamba_root}" ]] && [[ -d "${HOME}/micromamba" ]]; then
+      micromamba_root="${HOME}/micromamba"
+    fi
+    export MAMBA_ROOT_PREFIX="${micromamba_root}"
+
+    if [[ -f "${micromamba_root}/etc/profile.d/mamba.sh" ]]; then
+      # shellcheck disable=SC1090
+      source "${micromamba_root}/etc/profile.d/mamba.sh"
+    elif command -v micromamba >/dev/null 2>&1; then
+      eval "$(micromamba shell hook --shell bash)"
+    else
+      die "micromamba is unavailable and ${micromamba_root}/etc/profile.d/mamba.sh was not found."
+    fi
+
+    log "Activating micromamba environment: ${micromamba_env_name}"
+    micromamba activate "${micromamba_env_name}"
     return
   fi
 
@@ -190,7 +216,11 @@ assert_gpu_memory() {
   command -v nvidia-smi >/dev/null 2>&1 || die "nvidia-smi is unavailable. This job requires a GPU node."
 
   local gpu_info
-  gpu_info="$(nvidia-smi --query-gpu=index,name,memory.total --format=csv,noheader,nounits)"
+  local nvidia_smi_output
+  if ! nvidia_smi_output="$(nvidia-smi --query-gpu=index,name,memory.total --format=csv,noheader,nounits 2>&1)"; then
+    die "nvidia-smi failed while checking allocated GPUs: ${nvidia_smi_output}"
+  fi
+  gpu_info="${nvidia_smi_output}"
   [[ -n "${gpu_info}" ]] || die "No GPUs detected by nvidia-smi."
 
   log "Allocated GPU(s):"
@@ -201,7 +231,7 @@ assert_gpu_memory() {
   [[ -n "${max_mem}" ]] || die "Failed to parse GPU memory from nvidia-smi."
 
   if (( max_mem < min_gpu_mem_mib )); then
-    die "Largest visible GPU has ${max_mem} MiB, but spatial2D training requires at least ${min_gpu_mem_mib} MiB. Submit to an total 80GB GPU partition or add the correct cluster-specific constraint."
+    die "Largest visible GPU has ${max_mem} MiB, but this spatial2D job requires at least ${min_gpu_mem_mib} MiB. Submit to a large-memory GPU partition or add the correct cluster-specific constraint."
   fi
 }
 
