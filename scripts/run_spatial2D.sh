@@ -47,6 +47,7 @@ TRAIN_TIME="${TRAIN_TIME:-3-00:00:00}"
 SPATIAL2D_TRAIN_NUM_WORKERS="${SPATIAL2D_TRAIN_NUM_WORKERS:-4}"
 DEFAULT_EXTRA_TRAIN_ARGS="${DEFAULT_EXTRA_TRAIN_ARGS:-data.batch_size=20 data.pin_memory=true trainer.accumulate_grad_batches=1 model.vae_warmup_steps=24000 +torch.matmul_precision=high +torch.allow_tf32=true}"
 EXTRA_TRAIN_ARGS="${EXTRA_TRAIN_ARGS:-${DEFAULT_EXTRA_TRAIN_ARGS}}"
+CONDA_ENV_NAME="${CONDA_ENV_NAME:-}"
 MICROMAMBA_ENV_PATH="${MICROMAMBA_ENV_PATH:-/insomnia001/home/kz2537/micromamba/envs/viaabc310}"
 ENABLE_NVIDIA_SMI_MONITOR="${ENABLE_NVIDIA_SMI_MONITOR:-true}"
 NVIDIA_SMI_MONITOR_INTERVAL="${NVIDIA_SMI_MONITOR_INTERVAL:-10}"
@@ -104,6 +105,7 @@ log() {
 submit_job() {
   local parsable
   parsable="$(sbatch "$@")"
+  [[ -n "${parsable}" ]] || return 1
   printf '%s\n' "${parsable}"
 }
 

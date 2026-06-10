@@ -13,9 +13,9 @@ system:
 
 # --- viaABC Parameters ---
 abc:
-  num_particles: 100
+  num_particles: 1000
   k: 5
-  q_threshold: 0.999
+  q_threshold: 0.99
   max_generations: 20
   num_workers: 64
   simulation_batch_size: 4

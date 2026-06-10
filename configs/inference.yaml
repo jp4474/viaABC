@@ -17,7 +17,7 @@ system:
 
 # --- viaABC Parameters ---
 abc:
-  num_particles: 100
+  num_particles: 1000
   k: 10
   q_threshold: 0.999
   max_generations: 20
