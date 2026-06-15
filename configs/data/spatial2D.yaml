@@ -16,13 +16,13 @@ observation_sample: [sample_1, sample_2, sample_3, sample_4]
 observation_samples:
   sample_1:
     image: ${paths.data_dir}/spatial2D/img1.jpg
-    txt: ${paths.data_dir}/spatial2D/initial_grid1_cpp.txt
+    txt: ${paths.data_dir}/spatial2D/initial_grid1_cppn.txt
   sample_2:
     image: ${paths.data_dir}/spatial2D/img2.jpg
-    txt: ${paths.data_dir}/spatial2D/initial_grid2_cpp.txt
+    txt: ${paths.data_dir}/spatial2D/initial_grid2_cppn.txt
   sample_3:
     image: ${paths.data_dir}/spatial2D/img3.jpg
-    txt: ${paths.data_dir}/spatial2D/initial_grid3_cpp.txt
+    txt: ${paths.data_dir}/spatial2D/initial_grid3_cppn.txt
   sample_4:
     image: ${paths.data_dir}/spatial2D/img4.jpg
-    txt: ${paths.data_dir}/spatial2D/initial_grid4_cpp.txt
+    txt: ${paths.data_dir}/spatial2D/initial_grid4_cppn.txt

@@ -34,25 +34,29 @@ latest_completed_train_run() {
 
 ACCOUNT="${ACCOUNT:-iicd}"
 PARTITION="${PARTITION:-burst}"
+DATA_ACCOUNT="${DATA_ACCOUNT:-${ACCOUNT}}"
+DATA_PARTITION="${DATA_PARTITION:-${PARTITION}}"
+TRAIN_ACCOUNT="${TRAIN_ACCOUNT:-${ACCOUNT}}"
+TRAIN_PARTITION="${TRAIN_PARTITION:-${PARTITION}}"
 
-DATA_CPUS="${DATA_CPUS:-16}"
-DATA_MEM="${DATA_MEM:-48G}"
-DATA_TIME="${DATA_TIME:-24:00:00}"
+DATA_CPUS="${DATA_CPUS:-32}"
+DATA_MEM="${DATA_MEM:-96G}"
+DATA_TIME="${DATA_TIME:-12:00:00}"
 
 TRAIN_GPUS="${TRAIN_GPUS:-2}"
 TRAIN_TASKS="${TRAIN_TASKS:-${TRAIN_GPUS}}"
 TRAIN_CPUS="${TRAIN_CPUS:-8}"
 TRAIN_MEM="${TRAIN_MEM:-128G}"
-TRAIN_TIME="${TRAIN_TIME:-3-00:00:00}"
+TRAIN_TIME="${TRAIN_TIME:-2-00:00:00}"
 SPATIAL2D_TRAIN_NUM_WORKERS="${SPATIAL2D_TRAIN_NUM_WORKERS:-4}"
 DEFAULT_EXTRA_TRAIN_ARGS="${DEFAULT_EXTRA_TRAIN_ARGS:-data.batch_size=20 data.pin_memory=true trainer.accumulate_grad_batches=1 model.vae_warmup_steps=24000 +torch.matmul_precision=high +torch.allow_tf32=true}"
 EXTRA_TRAIN_ARGS="${EXTRA_TRAIN_ARGS:-${DEFAULT_EXTRA_TRAIN_ARGS}}"
 CONDA_ENV_NAME="${CONDA_ENV_NAME:-}"
-MICROMAMBA_ENV_PATH="${MICROMAMBA_ENV_PATH:-/insomnia001/home/kz2537/micromamba/envs/viaabc310}"
+MICROMAMBA_ENV_PATH="${MICROMAMBA_ENV_PATH:-/insomnia001/depts/iicd/users/${USER}/micromamba/envs/viaabc310}"
 ENABLE_NVIDIA_SMI_MONITOR="${ENABLE_NVIDIA_SMI_MONITOR:-true}"
 NVIDIA_SMI_MONITOR_INTERVAL="${NVIDIA_SMI_MONITOR_INTERVAL:-10}"
 
-TRAIN_GPU_TYPE="${TRAIN_GPU_TYPE:-}"
+TRAIN_GPU_TYPE="${TRAIN_GPU_TYPE:-l40s}"
 
 INFER_GPUS="${INFER_GPUS:-1}"
 INFER_GPU_TYPE="${INFER_GPU_TYPE:-l40s}"
@@ -116,82 +120,84 @@ log "Train run base dir: ${TRAIN_RUN_BASE}"
 log "Train run dir: ${TRAIN_RUN_DIR}"
 log "Inference output base: ${INFER_OUTPUT_BASE}"
 log "Slurm log dir: ${SLURM_LOG_DIR}"
-# log "Data job thread config: cpus=${DATA_CPUS}, OMP=${DATA_OMP_NUM_THREADS}, MKL=${DATA_MKL_NUM_THREADS}, NUMEXPR=${DATA_NUMEXPR_NUM_THREADS}, OPENBLAS=${DATA_OPENBLAS_NUM_THREADS}"
-# data_job_id="$(
-#    submit_job \
-#    --parsable \
-#    --job-name viaabc-spatial2d-data \
-#    --account "${ACCOUNT}" \
-#    --partition "${PARTITION}" \
-#    --nodes 1 \
-#    --ntasks 1 \
-#    --cpus-per-task "${DATA_CPUS}" \
-#    --mem "${DATA_MEM}" \
-#    --time "${DATA_TIME}" \
-#    --output "${SLURM_LOG_DIR}/%x-%j.out" \
-#    --error "${SLURM_LOG_DIR}/%x-%j.err" \
-#    --export "${SBATCH_EXPORTS},SPATIAL2D_STORAGE_ROOT=${SPATIAL2D_STORAGE_ROOT},SPATIAL2D_SOURCE_DATA_DIR=${SPATIAL2D_SOURCE_DATA_DIR},SPATIAL2D_DATA_DIR=${SPATIAL2D_DATA_DIR},TRAIN_RUN_BASE=${TRAIN_RUN_BASE},SLURM_LOG_DIR=${SLURM_LOG_DIR},OMP_NUM_THREADS=${DATA_OMP_NUM_THREADS},MKL_NUM_THREADS=${DATA_MKL_NUM_THREADS},NUMEXPR_NUM_THREADS=${DATA_NUMEXPR_NUM_THREADS},OPENBLAS_NUM_THREADS=${DATA_OPENBLAS_NUM_THREADS}" \
-#    --wrap "cd '${PROJECT_ROOT}' && srun bash scripts/data_spatial2D.sh"
-# )"
+log "Data job Slurm target: account=${DATA_ACCOUNT}, partition=${DATA_PARTITION}, time=${DATA_TIME}, mem=${DATA_MEM}"
+log "Data job thread config: cpus=${DATA_CPUS}, OMP=${DATA_OMP_NUM_THREADS}, MKL=${DATA_MKL_NUM_THREADS}, NUMEXPR=${DATA_NUMEXPR_NUM_THREADS}, OPENBLAS=${DATA_OPENBLAS_NUM_THREADS}"
+data_job_id="$(
+   submit_job \
+   --parsable \
+   --job-name viaabc-spatial2d-data \
+   --account "${DATA_ACCOUNT}" \
+   --partition "${DATA_PARTITION}" \
+   --nodes 1 \
+   --ntasks 1 \
+   --cpus-per-task "${DATA_CPUS}" \
+   --mem "${DATA_MEM}" \
+   --time "${DATA_TIME}" \
+   --output "${SLURM_LOG_DIR}/%x-%j.out" \
+   --error "${SLURM_LOG_DIR}/%x-%j.err" \
+   --export "${SBATCH_EXPORTS},SPATIAL2D_STORAGE_ROOT=${SPATIAL2D_STORAGE_ROOT},SPATIAL2D_SOURCE_DATA_DIR=${SPATIAL2D_SOURCE_DATA_DIR},SPATIAL2D_DATA_DIR=${SPATIAL2D_DATA_DIR},TRAIN_RUN_BASE=${TRAIN_RUN_BASE},SLURM_LOG_DIR=${SLURM_LOG_DIR},OMP_NUM_THREADS=${DATA_OMP_NUM_THREADS},MKL_NUM_THREADS=${DATA_MKL_NUM_THREADS},NUMEXPR_NUM_THREADS=${DATA_NUMEXPR_NUM_THREADS},OPENBLAS_NUM_THREADS=${DATA_OPENBLAS_NUM_THREADS}" \
+   --wrap "cd '${PROJECT_ROOT}' && srun bash scripts/data_spatial2D.sh"
+)"
 
-# log "Data job submitted: ${data_job_id}"
-# log "Submitting spatial2D training job."
-# log "Training job resources: gpus=${TRAIN_GPUS}, tasks=${TRAIN_TASKS}, cpus_per_task=${TRAIN_CPUS}, data_workers=${SPATIAL2D_TRAIN_NUM_WORKERS}, mem=${TRAIN_MEM}, time=${TRAIN_TIME}"
-# if [[ -n "${EXTRA_TRAIN_ARGS}" ]]; then
-#   log "Training Hydra overrides: ${EXTRA_TRAIN_ARGS}"
+log "Data job submitted: ${data_job_id}"
+log "Submitting spatial2D training job."
+log "Training job Slurm target: account=${TRAIN_ACCOUNT}, partition=${TRAIN_PARTITION}, gpu_type=${TRAIN_GPU_TYPE:-any}, time=${TRAIN_TIME}"
+log "Training job resources: gpus=${TRAIN_GPUS}, tasks=${TRAIN_TASKS}, cpus_per_task=${TRAIN_CPUS}, data_workers=${SPATIAL2D_TRAIN_NUM_WORKERS}, mem=${TRAIN_MEM}, time=${TRAIN_TIME}"
+if [[ -n "${EXTRA_TRAIN_ARGS}" ]]; then
+  log "Training Hydra overrides: ${EXTRA_TRAIN_ARGS}"
+fi
+
+train_gpu_request="${TRAIN_GPUS}"
+if [[ -n "${TRAIN_GPU_TYPE}" ]]; then
+  train_gpu_request="${TRAIN_GPU_TYPE}:${TRAIN_GPUS}"
+fi
+
+train_job_id="$(
+  submit_job \
+    --parsable \
+    --job-name viaabc-spatial2d-train \
+    --account "${TRAIN_ACCOUNT}" \
+    --partition "${TRAIN_PARTITION}" \
+    --dependency "afterok:${data_job_id}" \
+    --nodes 1 \
+    --ntasks-per-node "${TRAIN_TASKS}" \
+    --gpus "${train_gpu_request}" \
+    --cpus-per-task "${TRAIN_CPUS}" \
+    --mem "${TRAIN_MEM}" \
+    --time "${TRAIN_TIME}" \
+    --output "${SLURM_LOG_DIR}/%x-%j.out" \
+    --error "${SLURM_LOG_DIR}/%x-%j.err" \
+    --export "${SBATCH_EXPORTS},CONDA_ENV_NAME=${CONDA_ENV_NAME},MICROMAMBA_ENV_PATH=${MICROMAMBA_ENV_PATH},ENABLE_NVIDIA_SMI_MONITOR=${ENABLE_NVIDIA_SMI_MONITOR},NVIDIA_SMI_MONITOR_INTERVAL=${NVIDIA_SMI_MONITOR_INTERVAL},SPATIAL2D_STORAGE_ROOT=${SPATIAL2D_STORAGE_ROOT},SPATIAL2D_SOURCE_DATA_DIR=${SPATIAL2D_SOURCE_DATA_DIR},SPATIAL2D_DATA_DIR=${SPATIAL2D_DATA_DIR},TRAIN_RUN_BASE=${TRAIN_RUN_BASE},TRAIN_RUN_DIR=${TRAIN_RUN_DIR},SLURM_LOG_DIR=${SLURM_LOG_DIR},SPATIAL2D_TRAIN_NUM_WORKERS=${SPATIAL2D_TRAIN_NUM_WORKERS},EXTRA_TRAIN_ARGS=${EXTRA_TRAIN_ARGS},OMP_NUM_THREADS=${TRAIN_OMP_NUM_THREADS},MKL_NUM_THREADS=${TRAIN_MKL_NUM_THREADS},NUMEXPR_NUM_THREADS=${TRAIN_NUMEXPR_NUM_THREADS},OPENBLAS_NUM_THREADS=${TRAIN_OPENBLAS_NUM_THREADS}" \
+    --wrap "unset SLURM_CPUS_PER_TASK SLURM_TRES_PER_TASK && cd '${PROJECT_ROOT}' && srun --cpus-per-task='${TRAIN_CPUS}' bash scripts/train_spatial2D.sh"
+)"
+
+log "Training job submitted: ${train_job_id}"
+# log "Submitting spatial2D inference job."
+# log "Inference job resources: gpu_type=${INFER_GPU_TYPE:-any}, gpus=${INFER_GPUS}, cpus=${INFER_CPUS}, mem=${INFER_MEM}, time=${INFER_TIME}"
+
+# infer_gpu_request="${INFER_GPUS}"
+# if [[ -n "${INFER_GPU_TYPE}" ]]; then
+#   infer_gpu_request="${INFER_GPU_TYPE}:${INFER_GPUS}"
 # fi
 
-# train_gpu_request="${TRAIN_GPUS}"
-# if [[ -n "${TRAIN_GPU_TYPE}" ]]; then
-#   train_gpu_request="${TRAIN_GPU_TYPE}:${TRAIN_GPUS}"
-# fi
 
-# train_job_id="$(
+# infer_job_id="$(
 #   submit_job \
 #     --parsable \
-#     --job-name viaabc-spatial2d-train \
+#     --job-name viaabc-spatial2d-infer \
 #     --account "${ACCOUNT}" \
 #     --partition "${PARTITION}" \
 #     --nodes 1 \
-#     --ntasks-per-node "${TRAIN_TASKS}" \
-#     --gpus "${train_gpu_request}" \
-#     --cpus-per-task "${TRAIN_CPUS}" \
-#     --mem "${TRAIN_MEM}" \
-#     --time "${TRAIN_TIME}" \
+#     --ntasks 1 \
+#     --gpus "${infer_gpu_request}" \
+#     --cpus-per-task "${INFER_CPUS}" \
+#     --mem "${INFER_MEM}" \
+#     --time "${INFER_TIME}" \
 #     --output "${SLURM_LOG_DIR}/%x-%j.out" \
 #     --error "${SLURM_LOG_DIR}/%x-%j.err" \
-#     --export "${SBATCH_EXPORTS},CONDA_ENV_NAME=${CONDA_ENV_NAME},MICROMAMBA_ENV_PATH=${MICROMAMBA_ENV_PATH},ENABLE_NVIDIA_SMI_MONITOR=${ENABLE_NVIDIA_SMI_MONITOR},NVIDIA_SMI_MONITOR_INTERVAL=${NVIDIA_SMI_MONITOR_INTERVAL},SPATIAL2D_STORAGE_ROOT=${SPATIAL2D_STORAGE_ROOT},SPATIAL2D_SOURCE_DATA_DIR=${SPATIAL2D_SOURCE_DATA_DIR},SPATIAL2D_DATA_DIR=${SPATIAL2D_DATA_DIR},TRAIN_RUN_BASE=${TRAIN_RUN_BASE},TRAIN_RUN_DIR=${TRAIN_RUN_DIR},SLURM_LOG_DIR=${SLURM_LOG_DIR},SPATIAL2D_TRAIN_NUM_WORKERS=${SPATIAL2D_TRAIN_NUM_WORKERS},EXTRA_TRAIN_ARGS=${EXTRA_TRAIN_ARGS},OMP_NUM_THREADS=${TRAIN_OMP_NUM_THREADS},MKL_NUM_THREADS=${TRAIN_MKL_NUM_THREADS},NUMEXPR_NUM_THREADS=${TRAIN_NUMEXPR_NUM_THREADS},OPENBLAS_NUM_THREADS=${TRAIN_OPENBLAS_NUM_THREADS}" \
-#     --wrap "unset SLURM_CPUS_PER_TASK SLURM_TRES_PER_TASK && cd '${PROJECT_ROOT}' && srun --cpus-per-task='${TRAIN_CPUS}' bash scripts/train_spatial2D.sh"
+#     --export "${SBATCH_EXPORTS},CONDA_ENV_NAME=${CONDA_ENV_NAME},MICROMAMBA_ENV_PATH=${MICROMAMBA_ENV_PATH},SPATIAL2D_STORAGE_ROOT=${SPATIAL2D_STORAGE_ROOT},SPATIAL2D_SOURCE_DATA_DIR=${SPATIAL2D_SOURCE_DATA_DIR},SPATIAL2D_DATA_DIR=${SPATIAL2D_DATA_DIR},TRAIN_RUN_BASE=${TRAIN_RUN_BASE},TRAIN_RUN_DIR=${TRAIN_RUN_DIR},INFER_RUN_FOLDER_PATH=${INFER_RUN_FOLDER_PATH},INFER_OUTPUT_BASE=${INFER_OUTPUT_BASE},SLURM_LOG_DIR=${SLURM_LOG_DIR},MIN_GPU_MEM_MIB=${INFER_MIN_GPU_MEM_MIB},EXTRA_INFER_ARGS=${EXTRA_INFER_ARGS},ENABLE_INFER_RESOURCE_MONITOR=${ENABLE_INFER_RESOURCE_MONITOR},INFER_RESOURCE_MONITOR_INTERVAL=${INFER_RESOURCE_MONITOR_INTERVAL},OMP_NUM_THREADS=${INFER_OMP_NUM_THREADS},MKL_NUM_THREADS=${INFER_MKL_NUM_THREADS},NUMEXPR_NUM_THREADS=${INFER_NUMEXPR_NUM_THREADS},OPENBLAS_NUM_THREADS=${INFER_OPENBLAS_NUM_THREADS}" \
+#     --wrap "unset SLURM_CPUS_PER_TASK SLURM_TRES_PER_TASK && cd '${PROJECT_ROOT}' && srun --cpus-per-task='${INFER_CPUS}' bash scripts/inference_spatial2D.sh"
 # )"
 
-#     # --dependency "afterok:${data_job_id}" \
-# log "Training job submitted: ${train_job_id}"
-log "Submitting spatial2D inference job."
-log "Inference job resources: gpu_type=${INFER_GPU_TYPE:-any}, gpus=${INFER_GPUS}, cpus=${INFER_CPUS}, mem=${INFER_MEM}, time=${INFER_TIME}"
-
-infer_gpu_request="${INFER_GPUS}"
-if [[ -n "${INFER_GPU_TYPE}" ]]; then
-  infer_gpu_request="${INFER_GPU_TYPE}:${INFER_GPUS}"
-fi
-
-
-infer_job_id="$(
-  submit_job \
-    --parsable \
-    --job-name viaabc-spatial2d-infer \
-    --account "${ACCOUNT}" \
-    --partition "${PARTITION}" \
-    --nodes 1 \
-    --ntasks 1 \
-    --gpus "${infer_gpu_request}" \
-    --cpus-per-task "${INFER_CPUS}" \
-    --mem "${INFER_MEM}" \
-    --time "${INFER_TIME}" \
-    --output "${SLURM_LOG_DIR}/%x-%j.out" \
-    --error "${SLURM_LOG_DIR}/%x-%j.err" \
-    --export "${SBATCH_EXPORTS},CONDA_ENV_NAME=${CONDA_ENV_NAME},MICROMAMBA_ENV_PATH=${MICROMAMBA_ENV_PATH},SPATIAL2D_STORAGE_ROOT=${SPATIAL2D_STORAGE_ROOT},SPATIAL2D_SOURCE_DATA_DIR=${SPATIAL2D_SOURCE_DATA_DIR},SPATIAL2D_DATA_DIR=${SPATIAL2D_DATA_DIR},TRAIN_RUN_BASE=${TRAIN_RUN_BASE},TRAIN_RUN_DIR=${TRAIN_RUN_DIR},INFER_RUN_FOLDER_PATH=${INFER_RUN_FOLDER_PATH},INFER_OUTPUT_BASE=${INFER_OUTPUT_BASE},SLURM_LOG_DIR=${SLURM_LOG_DIR},MIN_GPU_MEM_MIB=${INFER_MIN_GPU_MEM_MIB},EXTRA_INFER_ARGS=${EXTRA_INFER_ARGS},ENABLE_INFER_RESOURCE_MONITOR=${ENABLE_INFER_RESOURCE_MONITOR},INFER_RESOURCE_MONITOR_INTERVAL=${INFER_RESOURCE_MONITOR_INTERVAL},OMP_NUM_THREADS=${INFER_OMP_NUM_THREADS},MKL_NUM_THREADS=${INFER_MKL_NUM_THREADS},NUMEXPR_NUM_THREADS=${INFER_NUMEXPR_NUM_THREADS},OPENBLAS_NUM_THREADS=${INFER_OPENBLAS_NUM_THREADS}" \
-    --wrap "unset SLURM_CPUS_PER_TASK SLURM_TRES_PER_TASK && cd '${PROJECT_ROOT}' && srun --cpus-per-task='${INFER_CPUS}' bash scripts/inference_spatial2D.sh"
-)"
-
-log "Inference job submitted: ${infer_job_id}"
-log "Submission chain complete."
+# log "Inference job submitted: ${infer_job_id}"
+# log "Submission chain complete."

@@ -12,7 +12,7 @@ import sys
 import rootutils
 import hydra
 from scipy.ndimage import convolve
-from scipy.stats import uniform
+from scipy.stats import lognorm, uniform
 
 from src.viaABC.metrics import bert_score, bert_score_batch, cosine_similarity, l1_distance, l2_distance, maxSim, pairwise_cosine
 from src.viaABC.viaABC import viaABC
@@ -87,8 +87,8 @@ class Spatial2D(viaABC):
     """
     def __init__(self,
         num_parameters: int = 2,
-        mu: np.ndarray = np.array([0.0, 0.0]), # Lower Bound
-        sigma: np.ndarray = np.array([0.1, 0.1]), # Upper Bound
+        mu: np.ndarray = np.array([0.02, 0.0001]), # Lognormal mean
+        sigma: np.ndarray = np.array([0.01, 0.001]), # Lognormal sigma
         model: Optional[torch.nn.Module] = None,
         state0: Optional[np.ndarray] = None,
         t0: int = 0,
@@ -423,21 +423,21 @@ class Spatial2D(viaABC):
 
 
     def sample_priors(self) -> np.ndarray:
-        # Sample from the uniform prior distribution
-        priors = np.random.uniform(
-            self.lower_bounds,
-            self.upper_bounds,
-            self.num_parameters,
+        # Sample from the lognormal prior distribution
+        priors = np.random.lognormal(
+            mean=self.lower_bounds,
+            sigma=self.upper_bounds,
+            size=self.num_parameters,
         )
         return priors
             
     def calculate_prior_log_prob(self, parameters: np.ndarray) -> float:
         # Calculate the prior log probability of the parameters
         # This must match the prior distribution used in sampling
-        log_probabilities = uniform.logpdf(
+        log_probabilities = lognorm.logpdf(
             parameters,
-            loc=self.lower_bounds,
-            scale=self.upper_bounds - self.lower_bounds,
+            s=self.upper_bounds,
+            scale=np.exp(self.lower_bounds),
         )
         return np.sum(log_probabilities)
 

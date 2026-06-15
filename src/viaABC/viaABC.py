@@ -1165,8 +1165,11 @@ class viaABC:
     
     def __sample_priors(self, n: int = 1) -> np.ndarray:
         """Sample Spatial2D training priors from a QMC lognormal distribution."""
-        if self.__class__.__name__ != "Spatial2D" or self.num_parameters != 3:
+        if self.__class__.__name__ != "Spatial2D":
             return self.__sample_priors_old(n=n)
+
+        if self.num_parameters != 3:
+            return np.asarray([self.sample_priors() for _ in range(n)])
 
         prior_mean = np.array([0.05, 0.0001, 0.2], dtype=np.float64)
         prior_var = np.array([6.25e-4, 1.0, 1.0e-1], dtype=np.float64)
