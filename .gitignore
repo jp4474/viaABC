@@ -27,3 +27,14 @@ myenv/
 .pytest_cache
 logs
 outputs
+run-with-last-ckpt-2026-04-09.tar.gz:Zone.Identifier
+run-with-last-ckpt-2026-04-09.tar.gz.sha256
+run-with-last-ckpt-2026-04-09.tar.gz.sha256:Zone.Identifier
+run/monitor_dashboard.py
+run/monitor_dashboard.py:Zone.Identifier
+run/monitor.ipynb
+run/monitor.ipynb:Zone.Identifier
+run
+.vscode/
+data/spatial2D/.*
+turorials/tutorial_spatial2D/debug_temp.ipynb

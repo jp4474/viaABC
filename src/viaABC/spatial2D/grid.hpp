@@ -19,8 +19,8 @@ enum CellState : uint8_t {
 struct Parameters {
     double alpha{0.0};
     double beta{0.0};
-    double gamma{0.0};
     double dt{0.0};
+    //double gamma{0.0};
     double t0{0.0};
     double t_end{0.0};
 };

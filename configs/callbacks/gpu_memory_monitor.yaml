@@ -1,0 +1,7 @@
+gpu_memory_monitor:
+  _target_: src.callbacks.gpu_memory_monitor.GPUMemoryMonitor
+  every_n_train_steps: 100
+  log_peak: true
+  reset_peak_stats: false
+  synchronize: false
+

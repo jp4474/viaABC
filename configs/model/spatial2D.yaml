@@ -1,10 +1,13 @@
 _target_: src.models.lightning_module.PreTrainLightning
 
 net:
-  _target_: src.models.MAE.model.MaskedAutoencoderViT
+  _target_: src.models.MAEST.spatial2d_model.Spatial2DMaskedAutoencoderViT3D
   img_size: 1200
   patch_size: 16
-  in_chans: 1
+  in_chans: 6
+  num_frames: ${system.num_frames}
+  t_patch_size: 1
+  pred_t_dim: ${system.num_frames}
   embed_dim: 512
   depth: 12
   num_heads: 8

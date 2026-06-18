@@ -1,6 +1,7 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/numpy.h>
 #include <Eigen/Dense>
+#include <Eigen/Eigenvalues>
 #include <vector>
 #include <cmath>
 #include <limits>
@@ -56,12 +57,40 @@ double calculate_particle_weight(
             C(i, j) = cov(i, j);
 
     /* ---- regularize covariance ---- */
-    C += 1e-6 * Eigen::MatrixXd::Identity(d, d);
+    C = 0.5 * (C + C.transpose());
+    double scale = 0.0;
+    for (int i = 0; i < d; ++i)
+        scale = std::max(scale, std::abs(C(i, i)));
+    const double variance_floor = std::max(1e-8, scale * 1e-12);
+    for (int i = 0; i < d; ++i)
+        C(i, i) = std::max(C(i, i), variance_floor);
 
-    /* ---- Cholesky ---- */
-    Eigen::LLT<Eigen::MatrixXd> llt(C);
-    if (llt.info() != Eigen::Success)
-        throw std::runtime_error("Covariance matrix not SPD");
+    Eigen::LLT<Eigen::MatrixXd> llt;
+    double jitter = std::max(1e-10, variance_floor * 1e-6);
+    bool is_spd = false;
+    for (int attempt = 0; attempt < 8; ++attempt) {
+        llt.compute(C);
+        if (llt.info() == Eigen::Success) {
+            is_spd = true;
+            break;
+        }
+        C += jitter * Eigen::MatrixXd::Identity(d, d);
+        jitter *= 10.0;
+    }
+
+    if (!is_spd) {
+        Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> solver(C);
+        if (solver.info() != Eigen::Success)
+            throw std::runtime_error("Covariance matrix eigendecomposition failed");
+
+        const double min_eig = solver.eigenvalues().minCoeff();
+        if (min_eig < variance_floor)
+            C += (variance_floor - min_eig) * Eigen::MatrixXd::Identity(d, d);
+
+        llt.compute(C);
+        if (llt.info() != Eigen::Success)
+            throw std::runtime_error("Covariance matrix not SPD after regularization");
+    }
 
     /* ---- log(det(cov)) ---- */
     double log_det_cov = 0.0;

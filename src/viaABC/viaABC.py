@@ -13,13 +13,14 @@ import logging
 import os
 import tempfile
 import time
+import zipfile
 import numpy as np
 import torch
 from typing import Any, Callable, Optional, Union
 
 from scipy.integrate import solve_ivp
 from scipy.stats import qmc, multivariate_normal
-from scipy.special import logsumexp
+from scipy.special import logsumexp, ndtri
 
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from tqdm import tqdm
@@ -58,6 +59,7 @@ class viaABC:
         pooling_method: str = "cls",
         metric: str = "cosine",
         transform: Optional[Callable[..., Any]] = None,
+        encode_observational_data: bool = True,
     ) -> None:
         self.logger = logging.getLogger(__name__)
         logging.basicConfig(level=logging.INFO)
@@ -69,6 +71,9 @@ class viaABC:
         self.time_space: Optional[np.ndarray] = None
         self.train_dataset: Optional[torch.utils.data.Dataset[Any]] = None
         self.num_particles: int = 0
+        self.num_workers: Optional[int] = None
+        self.simulation_batch_size: Optional[int] = None
+        self.max_pending_simulations: Optional[int] = None
         self.max_generations: int = 0
         self.encoded_observational_data: np.ndarray = np.array([])
 
@@ -140,6 +145,10 @@ class viaABC:
                 "Model is None. The model must be provided to encode the data and run the algorithm.\n" \
                 "The class can be initialized without a model, but it will not\nbe able to run the algorithm."
             )
+        elif not encode_observational_data:
+            self.model = model
+            self.model.eval()
+            self.logger.info("Model initialized without encoding observational data")
         else:
             # Encoding the observation once up front keeps the later ABC loop
             # focused on simulated samples only.
@@ -178,6 +187,9 @@ class viaABC:
         else:
             raise ValueError("Initial state (state0) must be set before simulation.")
 
+    def simulate_for_inference(self, parameters: np.ndarray) -> tuple[np.ndarray, int]:
+        return self.simulate(parameters)
+
     def sample_priors(self) -> np.ndarray:
         """
         Sample from the prior distributions.
@@ -213,9 +225,46 @@ class viaABC:
         Returns:
             np.ndarray: Perturbed parameters.
         """
-
-        proposed_theta = multivariate_normal.rvs(mean=theta, cov=cov)
+        stabilized_cov = self._stabilize_covariance(cov)
+        proposed_theta = multivariate_normal.rvs(mean=theta, cov=stabilized_cov)
         return proposed_theta
+
+    @staticmethod
+    def _stabilize_covariance(
+        cov: np.ndarray,
+        min_variance: float = 1e-8,
+        initial_jitter: float = 1e-10,
+        max_attempts: int = 8,
+    ) -> np.ndarray:
+        """Return a symmetric positive definite covariance matrix."""
+        stabilized = np.array(np.atleast_2d(cov), dtype=np.float64, copy=True)
+        if stabilized.shape[0] != stabilized.shape[1]:
+            raise ValueError(
+                f"Covariance matrix must be square, got shape {stabilized.shape}."
+            )
+
+        stabilized = 0.5 * (stabilized + stabilized.T)
+        diag_idx = np.diag_indices_from(stabilized)
+        diag = np.nan_to_num(stabilized[diag_idx], nan=0.0, neginf=0.0, posinf=0.0)
+        scale = float(np.max(np.abs(diag))) if diag.size else 1.0
+        variance_floor = max(float(min_variance), scale * 1e-12)
+        stabilized[diag_idx] = np.maximum(diag, variance_floor)
+
+        jitter = max(float(initial_jitter), variance_floor * 1e-6)
+        for _ in range(max_attempts):
+            try:
+                np.linalg.cholesky(stabilized)
+                return stabilized
+            except np.linalg.LinAlgError:
+                stabilized[diag_idx] += jitter
+                jitter *= 10.0
+
+        min_eig = float(np.min(np.linalg.eigvalsh(stabilized)))
+        if min_eig < variance_floor:
+            stabilized[diag_idx] += variance_floor - min_eig
+
+        np.linalg.cholesky(stabilized)
+        return stabilized
 
     def calculate_distance(self, y: np.ndarray) -> float | np.ndarray:
         """
@@ -295,6 +344,24 @@ class viaABC:
         self.train_dataset = train_dataset
         self.logger.info("Training dataset updated.")
 
+    def _resolve_num_workers(self, limit: int) -> int:
+        cpu_count = os.cpu_count() or 1
+        configured_workers = self.num_workers if self.num_workers is not None else cpu_count
+        configured_workers = int(configured_workers)
+        if configured_workers <= 0:
+            configured_workers = cpu_count
+        return max(1, min(configured_workers, cpu_count, max(1, limit)))
+
+    def _resolve_simulation_batch_size(self, max_workers: int) -> int:
+        if self.simulation_batch_size is not None:
+            return max(1, min(int(self.simulation_batch_size), self.num_particles))
+        return min(self.num_particles, max(32, max_workers * 2))
+
+    def _resolve_max_pending_simulations(self, batch_size: int, max_workers: int) -> int:
+        if self.max_pending_simulations is not None:
+            return max(batch_size, int(self.max_pending_simulations))
+        return max(batch_size, min(self.num_particles, max_workers * 2))
+
     @torch.inference_mode()
     def _run_init(self, num_particles: int, k: int = 5):
         self.densratio = dre_cpp.DensityRatioEstimation(n=100, epsilon=0.001, max_iter=1000, abs_tol=1e-4, fold=5, optimize=False)
@@ -315,8 +382,12 @@ class viaABC:
         
         # Get device once to avoid repeated attribute access
         device = self.model.device
-        max_workers = max(1, min(os.cpu_count() or 1, target_particles))
-        batch_size = max(max_workers, min(256, num_particles))
+        max_workers = self._resolve_num_workers(target_particles)
+        batch_size = self._resolve_simulation_batch_size(max_workers)
+        self.logger.info(
+            "Initialization encoding batch size: %d successful simulations",
+            batch_size,
+        )
 
         while accepted < target_particles:
             remaining = target_particles - accepted
@@ -332,7 +403,7 @@ class viaABC:
                     candidate_params.append(np.asarray(perturbed_params))
 
             with ThreadPoolExecutor(max_workers=min(max_workers, len(candidate_params))) as executor:
-                futures = [executor.submit(self.simulate, params) for params in candidate_params]
+                futures = [executor.submit(self.simulate_for_inference, params) for params in candidate_params]
                 simulation_results = [future.result() for future in futures]
 
             total_num_simulations += len(candidate_params)
@@ -379,11 +450,13 @@ class viaABC:
         epsilon = dists[num_particles-1]
 
         # Optimized covariance calculation
-        sample_cov = np.atleast_2d(np.cov(particles.reshape(num_particles, -1), rowvar=False))
+        sample_cov = self._stabilize_covariance(
+            np.cov(particles.reshape(num_particles, -1), rowvar=False)
+        )
         sigma_max = np.min(np.sqrt(np.diag(sample_cov)))
         
         # More efficient diagonal operations
-        cov = 2 * np.diag(sample_cov)
+        cov = self._stabilize_covariance(2 * np.diag(np.diag(sample_cov)))
 
         # Store first generation
         self.generations.append({
@@ -433,10 +506,12 @@ class viaABC:
 
         total_num_simulations = len(train_loader) * 1000
         
-        sample_cov = np.atleast_2d(np.cov(particles.reshape(self.num_particles, -1), rowvar=False))
+        sample_cov = self._stabilize_covariance(
+            np.cov(particles.reshape(self.num_particles, -1), rowvar=False)
+        )
         sigma_max = np.min(np.sqrt(np.diag(sample_cov)))
         
-        cov = 2 * np.diag(sample_cov)
+        cov = self._stabilize_covariance(2 * np.diag(np.diag(sample_cov)))
 
         # Store first generation
         self.generations.append({
@@ -471,6 +546,9 @@ class viaABC:
         q_threshold: float = 0.99,
         max_generations: int = 20,
         k: int = 5,
+        num_workers: Optional[int] = None,
+        simulation_batch_size: Optional[int] = None,
+        max_pending_simulations: Optional[int] = None,
     ) -> None:
         """Run the viaABC algorithm.
         
@@ -479,20 +557,29 @@ class viaABC:
             q_threshold: Threshold for stopping criterion (qt >= q_threshold)
             k: Number of nearest neighbors for distance calculation
             max_generations: Maximum number of generations to run
+            num_workers: Number of worker threads for particle simulations. Uses
+                all available CPUs when None or non-positive.
+            simulation_batch_size: Number of successful simulations to encode
+                together on the model device.
+            max_pending_simulations: Maximum number of submitted simulations
+                waiting to complete or be processed.
         """
 
-        # TODO: This can be optimized by concurrently simulating particles in batches. 
         if self.model is None:
             raise ValueError("Model must be provided to encode the data and run the algorithm.")
         
         self.generations = []
         self.num_particles = num_particles
+        self.num_workers = num_workers
+        self.simulation_batch_size = simulation_batch_size
+        self.max_pending_simulations = max_pending_simulations
         self.max_generations = max_generations - 1
         total_num_simulations = 0
         
         # Cache logger and reduce string formatting overhead
         logger = self.logger
         logger.info(f"Starting viaABC run with Q Threshold: {q_threshold}")
+        logger.info(f"Using {self._resolve_num_workers(num_particles)} worker threads for particle simulations")
         start_time = time.perf_counter()  # More precise timing
 
         # Initial generation
@@ -565,43 +652,218 @@ class viaABC:
         Returns:
             Tuple of (particles, weights, distances, num_simulations)
         """
-        particles = []
-        weights = []
-        distances = []
+        particles = np.empty((self.num_particles, self.num_parameters))
+        weights = np.empty(self.num_particles, dtype=np.float64)
+        distances = np.empty(self.num_particles, dtype=np.float32)
         accepted = 0
         running_num_simulations = 0
+        device = self.model.device
+        prev_cov = self._stabilize_covariance(prev_cov)
+        max_workers = self._resolve_num_workers(self.num_particles)
+        batch_size = self._resolve_simulation_batch_size(max_workers)
+        max_pending = self._resolve_max_pending_simulations(batch_size, max_workers)
+        self.logger.info(
+            "Generation encoding batch size: %d successful simulations; "
+            "max pending simulations: %d; workers: %d",
+            batch_size,
+            max_pending,
+            max_workers,
+        )
+        executor = ThreadPoolExecutor(max_workers=max_workers)
+        pending = {}
+        wait_timeout = 30.0
+        synchronous_fallback = False
 
-        with tqdm(total=self.num_particles, miniters=self.num_particles // 10, maxinterval=float('inf')) as pbar:
-            while accepted < self.num_particles:
+        if epsilon <= 0:
+            self.logger.warning(
+                "Generation epsilon is %.6g. Using <= for acceptance so zero-distance "
+                "candidates do not get rejected forever.",
+                epsilon,
+            )
 
-                theta = self._propose_particle_fast(
-                    prev_particles=prev_particles,
-                    prev_weights=prev_weights,
-                    prev_cov=prev_cov
-                )
-                    
-                y, status = self.simulate(theta)
-                running_num_simulations += 1
-                
-                if status != 0:
-                    continue
-                    
-                dist = self._calculate_particle_distance(y)
-                if dist >= epsilon:
-                    continue
-                    
-                # Only calculate weight for accepted particles
-                new_weight = self._calculate_particle_weight(
-                    theta, prev_particles, prev_weights, prev_cov
-                )
-                
-                accepted += 1
-                pbar.update(1)
-                particles.append(theta)
-                weights.append(new_weight)
-                distances.append(dist)
-        
-        return np.array(particles), np.array(weights), np.array(distances), running_num_simulations
+        def submit_simulations(num_to_submit: int) -> None:
+            nonlocal running_num_simulations
+            if num_to_submit <= 0:
+                return
+            theta_batch = self._propose_particles_fast(
+                prev_particles=prev_particles,
+                prev_weights=prev_weights,
+                prev_cov=prev_cov,
+                num_particles=num_to_submit,
+            )
+            for theta in theta_batch:
+                pending[executor.submit(self.simulate_for_inference, theta)] = theta
+            running_num_simulations += len(theta_batch)
+
+        try:
+            with tqdm(total=self.num_particles, miniters=max(1, self.num_particles // 10), maxinterval=float('inf')) as pbar:
+                submit_simulations(min(max_pending, max(1, self.num_particles * 2)))
+
+                while accepted < self.num_particles:
+                    successful_theta = []
+                    successful_scaled = []
+
+                    if synchronous_fallback:
+                        theta_batch = self._propose_particles_fast(
+                            prev_particles=prev_particles,
+                            prev_weights=prev_weights,
+                            prev_cov=prev_cov,
+                            num_particles=max(1, min(batch_size, self.num_particles - accepted)),
+                        )
+                        running_num_simulations += len(theta_batch)
+                        for theta in theta_batch:
+                            try:
+                                y, status = self.simulate_for_inference(theta)
+                            except Exception as e:
+                                self.logger.error(f"Simulation failed with error: {e}")
+                                continue
+                            if status != 0:
+                                continue
+                            successful_theta.append(theta)
+                            successful_scaled.append(self.preprocess(y))
+                    else:
+                        if not pending:
+                            submit_simulations(min(max_pending, max(1, self.num_particles - accepted)))
+
+                        done, _ = wait(tuple(pending), timeout=wait_timeout, return_when=FIRST_COMPLETED)
+                        if not done:
+                            stalled_parameters = [
+                                np.asarray(theta).tolist()
+                                for theta in list(pending.values())[: min(3, len(pending))]
+                            ]
+                            self.logger.warning(
+                                "No simulation finished after %.1f seconds with %d pending futures. "
+                                "Switching to synchronous fallback for this generation. "
+                                "Example pending parameters: %s",
+                                wait_timeout,
+                                len(pending),
+                                stalled_parameters,
+                            )
+                            synchronous_fallback = True
+                            continue
+
+                        ready_futures = list(done)[:batch_size]
+                        deferred_done_count = len(done) - len(ready_futures)
+                        if deferred_done_count > 0:
+                            self.logger.debug(
+                                "Deferring %d completed simulations to keep encoding batch <= %d",
+                                deferred_done_count,
+                                batch_size,
+                            )
+
+                        for future in ready_futures:
+                            theta = pending.pop(future)
+                            try:
+                                y, status = future.result()
+                            except Exception as e:
+                                self.logger.error(f"Simulation failed with error: {e}")
+                                continue
+                            if status != 0:
+                                continue
+                            successful_theta.append(theta)
+                            successful_scaled.append(self.preprocess(y))
+
+                        while len(successful_scaled) < batch_size and pending:
+                            ready = [future for future in pending if future.done()]
+                            if not ready:
+                                break
+                            for future in ready[:batch_size - len(successful_scaled)]:
+                                theta = pending.pop(future)
+                                try:
+                                    y, status = future.result()
+                                except Exception as e:
+                                    self.logger.error(f"Simulation failed with error: {e}")
+                                    continue
+                                if status != 0:
+                                    continue
+                                successful_theta.append(theta)
+                                successful_scaled.append(self.preprocess(y))
+
+                        submit_simulations(max_pending - len(pending))
+
+                    if not successful_scaled:
+                        continue
+
+                    if len(successful_scaled) > batch_size:
+                        self.logger.warning(
+                            "Truncating generation encoding batch from %d to %d simulations",
+                            len(successful_scaled),
+                            batch_size,
+                        )
+                        successful_theta = successful_theta[:batch_size]
+                        successful_scaled = successful_scaled[:batch_size]
+
+                    y_batch = torch.as_tensor(
+                        np.stack(successful_scaled, axis=0),
+                        dtype=torch.float32,
+                        device=device,
+                    )
+                    y_latent_np = self.get_latent(y_batch)
+                    batch_dist_values = self.calculate_distance(y_latent_np)
+                    batch_distances = np.atleast_1d(np.asarray(batch_dist_values, dtype=np.float32))
+                    try:
+                        accepted_mask = batch_distances < epsilon # Bug Here
+                    except Exception as e:
+                        self.logger.error(f"Distance calculation failed with error: {e}")
+                        continue
+
+                    accepted_theta = np.asarray(successful_theta)[accepted_mask]
+                    accepted_distances = batch_distances[accepted_mask]
+                    remaining = self.num_particles - accepted
+                    write_count = min(remaining, len(accepted_theta))
+                    write_slice = slice(accepted, accepted + write_count)
+
+                    particles[write_slice] = accepted_theta[:write_count]
+                    distances[write_slice] = accepted_distances[:write_count]
+                    weights[write_slice] = [
+                        self._calculate_particle_weight(theta, prev_particles, prev_weights, prev_cov)
+                        for theta in accepted_theta[:write_count]
+                    ]
+
+                    accepted += write_count
+                    pbar.update(write_count)
+        finally:
+            for future in pending:
+                future.cancel()
+            executor.shutdown(wait=False, cancel_futures=True)
+
+        return particles, weights, distances, running_num_simulations
+
+    def _propose_particles_fast(
+        self,
+        prev_particles: np.ndarray,
+        prev_weights: np.ndarray,
+        prev_cov: np.ndarray,
+        num_particles: int,
+        max_attempts: int = 250
+    ) -> np.ndarray:
+        """Propose a batch of valid particles."""
+        proposed = []
+        proposal_batch_size = max(4, num_particles)
+
+        for _ in range(max_attempts):
+            remaining = num_particles - len(proposed)
+            if remaining <= 0:
+                break
+
+            current_batch_size = max(remaining, proposal_batch_size)
+            idxs = np.random.choice(len(prev_particles), size=current_batch_size, p=prev_weights)
+            candidates = prev_particles[idxs]
+            perturbed = np.array([self.perturb_parameters(theta, prev_cov) for theta in candidates])
+            priors = np.array([self.calculate_prior_log_prob(p) for p in perturbed])
+            valid = perturbed[np.isfinite(priors)]
+
+            if len(valid) > 0:
+                proposed.extend(valid[:remaining])
+
+        if len(proposed) < num_particles:
+            raise RuntimeError(
+                f"Unable to generate {num_particles} valid particles after "
+                f"{max_attempts * proposal_batch_size} proposals. "
+                "Consider adjusting prior bounds or covariance matrix."
+            )
+
+        return np.asarray(proposed)
 
     def _propose_particle_fast(
         self,
@@ -659,8 +921,7 @@ class viaABC:
         """Calculate weight for an accepted particle."""
         
         prev_particles = np.atleast_2d(prev_particles)
-        prev_cov = np.atleast_2d(prev_cov)
-        prev_cov += 1e-6 * np.eye(prev_cov.shape[0])
+        prev_cov = self._stabilize_covariance(prev_cov)
 
         new_weight = particle_weight_cpp.calculate_particle_weight(
             theta,
@@ -697,14 +958,71 @@ class viaABC:
         Returns:
             Dictionary containing generation results
         """
+        particles = np.asarray(particles)
+        weights = np.asarray(weights, dtype=np.float64)
+        distances = np.asarray(distances, dtype=np.float64)
+        valid_mask = (
+            np.isfinite(weights)
+            & (weights > 0)
+            & np.isfinite(distances)
+            & np.all(np.isfinite(particles), axis=1)
+        )
+        if not np.all(valid_mask):
+            self.logger.warning(
+                "Dropping %d invalid accepted particles before generation %d statistics.",
+                int(np.size(valid_mask) - np.count_nonzero(valid_mask)),
+                generation_num,
+            )
+            particles = particles[valid_mask]
+            weights = weights[valid_mask]
+            distances = distances[valid_mask]
+        if len(distances) == 0:
+            raise RuntimeError(
+                f"Generation {generation_num} produced no finite accepted particles. "
+                "Check simulator output, distance values, and particle weights."
+            )
+
         # Normalize weights
-        weights_normalized = weights / np.sum(weights)
+        weight_sum = np.sum(weights)
+        if not np.isfinite(weight_sum) or weight_sum <= 0:
+            raise RuntimeError(
+                f"Generation {generation_num} has invalid particle weights "
+                f"with sum={weight_sum}."
+            )
+        weights_normalized = weights / weight_sum
+
+        num_reference_samples = min(len(prev_particles), len(particles))
+        densratio_n = max(1, min(100, num_reference_samples))
+        densratio_fold = max(1, min(5, num_reference_samples))
+        if (
+            not hasattr(self, "densratio")
+            or num_reference_samples < 100
+        ):
+            self.densratio = dre_cpp.DensityRatioEstimation(
+                n=densratio_n,
+                epsilon=0.001,
+                max_iter=1000,
+                abs_tol=1e-4,
+                fold=densratio_fold,
+                optimize=False,
+            )
+            if num_reference_samples < 100:
+                self.logger.warning(
+                    "Using adaptive density-ratio settings for %d samples: n=%d, fold=%d.",
+                    num_reference_samples,
+                    densratio_n,
+                    densratio_fold,
+                )
         
         # Calculate statistics
-        sample_cov = np.atleast_2d(np.diag(weighted_var(particles, weights=weights_normalized)))
+        variances = np.maximum(
+            np.asarray(weighted_var(particles, weights=weights_normalized), dtype=np.float64),
+            1e-8,
+        )
+        sample_cov = self._stabilize_covariance(np.diag(variances))
         sample_sigma = np.sqrt(np.diag(sample_cov))
         sigma_max = np.min(sample_sigma)
-        meta_cov = 2 * np.diag(sample_cov)
+        meta_cov = self._stabilize_covariance(2 * np.diag(np.diag(sample_cov)))
         
         # Calculate qt and epsilon
         if self.densratio.optimize:
@@ -720,7 +1038,15 @@ class viaABC:
             sigma=sigma
         )
         
-        max_value = max(self.densratio.max_ratio(), 1.0)
+        ratio_max = self.densratio.max_ratio()
+        if not np.isfinite(ratio_max) or ratio_max <= 0:
+            self.logger.warning(
+                "Invalid density-ratio max %s in generation %d; using 1.0.",
+                ratio_max,
+                generation_num,
+            )
+            ratio_max = 1.0
+        max_value = max(ratio_max, 1.0)
         qt = max(1 / max_value, 0.05)
         epsilon = weighted_sample_quantile(distances, qt, weights=weights_normalized)
         epsilon = np.float32(epsilon)
@@ -825,7 +1151,7 @@ class viaABC:
 
         return mean, median, var
     
-    def __sample_priors(self, n: int = 1) -> np.ndarray:
+    def __sample_priors_old(self, n: int = 1) -> np.ndarray:
         """Sample from prior distribution using Latin Hypercube Sampling"""
         # Create LHS sampler
         sampler = qmc.LatinHypercube(d=self.num_parameters)
@@ -836,6 +1162,53 @@ class viaABC:
         # Scale samples to parameter bounds
         scaled_samples = qmc.scale(samples, self.lower_bounds, self.upper_bounds)
         return scaled_samples
+    
+    def __sample_priors(self, n: int = 1) -> np.ndarray:
+        """Sample Spatial2D training priors from a QMC lognormal distribution."""
+        if self.__class__.__name__ != "Spatial2D":
+            return self.__sample_priors_old(n=n)
+
+        if self.num_parameters != 3:
+            return np.asarray([self.sample_priors() for _ in range(n)])
+
+        prior_mean = np.array([0.05, 0.0001, 0.2], dtype=np.float64)
+        prior_var = np.array([6.25e-4, 1.0, 1.0e-1], dtype=np.float64)
+
+        lower_bounds = np.asarray(self.lower_bounds, dtype=np.float64)
+        upper_bounds = np.asarray(self.upper_bounds, dtype=np.float64)
+        if (
+            lower_bounds.shape[0] != self.num_parameters
+            or upper_bounds.shape[0] != self.num_parameters
+        ):
+            return self.__sample_priors_old(n=n)
+
+        log_sigma_sq = np.log1p(prior_var / np.square(prior_mean))
+        log_sigma = np.sqrt(log_sigma_sq)
+        log_mu = np.log(prior_mean) - 0.5 * log_sigma_sq
+        eps = np.finfo(np.float64).eps
+
+        quantile_bands = (
+            np.array([[eps, 0.12], [0.01, 0.70], [0.01, 0.99]], dtype=np.float64),
+            np.array([[0.55, 0.95], [0.01, 0.35], [0.01, 0.70]], dtype=np.float64),
+            np.array([[0.70, 0.995], [0.9995, 1.0 - eps], [0.70, 0.995]], dtype=np.float64),
+        )
+        group_counts = np.full(3, n // 3, dtype=int)
+        group_counts[: n % 3] += 1
+
+        samples_by_group = []
+        for count, band in zip(group_counts, quantile_bands):
+            if count == 0:
+                continue
+            sampler_seed = int(np.random.randint(0, np.iinfo(np.int32).max))
+            sampler = qmc.LatinHypercube(d=self.num_parameters, seed=sampler_seed)
+            unit_samples = sampler.random(n=count)
+            unit_samples = band[:, 0] + unit_samples * (band[:, 1] - band[:, 0])
+            normal_quantiles = ndtri(np.clip(unit_samples, eps, 1.0 - eps))
+            samples_by_group.append(np.exp(log_mu + normal_quantiles * log_sigma))
+
+        samples = np.vstack(samples_by_group)
+        np.random.shuffle(samples)
+        return np.clip(samples, lower_bounds, upper_bounds)
 
     def __batch_simulations(
         self, 
@@ -863,11 +1236,11 @@ class viaABC:
         parameters = self.__sample_priors(n=num_simulations)
 
         if num_threads <= 0:
-            num_threads = min(32, (os.cpu_count() or 1) + 4, max(1, num_simulations))
+            num_threads = min(64, (os.cpu_count() or 1) + 4, max(1, num_simulations))
         else:
             num_threads = min(num_threads, max(1, num_simulations))
 
-        batch_size = min(256, max(32, num_threads * 8))
+        batch_size = max(32, num_threads * 8)
         
         def run_simulation(i: int, param: np.ndarray) -> Optional[tuple[np.ndarray, np.ndarray]]:
             """Run a single simulation and return results or None on failure."""
@@ -1020,27 +1393,41 @@ class viaABC:
                 continue
 
             # check if training_dataset is already set
-            if os.path.exists(os.path.join(save_dir, f"{prefix}_data.npz")):
+            dataset_path = os.path.join(save_dir, f"{prefix}_data.npz")
+            if os.path.exists(dataset_path):
                 try:
-                    dataset = np.load(os.path.join(save_dir, f"{prefix}_data.npz"))
-                    # Check if the shapes of the loaded data match the expected shapes based on current configuration
-                    if count == dataset["params"].shape[0] and count == dataset["simulations"].shape[0]:
+                    shapes = self._npz_array_shapes(dataset_path)
+                    params_shape = shapes["params.npy"]
+                    simulations_shape = shapes["simulations.npy"]
+                    frame_count = getattr(self, "num_frames", None)
+                    uses_time_series = getattr(self, "use_time_series", False)
+                    frame_matches = not uses_time_series or frame_count is None or simulations_shape[1] == frame_count
+                    if count == params_shape[0] and count == simulations_shape[0] and frame_matches:
                         self.logger.info(f"{prefix}_data.npz already exists in {save_dir} and matches configuration. Skipping generation.")
                         return
-                    else:
-                        self.logger.warning(f"{prefix}_data.npz exists but shapes mismatch. Regenerating...")
+                    self.logger.warning(f"{prefix}_data.npz exists but shapes mismatch. Regenerating...")
 
                 except Exception as e:
-                    self.logger.error(f"Failed to load existing {os.path.join(save_dir, f'{prefix}_data.npz')}: {e}. Regenerating...")
+                    self.logger.error(f"Failed to inspect existing {dataset_path}: {e}. Regenerating...")
 
             self.logger.info(f"Generating {count} simulations for {prefix} data")
             start = time.time()
-            self.__batch_simulations(count, save_dir, prefix=prefix, num_threads=num_workers * 2)
+            self.__batch_simulations(count, save_dir, prefix=prefix, num_threads=num_workers)
             elapsed = time.time() - start
             total_time += elapsed
             self.logger.info(f"Generated {count} simulations for {prefix} data in {elapsed:.2f} seconds")
 
         self.logger.info(f"Training data generation completed and saved. Total time taken: {total_time:.2f} seconds")
+
+    def _npz_array_shapes(self, path: str) -> dict[str, tuple[int, ...]]:
+        with zipfile.ZipFile(path) as archive:
+            shapes = {}
+            for name in ("params.npy", "simulations.npy"):
+                with archive.open(name) as member:
+                    version = np.lib.format.read_magic(member)
+                    shape, _, _ = np.lib.format._read_array_header(member, version)
+                    shapes[name] = shape
+            return shapes
 
     def update_train_dataset(self, train_dataset: torch.utils.data.Dataset[Any]) -> None:
         # check if train_dataset is a torch Dataset

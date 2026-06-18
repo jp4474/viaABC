@@ -29,7 +29,10 @@ class PreTrainLightning(L.LightningModule):
 
     def forward(self, simulations, mask_ratio=None):
         # forward should ONLY do forward-pass logic
-        recon_loss, space_loss, _ = self.model(simulations, mask_ratio)
+        if mask_ratio is None:
+            recon_loss, space_loss, _ = self.model(simulations)
+        else:
+            recon_loss, space_loss, _ = self.model(simulations, mask_ratio)
         return recon_loss, space_loss
 
     def forward_step(self, batch):
@@ -80,9 +83,10 @@ class PreTrainLightning(L.LightningModule):
 
         :param stage: Either `"fit"`, `"validate"`, `"test"`, or `"predict"`.
         """
-        if self.compile and stage == "fit":
-            self.model = torch.compile(self.model)
+        if stage == "fit":
             self.annealer = Annealer(total_steps=self.vae_warmup_steps, shape='cosine', baseline=0.0, cyclical=True, disable=not self.annealing)
+            if self.compile:
+                self.model = torch.compile(self.model)
             
     def configure_optimizers(self) -> Dict[str, Any]:
         """Choose what optimizers and learning-rate schedulers to use in your optimization.
@@ -107,5 +111,12 @@ class PreTrainLightning(L.LightningModule):
         return {"optimizer": optimizer}
 
     def get_latent(self, x, pooling_method):
-        return self.model.extract_features(x, pooling_method)
+        if hasattr(self.model, "extract_features"):
+            return self.model.extract_features(x, pooling_method)
+        if hasattr(self.model, "get_latent"):
+            return self.model.get_latent(x, pooling_method)
+        raise AttributeError(
+            f"{type(self.model).__name__} must define either "
+            "`extract_features(x, pooling_method)` or `get_latent(x, pooling_method)`."
+        )
     

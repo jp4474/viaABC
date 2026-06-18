@@ -1,5 +1,7 @@
 import logging
+from datetime import datetime
 from pathlib import Path
+from uuid import uuid4
 
 import hydra
 import rootutils
@@ -7,8 +9,8 @@ import torch
 import numpy as np
 from omegaconf import DictConfig, OmegaConf
 from hydra.utils import instantiate
-import namer
 import matplotlib.pyplot as plt
+from matplotlib.colors import ListedColormap
 
 # -----------------------------------------------------------------------------
 # Setup project root
@@ -22,6 +24,11 @@ from src.viaABC.systems import *
 from src.models.lightning_module import PreTrainLightning
 
 log = logging.getLogger(__name__)
+
+
+def make_run_name() -> str:
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    return f"{timestamp}_{uuid4().hex[:8]}"
 
 
 # -----------------------------------------------------------------------------
@@ -57,7 +64,16 @@ def setup_file_logging(save_dir: Path) -> None:
 # -----------------------------------------------------------------------------
 # Model + Transform Loader
 # -----------------------------------------------------------------------------
-def load_model_and_transform(cfg: DictConfig):
+def load_training_config(cfg: DictConfig) -> DictConfig:
+    run_dir = Path(cfg.run_folder_path)
+    train_cfg_path = run_dir / ".hydra" / "config.yaml"
+    if not train_cfg_path.exists():
+        raise FileNotFoundError(f"Training Hydra config not found: {train_cfg_path}")
+
+    return OmegaConf.load(train_cfg_path)
+
+
+def load_model_and_transform(cfg: DictConfig, train_cfg: DictConfig | None = None):
     """
     Load the model and transform EXACTLY as defined during training
     from `.hydra/config.yaml`, then restore weights from checkpoint.
@@ -68,11 +84,8 @@ def load_model_and_transform(cfg: DictConfig):
     # -------------------------------------------------------------------------
     # 1. Load training Hydra config
     # -------------------------------------------------------------------------
-    train_cfg_path = run_dir / ".hydra" / "config.yaml"
-    if not train_cfg_path.exists():
-        raise FileNotFoundError(f"Training Hydra config not found: {train_cfg_path}")
-
-    train_cfg = OmegaConf.load(train_cfg_path)
+    if train_cfg is None:
+        train_cfg = load_training_config(cfg)
 
     if "model" not in train_cfg:
         raise KeyError("`model` not found in training config")
@@ -150,6 +163,23 @@ def load_model_and_transform(cfg: DictConfig):
     return model, transform
 
 
+def inject_training_observation_samples(cfg: DictConfig, train_cfg: DictConfig) -> None:
+    if "data" not in train_cfg or "observation_samples" not in train_cfg.data:
+        raise KeyError("`data.observation_samples` not found in training config")
+
+    observation_samples = OmegaConf.to_container(
+        train_cfg.data.observation_samples,
+        resolve=True,
+    )
+    OmegaConf.update(
+        cfg,
+        "data.observation_samples",
+        observation_samples,
+        merge=False,
+    )
+    log.info("Injected Spatial2D observation samples from training run config")
+
+
 # -----------------------------------------------------------------------------
 # Inference Runner
 # -----------------------------------------------------------------------------
@@ -162,7 +192,7 @@ def run_inference(cfg: DictConfig) -> None:
     # -------------------------------------------------------------------------
     # 0. Create save dir + setup logging FIRST
     # -------------------------------------------------------------------------
-    save_dir = Path(cfg.folder_name) / namer.generate()
+    save_dir = Path(cfg.folder_name) / make_run_name()
     save_dir.mkdir(parents=True, exist_ok=True)
 
     setup_file_logging(save_dir)
@@ -172,11 +202,15 @@ def run_inference(cfg: DictConfig) -> None:
     # -------------------------------------------------------------------------
     # 1. Load pretrained model + transform
     # -------------------------------------------------------------------------
-    model, transform = load_model_and_transform(cfg)
+    train_cfg = load_training_config(cfg)
+    model, transform = load_model_and_transform(cfg, train_cfg)
 
     # -------------------------------------------------------------------------
     # 2. Instantiate viaABC system
     # -------------------------------------------------------------------------
+    if cfg.system.get("_target_") == "src.viaABC.systems.Spatial2D":
+        inject_training_observation_samples(cfg, train_cfg)
+
     kwargs = {"model": model}
 
     if transform is not None:
@@ -188,25 +222,55 @@ def run_inference(cfg: DictConfig) -> None:
 
     log.info(f"viaABC System initialized: {system_name}")
     log.info(f"Metric: {system.metric}")
+    if hasattr(system, "_sample_source_info"):
+        for source_info in system._sample_source_info:
+            log.info(f"Spatial2D observation source: {source_info}")
 
     # -------------------------------------------------------------------------
     if str(system_name) == "Spatial2D":
         fig, ax = plt.subplots(1, 2, figsize=(8, 4))
 
-        torch_obs_data = torch.from_numpy(system.observational_data).to(model.device).unsqueeze(0).float()
-        obs_data = torch_obs_data.cpu().numpy()[0]
+        obs_grid = system._observation_grids[0] if hasattr(system, "_observation_grids") else system.observational_data
+        if hasattr(system, "_observation_input"):
+            obs_input = system._observation_input()
+            if getattr(system, "_multiple_samples", False):
+                obs_input = obs_input[0]
+        else:
+            obs_input = obs_grid
+        obs_input = system.preprocess(obs_input)
+        torch_obs_data = torch.from_numpy(obs_input).to(model.device).unsqueeze(0).float()
 
         with torch.no_grad():
-            recon_data = model.model.forward(torch_obs_data)[-1]
+            recon_data = model.model.forward(torch_obs_data, mask_ratio=0.0)[-1]
             recon_data = model.model.unpatchify(recon_data).cpu().numpy()[0].argmax(axis=0)
-        vmin = min(obs_data.min(), recon_data.min())
-        vmax = max(obs_data.max(), recon_data.max())
 
-        ax[0].imshow(obs_data.squeeze(0), cmap="viridis", vmin=vmin, vmax=vmax)
-        ax[1].imshow(recon_data, cmap="viridis", vmin=vmin, vmax=vmax)
+        obs_plot = obs_grid[-1] if obs_grid.ndim == 3 else obs_grid
+        recon_plot = recon_data[-1] if recon_data.ndim == 3 else recon_data
+        vmin = min(obs_plot.min(), recon_plot.min())
+        vmax = max(obs_plot.max(), recon_plot.max())
 
-        ax[0].set_title("Observation")
-        ax[1].set_title("Reconstruction")
+        color_map = {
+            'red': [90, 15, 10],
+            'yellow': [120, 120, 10],
+            'blue': [10, 10, 90],
+            'no_color': [0, 0, 0],
+            'green': [10, 120, 10],
+            'hotspot': [0, 255, 0] # bright green for hotspot
+        }
+        state_cmap = ListedColormap([
+            np.array(color_map['red']) / 255,
+            np.array(color_map['yellow']) / 255,
+            np.array(color_map['blue']) / 255,
+            np.array(color_map['no_color']) / 255,
+            np.array(color_map['green']) / 255,
+            np.array(color_map['hotspot']) / 255,
+        ])
+        ax[0].imshow(obs_plot, cmap=state_cmap, vmin=vmin, vmax=vmax)
+        ax[1].imshow(recon_plot, cmap=state_cmap, vmin=vmin, vmax=vmax)
+
+        frame_suffix = " (last frame)" if obs_grid.ndim == 3 else ""
+        ax[0].set_title(f"Observation{frame_suffix}")
+        ax[1].set_title(f"Reconstruction{frame_suffix}")
 
         plt.tight_layout()
 
@@ -218,7 +282,8 @@ def run_inference(cfg: DictConfig) -> None:
     # -------------------------------------------------------------------------
     log.info(
         f"Starting viaABC | particles={cfg.abc.num_particles}, "
-        f"k={cfg.abc.k}, q={cfg.abc.q_threshold}"
+        f"k={cfg.abc.k}, q={cfg.abc.q_threshold}, "
+        f"num_workers={cfg.abc.get('num_workers', None)}"
     )
 
     abc_results = system.run(
@@ -226,6 +291,9 @@ def run_inference(cfg: DictConfig) -> None:
         k=cfg.abc.k,
         q_threshold=cfg.abc.q_threshold,
         max_generations=cfg.abc.max_generations,
+        num_workers=cfg.abc.get("num_workers", None),
+        simulation_batch_size=cfg.abc.get("simulation_batch_size", None),
+        max_pending_simulations=cfg.abc.get("max_pending_simulations", None),
     )
 
     # -------------------------------------------------------------------------
