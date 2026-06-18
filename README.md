@@ -152,9 +152,6 @@ Please see `src/models/components/schedulers/WarmupCosineScheduler`
 ## TIP
 use `fast_dev_run: true` for fast debugging purposes and turn this off for training.
 
-## TODO
-
-1. C++ code for spatial2D is slow when using pybind (~0.7 s per iteration). Consider using Cython instead.
 
 ```bibtex
 @misc{park2025spatiodynamicinferenceusingvisionbased,
